@@ -9,7 +9,7 @@ import re
 import sqlite3
 import sys
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +135,15 @@ def open_state_database() -> sqlite3.Connection:
     node_columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
     if "completed_at" not in node_columns:
         connection.execute("ALTER TABLE nodes ADD COLUMN completed_at TEXT NOT NULL DEFAULT ''")
+    if "review_due" not in node_columns:
+        connection.execute("ALTER TABLE nodes ADD COLUMN review_due TEXT NOT NULL DEFAULT ''")
+    if "review_learning" not in node_columns:
+        connection.execute("ALTER TABLE nodes ADD COLUMN review_learning INTEGER NOT NULL DEFAULT 0")
+    if "review_log" not in node_columns:
+        connection.execute("ALTER TABLE nodes ADD COLUMN review_log TEXT NOT NULL DEFAULT ''")
+    project_columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
+    if "review_enabled" not in project_columns:
+        connection.execute("ALTER TABLE projects ADD COLUMN review_enabled INTEGER")
     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return connection
 
@@ -188,6 +197,28 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None) ->
             raise ValueError("项目中存在未知节点类型")
         node_id = str(raw["id"])
         assessment = raw.get("assessment") if isinstance(raw.get("assessment"), dict) else None
+        review_due = ""
+        review_learning = 0
+        review_log = ""
+        if node_type == "item":
+            review = raw.get("review") if isinstance(raw.get("review"), dict) else None
+            if review is not None:
+                due = str(review.get("due") or "")[:10].strip()
+                if due:
+                    review_due = due
+                review_learning = int(bool(review.get("learning")))
+                log = review.get("log")
+                if isinstance(log, list):
+                    entries = []
+                    for entry in log[-50:]:
+                        if not isinstance(entry, dict):
+                            continue
+                        at = str(entry.get("at") or "")[:10].strip()
+                        result = str(entry.get("result") or "")[:10].strip()
+                        if at and result:
+                            entries.append({"at": at, "result": result})
+                    if entries:
+                        review_log = _json(entries)
         flattened.append({
             "project_id": project_id,
             "node_id": node_id,
@@ -203,6 +234,9 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None) ->
             "expanded": int(bool(raw.get("expanded"))) if node_type != "item" else 0,
             "created_at": str(raw.get("createdAt", "")),
             "completed_at": str(raw.get("completedAt") or "") if node_type == "item" else "",
+            "review_due": review_due,
+            "review_learning": review_learning,
+            "review_log": review_log,
             "assessment": assessment,
         })
         flattened.extend(_flatten_nodes(project_id, raw.get("children"), node_id))
@@ -219,20 +253,25 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
     if len(node_ids) != len(set(node_ids)):
         raise ValueError("项目中存在重复节点 ID")
     summary = project_summary(project)
+    if "reviewEnabled" in project:
+        review_enabled = 1 if project.get("reviewEnabled") else 0
+    else:
+        review_enabled = None
     connection.execute(
         """INSERT INTO projects(
             project_id,id_json,position,name,description,created_at,
-            assessment_enabled,revision,updated_at,summary_json
-        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            assessment_enabled,revision,updated_at,summary_json,review_enabled
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(project_id) DO UPDATE SET
             id_json=excluded.id_json, position=excluded.position, name=excluded.name,
             description=excluded.description, created_at=excluded.created_at,
             assessment_enabled=excluded.assessment_enabled,
             revision=excluded.revision, updated_at=excluded.updated_at,
-            summary_json=excluded.summary_json""",
+            summary_json=excluded.summary_json, review_enabled=excluded.review_enabled""",
         (project_id, _json(project["id"]), position, str(project.get("name", "未命名项目")),
          str(project.get("description", "")), str(project.get("createdAt", "")),
-         int(bool(project.get("assessmentEnabled"))), revision, updated_at, _json(summary)),
+         int(bool(project.get("assessmentEnabled"))), revision, updated_at, _json(summary),
+         review_enabled),
     )
     existing_ids = {row[0] for row in connection.execute(
         "SELECT node_id FROM nodes WHERE project_id=?", (project_id,)
@@ -241,25 +280,30 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
         connection.execute(
             """INSERT INTO nodes(
                 project_id,node_id,id_json,parent_id,position,type,text,completed,
-                optional,assessment_required,assessment_history,expanded,created_at,completed_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                optional,assessment_required,assessment_history,expanded,created_at,completed_at,
+                review_due,review_learning,review_log
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(project_id,node_id) DO UPDATE SET
                 id_json=excluded.id_json,parent_id=excluded.parent_id,position=excluded.position,
                 type=excluded.type,text=excluded.text,completed=excluded.completed,
                 optional=excluded.optional,assessment_required=excluded.assessment_required,
                 assessment_history=excluded.assessment_history,expanded=excluded.expanded,
-                created_at=excluded.created_at,completed_at=excluded.completed_at
+                created_at=excluded.created_at,completed_at=excluded.completed_at,
+                review_due=excluded.review_due,review_learning=excluded.review_learning,
+                review_log=excluded.review_log
             WHERE id_json<>excluded.id_json OR parent_id IS NOT excluded.parent_id
                 OR position<>excluded.position OR type<>excluded.type OR text<>excluded.text
                 OR completed<>excluded.completed OR optional<>excluded.optional
                 OR assessment_required<>excluded.assessment_required
                 OR assessment_history<>excluded.assessment_history
                 OR expanded<>excluded.expanded OR created_at<>excluded.created_at
-                OR completed_at<>excluded.completed_at""",
+                OR completed_at<>excluded.completed_at
+                OR review_due<>excluded.review_due OR review_learning<>excluded.review_learning
+                OR review_log<>excluded.review_log""",
             tuple(node[key] for key in (
                 "project_id", "node_id", "id_json", "parent_id", "position", "type", "text",
                 "completed", "optional", "assessment_required", "assessment_history", "expanded", "created_at",
-                "completed_at"
+                "completed_at", "review_due", "review_learning", "review_log"
             )),
         )
         _write_assessment(connection, node, updated_at)
@@ -334,6 +378,8 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
         "assessmentEnabled": bool(row["assessment_enabled"]),
         "tree": [],
     }
+    if row["review_enabled"] is not None:
+        project["reviewEnabled"] = bool(row["review_enabled"])
     node_rows = connection.execute(
         "SELECT * FROM nodes WHERE project_id=? ORDER BY parent_id,position,node_id", (project_id,)
     ).fetchall()
@@ -356,6 +402,28 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
         }
         if node_row["completed_at"]:
             node["completedAt"] = node_row["completed_at"]
+        if node_type == "item" and (node_row["review_due"] or node_row["review_log"]
+                                    or node_row["review_learning"]):
+            review_due = str(node_row["review_due"] or "")
+            review_log = []
+            if node_row["review_log"]:
+                try:
+                    parsed_log = json.loads(node_row["review_log"])
+                except (TypeError, json.JSONDecodeError):
+                    parsed_log = None
+                if isinstance(parsed_log, list):
+                    for entry in parsed_log[-50:]:
+                        if not isinstance(entry, dict):
+                            continue
+                        at = str(entry.get("at") or "")[:10]
+                        result = str(entry.get("result") or "")[:10]
+                        if at and result:
+                            review_log.append({"at": at, "result": result})
+            node["review"] = {
+                "due": review_due,
+                "learning": bool(node_row["review_learning"]),
+                "log": review_log,
+            }
         by_id[node_row["node_id"]] = node
         parent_by_id[node_row["node_id"]] = node_row["parent_id"]
     assessment_rows = connection.execute(
@@ -459,6 +527,29 @@ def read_project_summaries() -> list[dict[str, Any]]:
         summary = _decode_object(row["summary_json"], "SQLite 中的项目摘要损坏")
         summary["_revision"] = int(row["revision"])
         result.append(summary)
+    return result
+
+
+def review_counts(today: str | None = None) -> dict[str, dict[str, int]]:
+    """Live per-project review counts from the normalized review columns.
+
+    Counts only completed items that still carry a scheduled review date.
+    Returns {project_id: {"today": int, "overdue": int}}.
+    """
+    today = (today or date.today().isoformat())
+    with _database_lock, open_state_database() as connection:
+        rows = connection.execute(
+            "SELECT project_id,review_due FROM nodes "
+            "WHERE type='item' AND completed=1 AND review_due<>''"
+        ).fetchall()
+    result: dict[str, dict[str, int]] = {}
+    for row in rows:
+        due = str(row["review_due"])
+        bucket = result.setdefault(str(row["project_id"]), {"today": 0, "overdue": 0})
+        if due < today:
+            bucket["overdue"] += 1
+        elif due == today:
+            bucket["today"] += 1
     return result
 
 

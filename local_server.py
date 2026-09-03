@@ -189,7 +189,16 @@ class TodoHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/projects":
             try:
-                self.send_json(200, {"projects": read_project_summaries()})
+                summaries = read_project_summaries()
+                counts = storage_service.review_counts()
+                totals = {"today": 0, "overdue": 0}
+                for summary in summaries:
+                    bucket = counts.get(str(summary.get("id")), {"today": 0, "overdue": 0})
+                    summary["reviewToday"] = bucket["today"]
+                    summary["reviewOverdue"] = bucket["overdue"]
+                    totals["today"] += bucket["today"]
+                    totals["overdue"] += bucket["overdue"]
+                self.send_json(200, {"projects": summaries, "reviewTotals": totals})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取项目列表失败：{error}"})
             return

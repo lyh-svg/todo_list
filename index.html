@@ -18,6 +18,11 @@
 <button class="shortcut-btn" data-study-action="stats" type="button"><span aria-hidden="true">▥</span>进度统计</button>
 </div>
 </div>
+<button type="button" class="review-pill" id="reviewQueueBtn" title="打开复习队列（今天到期 + 逾期）">
+<span class="review-pill-icon" aria-hidden="true">◷</span>
+<span class="review-pill-label">今日待复习</span>
+<span class="review-pill-count" id="reviewQueueCount">0</span>
+</button>
 <div class="project-tools">
 <div class="search-field">
 <span aria-hidden="true">⌕</span>
@@ -89,6 +94,10 @@
 <input type="checkbox" id="projectAssessmentToggle" />
 <span>AI 验收</span>
 </label>
+<label class="detail-ai-toggle" id="reviewToggleWrap" title="开启后：本项目内完成任务会自动进入到期复习队列">
+<input type="checkbox" id="projectReviewToggle" />
+<span>间隔复习</span>
+</label>
 <div class="study-shortcuts detail-shortcuts" aria-label="当前项目快捷工具">
 <button class="shortcut-btn" data-study-action="focus" type="button" title="今日聚焦"><span aria-hidden="true">◎</span><span class="shortcut-label">今日聚焦</span></button>
 <button class="shortcut-btn" data-study-action="random" type="button" title="随机复习"><span aria-hidden="true">⌁</span><span class="shortcut-label">随机复习</span></button>
@@ -123,6 +132,16 @@
 </div>
 </div>
 </div>
+</div>
+<div class="view" id="reviewView">
+<div class="review-header">
+<button class="back-btn" id="reviewBackBtn" type="button" aria-label="返回">←</button>
+<div class="review-heading">
+<h2>复习队列</h2>
+<span class="review-subline" id="reviewSubline"></span>
+</div>
+</div>
+<div class="review-body" id="reviewBody"></div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite">
 <span id="toastMessage"></span>

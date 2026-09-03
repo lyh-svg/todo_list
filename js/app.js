@@ -24,6 +24,13 @@
     const projectStatusFilter = document.getElementById('projectStatusFilter');
     const nodeSearchInput = document.getElementById('nodeSearchInput');
     const nodeStatusFilter = document.getElementById('nodeStatusFilter');
+const reviewQueueBtn = document.getElementById('reviewQueueBtn');
+const reviewQueueCount = document.getElementById('reviewQueueCount');
+const reviewView = document.getElementById('reviewView');
+const reviewBackBtn = document.getElementById('reviewBackBtn');
+const reviewBody = document.getElementById('reviewBody');
+const reviewSubline = document.getElementById('reviewSubline');
+const projectReviewToggle = document.getElementById('projectReviewToggle');
     const exportBtn = document.getElementById('exportBtn');
     const importInput = document.getElementById('importInput');
     const backgroundInput = document.getElementById('backgroundInput');
@@ -76,6 +83,7 @@
     const MAX_QUESTION_RESULTS = 20;
     const SESSION_TOKEN_KEY = 'todo_list_session_token';
     let projects = [];
+    let reviewCounts = { byProject: new Map(), today: 0, overdue: 0 };
     let stateRevision = 0;
     let sessionToken = '';
     let apiClient = null;
@@ -136,6 +144,76 @@
     function setNodeCompleted(node, completed) {
         node.completed = Boolean(completed);
         node.completedAt = node.completed ? new Date().toISOString() : null;
+        if (!node || node.type !== 'item') return;
+        if (node.completed) {
+            const project = getCurrentProject();
+            if (project && projectAutoReview(project) && !node.optional && !node.review) {
+                node.review = { due: addDaysToIso(todayStr(), 1), learning: false,
+                    log: (node.review && Array.isArray(node.review.log)) ? node.review.log : [] };
+            }
+        } else if (node.review) {
+            delete node.review;
+        }
+    }
+
+    function addDaysToIso(baseIso, days) {
+        const parts = String(baseIso).split('-').map(Number);
+        const dt = new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
+        dt.setDate(dt.getDate() + Number(days));
+        const pad = value => String(value).padStart(2, '0');
+        return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate());
+    }
+
+    function normalizeNodeReview(value) {
+        if (!value || typeof value !== 'object') return undefined;
+        const due = typeof value.due === 'string' ? value.due.slice(0, 10) : '';
+        const learning = Boolean(value.learning);
+        const rawLog = Array.isArray(value.log) ? value.log : [];
+        const log = [];
+        for (const entry of rawLog.slice(-50)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const at = typeof entry.at === 'string' ? entry.at.slice(0, 10) : '';
+            const result = typeof entry.result === 'string' ? entry.result.slice(0, 10) : '';
+            if (at && result) log.push({ at: at, result: result });
+        }
+        if (!due && !learning && log.length === 0) return undefined;
+        return { due: due, learning: learning, log: log };
+    }
+
+    function projectAutoReview(project) {
+        if (!project) return false;
+        if (typeof project.reviewEnabled === 'boolean') return project.reviewEnabled;
+        return Boolean(project.assessmentEnabled);
+    }
+
+    function reviewLogPush(node, result) {
+        const existing = (node.review && Array.isArray(node.review.log)) ? node.review.log : [];
+        existing.push({ at: todayStr(), result: String(result).slice(0, 10) });
+        return existing.slice(-50);
+    }
+
+    function applyReviewResult(node, result) {
+        const days = result === 'easy' ? 7 : result === 'hard' ? 3 : 1;
+        node.review = {
+            due: addDaysToIso(todayStr(), days),
+            learning: result === 'again',
+            log: reviewLogPush(node, result)
+        };
+    }
+
+    function scheduleReview(node, dueIso) {
+        if (!node || node.type !== 'item') return;
+        if (!String(dueIso || '').trim()) return;
+        node.review = {
+            due: String(dueIso).slice(0, 10),
+            learning: false,
+            log: (node.review && Array.isArray(node.review.log)) ? node.review.log.slice(-50) : []
+        };
+    }
+
+    function clearReview(node) {
+        if (!node) return;
+        delete node.review;
     }
 
     function getCurrentProject() {
@@ -633,6 +711,7 @@
             assessmentHistory: type === 'item' ? Math.max(0, Number(node.assessmentHistory) || 0) : 0,
             expanded: type === 'item' ? false : node.expanded !== false,
             createdAt: String(node.createdAt || todayStr()),
+            review: type === 'item' ? normalizeNodeReview(node.review) : undefined,
             children
         };
     }
@@ -670,6 +749,9 @@
                 assessmentEnabled: typeof project.assessmentEnabled === 'boolean'
                     ? project.assessmentEnabled
                     : treeHasAssessment(tree),
+                reviewEnabled: typeof project.reviewEnabled === 'boolean'
+                    ? project.reviewEnabled
+                    : undefined,
                 tree
             };
             setProjectAssessmentEnabled(normalized, normalized.assessmentEnabled);
@@ -2499,6 +2581,32 @@
             grid.appendChild(item);
         });
         utilityBody.appendChild(grid);
+        const reviewStats = collectReviewStats(project.tree || []);
+        if (reviewStats.count > 0) {
+            const reviewHeading = document.createElement('div');
+            reviewHeading.className = 'stats-group-heading';
+            reviewHeading.textContent = '间隔复习';
+            utilityBody.appendChild(reviewHeading);
+            const grid2 = document.createElement('div');
+            grid2.className = 'stats-grid';
+            const rows2 = [
+                ['近 7 天复习', String(reviewStats.last7) + ' 次'],
+                ['连续复习', String(reviewStats.streak) + ' 天'],
+                ['待复习(含逾期)', String(reviewStats.due) + ' 项'],
+                ['需重学', String(reviewStats.learning) + ' 项']
+            ];
+            rows2.forEach((pair) => {
+                const cell = document.createElement('div');
+                cell.className = 'stats-item';
+                const cellLabel = document.createElement('span');
+                cellLabel.textContent = pair[0];
+                const cellValue = document.createElement('strong');
+                cellValue.textContent = pair[1];
+                cell.append(cellLabel, cellValue);
+                grid2.appendChild(cell);
+            });
+            utilityBody.appendChild(grid2);
+        }
     }
 
     function renderStudyTool(action, project) {
@@ -2519,6 +2627,11 @@
 
     function renderProjects() {
         projectGrid.innerHTML = '';
+        const reviewTotal = reviewCounts.today + reviewCounts.overdue;
+        if (reviewQueueCount) {
+            reviewQueueCount.textContent = String(reviewTotal);
+            reviewQueueBtn.classList.toggle('empty', reviewTotal === 0);
+        }
         const visibleProjects = getVisibleProjects();
         if (projects.length === 0) {
             emptyProjects.style.display = 'block';
@@ -2560,6 +2673,15 @@
                 description.className = 'card-description';
                 description.textContent = project.description;
                 info.appendChild(description);
+            }
+            const projectCounts = reviewCounts.byProject.get(String(project.id));
+            if (projectCounts && (projectCounts.today > 0 || projectCounts.overdue > 0)) {
+                const reviewBadge = document.createElement('span');
+                reviewBadge.className = 'review-card-badge' + (projectCounts.overdue > 0 ? ' overdue' : '');
+                reviewBadge.textContent = projectCounts.overdue > 0
+                    ? '待复习 ' + projectCounts.today + ' · 逾期 ' + projectCounts.overdue
+                    : '待复习 ' + projectCounts.today;
+                metaDiv.appendChild(reviewBadge);
             }
             info.appendChild(metaDiv);
             const actions = document.createElement('div');
@@ -2702,6 +2824,12 @@
         detailDate.textContent = '创建于 ' + (project.createdAt || '未知');
         projectAssessmentToggle.checked = Boolean(project.assessmentEnabled);
         projectAssessmentToggle.parentElement.classList.toggle('enabled', project.assessmentEnabled);
+        if (projectReviewToggle) {
+            projectReviewToggle.checked = Boolean(
+                typeof project.reviewEnabled === 'boolean' ? project.reviewEnabled : project.assessmentEnabled
+            );
+            projectReviewToggle.parentElement.classList.toggle('enabled', projectReviewToggle.checked);
+        }
         const remaining = getProjectRemaining(project);
         const optional = getProjectOptionalStats(project);
         countDisplay.textContent = `主线剩余 ${remaining} 项 · 选做 ${optional.completed}/${optional.total}`;
@@ -2807,6 +2935,18 @@
             });
             actions.appendChild(assessBtn);
         }
+        if (node.type === 'item') {
+            const reviewBtn = document.createElement('button');
+            reviewBtn.className = 'review-node-btn';
+            reviewBtn.innerHTML = '&#9675;';
+            reviewBtn.title = '安排复习';
+            reviewBtn.setAttribute('aria-label', '安排复习');
+            reviewBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openScheduleReview(node);
+            });
+            actions.appendChild(reviewBtn);
+        }
         const editBtn = document.createElement('button');
         editBtn.className = 'edit-btn';
         editBtn.innerHTML = '✎';
@@ -2832,6 +2972,19 @@
         row.appendChild(textSpan);
         if (optionalBadge) row.appendChild(optionalBadge);
         if (assessmentBadge) row.appendChild(assessmentBadge);
+        if (node.type === 'item' && node.review && node.review.due) {
+            if (node.review.learning) {
+                const learningBadge = document.createElement('span');
+                learningBadge.className = 'node-learning-badge';
+                learningBadge.textContent = '⚠ 需重学';
+                row.appendChild(learningBadge);
+            } else {
+                const dueBadge = document.createElement('span');
+                dueBadge.className = 'node-review-date';
+                dueBadge.textContent = '复习 ' + node.review.due.slice(5);
+                row.appendChild(dueBadge);
+            }
+        }
         row.appendChild(dateSpan);
         row.appendChild(actions);
         li.appendChild(row);
@@ -3078,13 +3231,16 @@
         }
         projectsView.classList.add('active');
         detailView.classList.remove('active');
+        reviewView.classList.remove('active');
         currentProjectId = null;
         renderProjects();
+        loadReviewCounts();
     }
 
     function showDetailView(projectId) {
         currentProjectId = projectId;
         projectsView.classList.remove('active');
+        reviewView.classList.remove('active');
         detailView.classList.add('active');
         renderDetail();
     }
@@ -3127,6 +3283,395 @@
                 renderDetail();
             }
         });
+    }
+
+    function walkItems(nodes, callback) {
+        for (const node of nodes || []) {
+            if (node.type === 'item') callback(node);
+            else walkItems(node.children || [], callback);
+        }
+    }
+
+    function collectReviewStats(tree) {
+        const stats = { last7: 0, streak: 0, due: 0, learning: 0, count: 0 };
+        const today = todayStr();
+        const days = new Set();
+        walkItems(tree, (node) => {
+            if (!node.review || !node.completed) return;
+            stats.count += 1;
+            if (node.review.due && node.review.due <= today) stats.due += 1;
+            if (node.review.learning) stats.learning += 1;
+            for (const entry of node.review.log || []) {
+                if (entry && entry.at && entry.at >= addDaysToIso(today, -6) && entry.at <= today) {
+                    stats.last7 += 1;
+                    days.add(entry.at);
+                }
+            }
+        });
+        const sorted = Array.from(days).sort();
+        let cursor = sorted.includes(today) ? today : addDaysToIso(today, -1);
+        let run = 0;
+        while (sorted.includes(cursor)) {
+            run += 1;
+            cursor = addDaysToIso(cursor, -1);
+        }
+        stats.streak = run;
+        return stats;
+    }
+
+    function walkTreeEntries(nodes, ancestors, labels, callback) {
+        for (const node of nodes || []) {
+            if (node.type === 'item') {
+                callback({
+                    node: node,
+                    ancestorIds: ancestors.map(entry => entry.id),
+                    path: labels.join(' / ')
+                });
+                continue;
+            }
+            walkTreeEntries(node.children || [], ancestors.concat(node),
+                labels.concat(String(node.text || '')), callback);
+        }
+    }
+
+    function isValidIsoDate(value) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return false;
+        const parts = String(value).split('-').map(Number);
+        const probe = new Date(parts[0], parts[1] - 1, parts[2]);
+        return probe.getFullYear() === parts[0] && probe.getMonth() === parts[1] - 1
+            && probe.getDate() === parts[2];
+    }
+
+    let reviewQueueState = { dueItems: [], futureItems: [] };
+
+    async function showReviewQueue() {
+        if (saveTimer) {
+            try { await flushProjectsSave(); } catch (error) {
+                showToast('当前修改尚未保存，请处理保存错误后再返回');
+                return;
+            }
+        }
+        try {
+            await Promise.all(projects.map(project => ensureProjectLoaded(project.id)));
+        } catch (error) {
+            showToast(error.message || '复习队列加载失败');
+            return;
+        }
+        const today = todayStr();
+        const dueItems = [];
+        const futureItems = [];
+        for (const project of projects) {
+            if (!Array.isArray(project.tree)) continue;
+            walkTreeEntries(project.tree, [], [], (entry) => {
+                const node = entry.node;
+                if (!node.completed || !node.review || !node.review.due) return;
+                const item = {
+                    projectId: project.id,
+                    projectName: project.name,
+                    node: node,
+                    ancestorIds: entry.ancestorIds,
+                    path: entry.path,
+                    due: node.review.due,
+                    learning: Boolean(node.review.learning)
+                };
+                if (item.due <= today) dueItems.push(item);
+                else futureItems.push(item);
+            });
+        }
+        dueItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
+        futureItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
+        reviewQueueState = { dueItems: dueItems, futureItems: futureItems };
+        projectsView.classList.remove('active');
+        detailView.classList.remove('active');
+        reviewView.classList.add('active');
+        renderReviewQueue();
+        loadReviewCounts();
+    }
+
+    function renderReviewQueue() {
+        const body = reviewBody;
+        body.innerHTML = '';
+        const due = reviewQueueState.dueItems || [];
+        const future = reviewQueueState.futureItems || [];
+        const total = due.length + future.length;
+        reviewSubline.textContent = total > 0
+            ? '待复习 ' + due.length + ' 项 · 已安排 ' + future.length + ' 项'
+            : '暂无到期复习';
+        if (total === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'review-empty';
+            empty.textContent = '还没有排入复习的内容。✓ 完成任务后会自动排到明天；也可在项目里点任务旁的 ◷ 手动安排。';
+            body.appendChild(empty);
+            return;
+        }
+        if (due.length > 0) {
+            body.appendChild(renderReviewGroup('待复习 · 今天到期与逾期', due));
+        }
+        if (future.length > 0) {
+            body.appendChild(renderReviewGroup('已安排 · 未来', future));
+        }
+    }
+
+    function renderReviewGroup(title, items) {
+        const group = document.createElement('div');
+        group.className = 'review-group';
+        const head = document.createElement('div');
+        head.className = 'review-group-title';
+        const label = document.createElement('span');
+        label.textContent = title;
+        const count = document.createElement('span');
+        count.className = 'gcount';
+        count.textContent = String(items.length);
+        head.append(label, count);
+        group.appendChild(head);
+        const byProject = new Map();
+        for (const item of items) {
+            if (!byProject.has(item.projectId)) byProject.set(item.projectId, []);
+            byProject.get(item.projectId).push(item);
+        }
+        for (const entry of byProject.entries()) {
+            const projectBlock = document.createElement('div');
+            projectBlock.className = 'review-project-block';
+            const nameRow = document.createElement('div');
+            nameRow.className = 'review-project-name';
+            nameRow.textContent = entry[1][0].projectName;
+            projectBlock.appendChild(nameRow);
+            for (const item of entry[1]) {
+                projectBlock.appendChild(createReviewItemElement(item));
+            }
+            group.appendChild(projectBlock);
+        }
+        return group;
+    }
+
+    function createReviewItemElement(item) {
+        const row = document.createElement('div');
+        row.className = 'review-item';
+        const main = document.createElement('div');
+        main.className = 'review-item-main';
+        const pathSpan = document.createElement('span');
+        pathSpan.className = 'review-item-path';
+        pathSpan.textContent = item.path || '项目任务';
+        const text = document.createElement('div');
+        text.className = 'review-item-text';
+        text.textContent = item.node.text || '未命名任务';
+        text.title = item.node.text || '';
+        text.addEventListener('click', () => row.classList.toggle('expanded'));
+        main.append(pathSpan, text);
+        if (item.learning) {
+            const tag = document.createElement('span');
+            tag.className = 'review-tag learning';
+            tag.textContent = '需重学';
+            text.appendChild(tag);
+        }
+        if (item.due < todayStr()) {
+            const days = Math.max(1, daysBetween(item.due, todayStr()));
+            const tag = document.createElement('span');
+            tag.className = 'review-tag overdue';
+            tag.textContent = '逾期 ' + days + ' 天';
+            main.appendChild(tag);
+        } else {
+            const tag = document.createElement('span');
+            tag.className = 'review-tag today';
+            tag.textContent = '今天';
+            main.appendChild(tag);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'review-actions';
+        const btnEasy = document.createElement('button');
+        btnEasy.type = 'button';
+        btnEasy.className = 'review-btn easy';
+        btnEasy.textContent = '记住了 +7';
+        btnEasy.title = '顺延 7 天';
+        btnEasy.addEventListener('click', () => runQueueAction(item, 'easy'));
+        const btnHard = document.createElement('button');
+        btnHard.type = 'button';
+        btnHard.className = 'review-btn hard';
+        btnHard.textContent = '模糊 +3';
+        btnHard.title = '顺延 3 天';
+        btnHard.addEventListener('click', () => runQueueAction(item, 'hard'));
+        const btnAgain = document.createElement('button');
+        btnAgain.type = 'button';
+        btnAgain.className = 'review-btn again';
+        btnAgain.textContent = '忘了';
+        btnAgain.title = '明天重学（需重学标记）';
+        btnAgain.addEventListener('click', () => runQueueAction(item, 'again'));
+        const more = document.createElement('select');
+        more.className = 'review-btn';
+        more.setAttribute('aria-label', '更多复习操作');
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '⋯ 更多';
+        more.appendChild(placeholder);
+        const choices = [
+            ['d1', '顺延到明天'],
+            ['d3', '顺延 3 天'],
+            ['d7', '顺延 7 天'],
+            ['d30', '顺延 30 天'],
+            ['custom', '自定义日期…'],
+            ['locate', '在项目中定位'],
+            ['clear', '清除复习安排']
+        ];
+        for (const choice of choices) {
+            const option = document.createElement('option');
+            option.value = choice[0];
+            option.textContent = choice[1];
+            more.appendChild(option);
+        }
+        more.addEventListener('change', () => {
+            const value = more.value;
+            more.value = '';
+            runQueueAction(item, value);
+        });
+        actions.append(btnEasy, btnHard, btnAgain, more);
+        row.append(main, actions);
+        return row;
+    }
+
+    function daysBetween(fromIso, toIso) {
+        const a = fromIso.split('-').map(Number);
+        const b = toIso.split('-').map(Number);
+        const start = new Date(a[0], a[1] - 1, a[2]);
+        const end = new Date(b[0], b[1] - 1, b[2]);
+        return Math.round((end - start) / 86400000);
+    }
+
+    function runQueueAction(item, action) {
+        if (!item || !item.node) return;
+        if (action === 'easy' || action === 'hard' || action === 'again') {
+            applyReviewResult(item.node, action);
+            finishQueueAction();
+        } else if (action === 'd1' || action === 'd3' || action === 'd7' || action === 'd30') {
+            const days = action === 'd1' ? 1 : action === 'd3' ? 3 : action === 'd7' ? 7 : 30;
+            scheduleReview(item.node, addDaysToIso(todayStr(), days));
+            finishQueueAction();
+        } else if (action === 'clear') {
+            if (!window.confirm('清除该任务的复习安排？')) return;
+            clearReview(item.node);
+            finishQueueAction();
+        } else if (action === 'custom') {
+            const chosen = window.prompt('自定义复习日期（YYYY-MM-DD）：', addDaysToIso(todayStr(), 7));
+            if (chosen === null) return;
+            const date = String(chosen).trim();
+            if (!isValidIsoDate(date)) { showToast('日期格式不正确（应为 YYYY-MM-DD）'); return; }
+            scheduleReview(item.node, date);
+            finishQueueAction();
+        } else if (action === 'locate') {
+            locateStudyTask(item.projectId, {
+                id: item.node.id,
+                text: item.node.text || '',
+                ancestorIds: item.ancestorIds || [],
+                path: item.path || '',
+                optional: Boolean(item.node.optional)
+            });
+        }
+    }
+
+    async function finishQueueAction() {
+        try {
+            await saveProjects();
+        } catch (error) {
+            showToast(error.message || '保存失败');
+            return;
+        }
+        loadReviewCounts();
+        showReviewQueue();
+    }
+
+    function openScheduleReview(node) {
+        if (!node) return;
+        if (!node.completed) {
+            showToast('请先完成任务，再安排复习');
+            return;
+        }
+        const project = getCurrentProject();
+        if (!project) return;
+        showUtilityModal('安排复习', '间隔复习');
+        utilityBody.innerHTML = '';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = '任务：' + (node.text || '');
+        utilityBody.appendChild(hint);
+        const list = document.createElement('div');
+        list.className = 'utility-task-list';
+        const choices = [
+            ['明天', addDaysToIso(todayStr(), 1)],
+            ['3 天后', addDaysToIso(todayStr(), 3)],
+            ['7 天后', addDaysToIso(todayStr(), 7)],
+            ['30 天后', addDaysToIso(todayStr(), 30)]
+        ];
+        for (const choice of choices) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'utility-task';
+            const content = document.createElement('span');
+            content.className = 'utility-task-content';
+            const name = document.createElement('strong');
+            name.textContent = choice[0];
+            const path = document.createElement('small');
+            path.textContent = '到期：' + choice[1];
+            content.append(name, path);
+            button.append(content);
+            button.addEventListener('click', () => {
+                scheduleReview(node, choice[1]);
+                finishScheduleModal();
+            });
+            list.appendChild(button);
+        }
+        const customButton = document.createElement('button');
+        customButton.type = 'button';
+        customButton.className = 'utility-task';
+        customButton.textContent = '自定义日期…';
+        customButton.addEventListener('click', () => {
+            const chosen = window.prompt('自定义复习日期（YYYY-MM-DD）：', addDaysToIso(todayStr(), 7));
+            if (chosen === null) return;
+            const date = String(chosen).trim();
+            if (!isValidIsoDate(date)) { showToast('日期格式不正确（应为 YYYY-MM-DD）'); return; }
+            scheduleReview(node, date);
+            finishScheduleModal();
+        });
+        list.appendChild(customButton);
+        const clearButton = document.createElement('button');
+        clearButton.type = 'button';
+        clearButton.className = 'utility-task delete-proj-btn';
+        clearButton.textContent = '清除复习安排';
+        clearButton.addEventListener('click', () => {
+            if (!window.confirm('清除该任务的复习安排？')) return;
+            clearReview(node);
+            finishScheduleModal();
+        });
+        list.appendChild(clearButton);
+        utilityBody.appendChild(list);
+    }
+
+    function finishScheduleModal() {
+        closeUtilityModal();
+        renderDetail();
+        saveProjects();
+        loadReviewCounts();
+    }
+
+    async function loadReviewCounts() {
+        try {
+            const stored = await readStoredState();
+            const totals = (stored && stored.reviewTotals) || { today: 0, overdue: 0 };
+            const byProject = new Map();
+            const list = (stored && Array.isArray(stored.projects)) ? stored.projects : [];
+            for (const summary of list) {
+                byProject.set(String(summary.id), {
+                    today: Number(summary.reviewToday) || 0,
+                    overdue: Number(summary.reviewOverdue) || 0
+                });
+            }
+            reviewCounts = {
+                byProject: byProject,
+                today: Number(totals.today) || 0,
+                overdue: Number(totals.overdue) || 0
+            };
+        } catch (error) {
+            console.warn('刷新复习计数失败', error);
+        }
+        if (projectsView.classList.contains('active')) renderProjects();
     }
 
     function initEvents() {
@@ -3214,6 +3759,20 @@
             if (e.key === 'Enter') createProjectBtn.click();
         });
         backBtn.addEventListener('click', showProjectsView);
+        reviewQueueBtn.addEventListener('click', () => { showReviewQueue(); });
+        reviewBackBtn.addEventListener('click', () => { showProjectsView(); });
+        if (projectReviewToggle) {
+            projectReviewToggle.addEventListener('change', () => {
+                const reviewProject = getCurrentProject();
+                if (!reviewProject) return;
+                reviewProject.reviewEnabled = projectReviewToggle.checked;
+                saveProjects();
+                renderDetail();
+                showToast(reviewProject.reviewEnabled
+                    ? '已开启本项目的间隔复习'
+                    : '已关闭本项目的间隔复习（仍可手动安排）');
+            });
+        }
         projectAssessmentToggle.addEventListener('change', () => {
             const project = getCurrentProject();
             if (!project) return;
@@ -3260,6 +3819,7 @@
     async function init() {
         await Promise.all([loadProjects(), loadSavedBackground()]);
         renderProjects();
+        loadReviewCounts();
         initEvents();
         startServiceHeartbeat();
         checkStorageHealth();
