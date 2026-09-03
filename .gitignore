@@ -1,0 +1,35 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+.eggs/
+
+# ===== 个人数据与数据库(勿提交) =====
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.b64.txt
+*.db
+
+# ===== 日志/临时 =====
+*.log
+*.tmp
+
+# ===== 密钥与本地配置(勿提交) =====
+deepseek.env
+.env
+.env.*
+!.env.example
+!deepseek.env.example
+
+# ===== IDE / 系统 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
