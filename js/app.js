@@ -60,6 +60,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const assessmentAnswerLabel = document.getElementById('assessmentAnswerLabel');
     const assessmentQuestionBtn = document.getElementById('assessmentQuestionBtn');
     const assessmentResult = document.getElementById('assessmentResult');
+    const assessmentLive = document.getElementById('assessmentLive');
+    const assessmentLiveBody = document.getElementById('assessmentLiveBody');
     const assessmentCloseBtn = document.getElementById('assessmentCloseBtn');
     const assessmentCancelBtn = document.getElementById('assessmentCancelBtn');
     const assessmentSubmitBtn = document.getElementById('assessmentSubmitBtn');
@@ -1337,7 +1339,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     function showAssessmentResult(result) {
         assessmentResult.hidden = false;
         assessmentResult.classList.toggle('failed', !result.passed);
-        assessmentResult.textContent = formatAssessmentResult(result);
+        assessmentResult.innerHTML = richToHtml(formatAssessmentResult(result));
     }
 
     function formatBytes(bytes) {
@@ -1404,7 +1406,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         assessmentQuestionProgress.textContent = total >= 3
             ? `第 ${assessmentQuestionIndex + 1} / ${total} 题`
             : '正在准备题目…';
-        assessmentCurrentQuestion.textContent = assessmentQuestionItems[assessmentQuestionIndex] || '';
+        const currentQuestion = assessmentQuestionItems[assessmentQuestionIndex] || '';
+        assessmentCurrentQuestion.innerHTML = currentQuestion ? richToHtml(currentQuestion) : '';
         assessmentQuestionBtn.textContent = total >= 3 ? '重新开始三题' : 'AI 出三道题';
         renderAssessmentConversation();
     }
@@ -1421,7 +1424,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             label.className = 'assessment-message-label';
             label.textContent = message.role === 'user' ? '你的回答' : 'AI';
             const content = document.createElement('span');
-            content.textContent = message.content;
+            content.innerHTML = richToHtml(message.content);
             bubble.append(label, content);
             assessmentConversation.appendChild(bubble);
         });
@@ -1526,6 +1529,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         assessmentAnswer.value = node.assessment && (node.assessment.implementationDraft || node.assessment.answer) || '';
         assessmentModel.value = node.assessment && node.assessment.model || 'flash';
         assessmentResult.hidden = true;
+        showAssessmentLive(false, true);
         assessmentCodeFiles = [];
         assessmentQuestionItems = Array.isArray(node.assessment?.questionSet)
             ? node.assessment.questionSet.map(String) : [];
@@ -1618,6 +1622,147 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
     }
 
+
+    function escapeHtmlText(value) {
+        return String(value).replace(/[&<>"']/g, function(ch) {
+            if (ch === '&') return '&amp;';
+            if (ch === '<') return '&lt;';
+            if (ch === '>') return '&gt;';
+            if (ch === '"') return '&quot;';
+            return '&#39;';
+        });
+    }
+
+    function fmtInline(seg) {
+        var parts = String(seg).split('\`');
+        var html = '';
+        for (var i = 0; i < parts.length; i += 1) {
+            if (i % 2 === 0) html += parts[i];
+            else html += '<code>' + parts[i] + '</code>';
+        }
+        return html;
+    }
+
+    function fmtBold(seg) {
+        var parts = String(seg).split('**');
+        var html = '';
+        for (var i = 0; i < parts.length; i += 1) {
+            if (i % 2 === 0) html += fmtInline(parts[i]);
+            else html += '<strong>' + fmtInline(parts[i]) + '</strong>';
+        }
+        return html;
+    }
+
+    function richToHtml(source) {
+        var esc = escapeHtmlText(source);
+        var NL = String.fromCharCode(10);
+        var html = '';
+        var rest = esc;
+        for (;;) {
+            var open = rest.indexOf('\`\`\`');
+            if (open < 0) {
+                html += fmtBold(rest).split(NL).join('<br>');
+                break;
+            }
+            html += fmtBold(rest.slice(0, open)).split(NL).join('<br>');
+            var cursor = open + 3;
+            var nl = rest.indexOf(NL, cursor);
+            var lang = '';
+            if (nl >= 0) {
+                lang = rest.slice(cursor, nl).trim();
+                cursor = nl + 1;
+            } else {
+                cursor = open + 3;
+            }
+            var close = rest.indexOf('\`\`\`', cursor);
+            if (close < 0) {
+                html += fmtBold(rest.slice(cursor)).split(NL).join('<br>');
+                break;
+            }
+            var code = rest.slice(cursor, close);
+            html += '<pre class="rich-code"><code>';
+            if (lang) html += '<span class="rich-lang">' + escapeHtmlText(lang) + '</span>';
+            html += code + '</code></pre>';
+            rest = rest.slice(close + 3);
+        }
+        return html;
+    }
+
+    function showAssessmentLive(visible, clear) {
+        if (!assessmentLive) return;
+        if (clear && assessmentLiveBody) assessmentLiveBody.textContent = '';
+        assessmentLive.hidden = !visible;
+    }
+
+    function buildPriorSummary() {
+        var node = assessmentNode;
+        var results = node && node.assessment && Array.isArray(node.assessment.questionResults)
+            ? node.assessment.questionResults : [];
+        var passed = results.filter(function(item) { return item && item.passed; });
+        if (passed.length === 0) return '';
+        var NL = String.fromCharCode(10);
+        var lines = passed.map(function(item, index) {
+            var q = String(item.question || ('第 ' + (index + 1) + ' 题')).split(NL).join(' ').slice(0, 140);
+            var a = String(item.answer || '').split(NL).join(' ').slice(0, 220);
+            var s = String(item.summary || item.reply || '').split(NL).join(' ').slice(0, 140);
+            return '通过题: ' + q + ' | 回答要点: ' + a + ' | 结论: ' + s;
+        });
+        return lines.join(NL).slice(0, 1800);
+    }
+
+    async function streamEvaluate(payload, onToken, signal) {
+        var response = await apiFetch('/api/evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/x-ndjson' },
+            body: JSON.stringify(payload),
+            signal: signal
+        });
+        var contentType = String(response.headers.get('content-type') || '');
+        if (contentType.indexOf('application/json') === 0) {
+            var jsonBody = await response.json().catch(function() { return {}; });
+            if (!response.ok || !jsonBody.result) throw new Error(jsonBody.error || 'AI 验收失败');
+            return { result: jsonBody.result, streamed: '' };
+        }
+        if (!response.ok) {
+            var errorBody = await response.json().catch(function() { return {}; });
+            throw new Error(errorBody.error || ('AI 验收失败 (' + response.status + ')'));
+        }
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            throw new Error('当前浏览器不支持流式读取，请使用现代浏览器');
+        }
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var streamed = '';
+        for (;;) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var nlIndex;
+            while ((nlIndex = buffer.indexOf('\n')) >= 0) {
+                var line = buffer.slice(0, nlIndex).trim();
+                buffer = buffer.slice(nlIndex + 1);
+                if (!line) continue;
+                var event;
+                try { event = JSON.parse(line); } catch (err) { continue; }
+                if (!event || typeof event !== 'object') continue;
+                if (event.type === 'text') {
+                    var token = String(event.text || '');
+                    streamed += token;
+                    if (onToken) onToken(token);
+                } else if (event.type === 'result') {
+                    return {
+                        result: event.result,
+                        streamed: streamed || String((event.humanText) || '')
+                    };
+                } else if (event.type === 'error') {
+                    throw new Error(event.message || 'AI 验收失败');
+                }
+            }
+        }
+        throw new Error('AI 响应不完整，请重试');
+    }
+
     async function submitAssessment(event) {
         event.preventDefault();
         if (!assessmentNode || assessmentSubmitting) return;
@@ -1674,30 +1819,29 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 90000);
         try {
-            const response = await apiFetch('/api/evaluate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    taskId: assessmentNode.id,
-                    task: assessmentNode.text,
-                    context: getAssessmentContext(assessmentNode),
-                    answer,
-                    model: assessmentModel.value,
-                    files: await getAssessmentFilePayload(),
-                    stage: assessmentStageName,
-                    conversation: assessmentStageName === 'questions'
-                        ? (assessmentQuestionConversations[assessmentQuestionIndex] || []) : [],
-                    questions: assessmentStageName === 'questions'
-                        ? [assessmentQuestionItems[assessmentQuestionIndex]] : [],
-                    questionIndex: assessmentQuestionIndex,
-                    totalQuestions: assessmentQuestionItems.length
-                }),
-                signal: controller.signal
-            });
-            const payload = await response.json();
-            if (!response.ok || !payload.result) {
-                throw new Error(payload.error || 'AI 验收失败');
-            }
+            showAssessmentLive(true, true);
+            const evaluatePayload = {
+                taskId: assessmentNode.id,
+                task: assessmentNode.text,
+                context: getAssessmentContext(assessmentNode),
+                answer,
+                model: assessmentModel.value,
+                files: await getAssessmentFilePayload(),
+                stage: assessmentStageName,
+                conversation: assessmentStageName === 'questions'
+                    ? (assessmentQuestionConversations[assessmentQuestionIndex] || []) : [],
+                questions: assessmentStageName === 'questions'
+                    ? [assessmentQuestionItems[assessmentQuestionIndex]] : [],
+                questionIndex: assessmentQuestionIndex,
+                totalQuestions: assessmentQuestionItems.length,
+                priorSummary: buildPriorSummary(),
+                stream: true
+            };
+            const payload = await streamEvaluate(evaluatePayload, (token) => {
+                assessmentLiveBody.textContent += token;
+                assessmentLiveBody.scrollTop = assessmentLiveBody.scrollHeight;
+            }, controller.signal);
+            showAssessmentLive(false);
             const result = {
                 passed: payload.result.passed === true && Number(payload.result.score) >= 80,
                 score: Math.max(0, Math.min(100, Number(payload.result.score) || 0)),
@@ -1713,13 +1857,16 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 model: assessmentModel.value,
                 evaluatedAt: new Date().toISOString()
             };
+            result.question = assessmentStageName === 'questions'
+                ? String(assessmentQuestionItems[assessmentQuestionIndex] || '') : '';
             if (assessmentStageName === 'questions') {
                 assessmentQuestionAnswers[assessmentQuestionIndex] = answer;
                 const conversation = assessmentQuestionConversations[assessmentQuestionIndex] || [];
                 conversation.push({ role: 'user', content: answer.slice(0, MAX_CONVERSATION_MESSAGE_CHARS) });
                 conversation.push({
                     role: 'assistant',
-                    content: (result.reply || formatAssessmentResult(result)).slice(0, MAX_CONVERSATION_MESSAGE_CHARS)
+                    content: (payload.streamed || result.reply || formatAssessmentResult(result))
+                        .slice(0, MAX_CONVERSATION_MESSAGE_CHARS)
                 });
                 assessmentQuestionConversations[assessmentQuestionIndex] = conversation.slice(-MAX_CONVERSATION_MESSAGES);
                 assessmentNode.assessment = {
@@ -1780,6 +1927,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 assessmentServiceStatus.textContent = '尚未通过，请按反馈补漏';
             }
         } catch (error) {
+            showAssessmentLive(false);
             const message = error.name === 'AbortError' ? '请求超时，请重试' : error.message || 'AI 验收失败';
             assessmentResult.hidden = false;
             assessmentResult.classList.add('failed');

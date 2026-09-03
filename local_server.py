@@ -124,6 +124,26 @@ class TodoHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_evaluate_stream(self, payload: dict[str, Any]) -> None:
+        """NDJSON 流式返回 AI 验收: {"type":"text","text":..} ... {"type":"result","result":..}"""
+        try:
+            generator = ai_service.call_deepseek_stream(payload)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            for event in generator:
+                line = json.dumps(event, ensure_ascii=False) + "\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+        except Exception as error:
+            try:
+                line = json.dumps({"type": "error", "message": str(error)}, ensure_ascii=False) + "\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+            except Exception:
+                pass
+
     def send_file(self, path: Path, content_type: str, download_name: str) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -378,9 +398,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
             elif path == "/api/memo":
                 memo = memo_storage.write_memo(payload)
                 self.send_json(200, {"ok": True, "memo": memo})
-            else:
-                result = call_deepseek(payload)
-                self.send_json(200, {"result": result})
+            elif path == "/api/evaluate":
+                if payload.get("stream"):
+                    self.send_evaluate_stream(payload)
+                else:
+                    result = call_deepseek(payload)
+                    self.send_json(200, {"result": result})
         except StateConflictError as error:
             self.send_json(409, {"error": str(error)})
         except (ValueError, RuntimeError, json.JSONDecodeError) as error:
