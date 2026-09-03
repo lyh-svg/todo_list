@@ -1339,6 +1339,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     function showAssessmentResult(result) {
         assessmentResult.hidden = false;
         assessmentResult.classList.toggle('failed', !result.passed);
+        assessmentResult.classList.add('rich-text');
         assessmentResult.innerHTML = richToHtml(formatAssessmentResult(result));
     }
 
@@ -1424,6 +1425,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             label.className = 'assessment-message-label';
             label.textContent = message.role === 'user' ? '你的回答' : 'AI';
             const content = document.createElement('span');
+            content.className = 'rich-text';
             content.innerHTML = richToHtml(message.content);
             bubble.append(label, content);
             assessmentConversation.appendChild(bubble);
@@ -1661,10 +1663,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         for (;;) {
             var open = rest.indexOf('\`\`\`');
             if (open < 0) {
-                html += fmtBold(rest).split(NL).join('<br>');
+                html += fmtBold(rest);
                 break;
             }
-            html += fmtBold(rest.slice(0, open)).split(NL).join('<br>');
+            html += fmtBold(rest.slice(0, open));
             var cursor = open + 3;
             var nl = rest.indexOf(NL, cursor);
             var lang = '';
@@ -1676,7 +1678,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
             var close = rest.indexOf('\`\`\`', cursor);
             if (close < 0) {
-                html += fmtBold(rest.slice(cursor)).split(NL).join('<br>');
+                html += fmtBold(rest.slice(cursor));
                 break;
             }
             var code = rest.slice(cursor, close);
