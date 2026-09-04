@@ -20,6 +20,7 @@ from typing import Any
 import storage as storage_service
 import ai_service
 import memo_storage
+import summary_storage
 
 APP_DIR = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
@@ -284,6 +285,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error) as error:
                 self.send_json(500, {"error": f"读取背景失败：{error}"})
             return
+        if path == "/api/summaries":
+            try:
+                self.send_json(200, {"summaries": summary_storage.list_summaries()})
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取摘要清单失败：{error}"})
+            return
         if path == "/api/memos":
             try:
                 self.send_json(200, {"memos": memo_storage.list_memos(), "databaseBytes": memo_storage.database_size()})
@@ -312,7 +319,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
                         "/api/background",
-                        "/api/memo", "/api/memos/database-import"}:
+                        "/api/memo", "/api/memos/database-import",
+                        "/api/summary",
+                        "/api/project/plan"}:
             self.send_json(404, {"error": "接口不存在"})
             return
         if not valid_session(self):
@@ -398,6 +407,22 @@ class TodoHandler(SimpleHTTPRequestHandler):
             elif path == "/api/memo":
                 memo = memo_storage.write_memo(payload)
                 self.send_json(200, {"ok": True, "memo": memo})
+            elif path == "/api/project/plan":
+                topic = str(payload.get("topic") or "").strip()[:2000]
+                model = str(payload.get("model") or "flash")
+                if not topic:
+                    raise ValueError("学习主题不能为空")
+                plan = ai_service.plan_project(topic, model)
+                self.send_json(200, {"ok": True, "plan": plan})
+            elif path == "/api/summary":
+                question = str(payload.get("question") or "").strip()[:4000]
+                context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+                model = str(payload.get("model") or "flash")
+                if not question:
+                    raise ValueError("题目不能为空")
+                result = ai_service.summarize_knowledge(question, context, model)
+                saved = summary_storage.upsert_summary(question, result["summary"])
+                self.send_json(200, {"ok": True, "summary": saved})
             elif path == "/api/evaluate":
                 if payload.get("stream"):
                     self.send_evaluate_stream(payload)
@@ -413,11 +438,20 @@ class TodoHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
-        if path not in {"/api/project", "/api/background", "/api/memo"}:
+        if path not in {"/api/project", "/api/background", "/api/memo", "/api/summary", "/api/summaries"}:
             self.send_json(404, {"error": "接口不存在"})
             return
         if not valid_session(self) or not allowed_origin(self.headers.get("Origin")):
             self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
+            return
+        if path == "/api/summary":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            summary_storage.delete_summary(query.get("id", [""])[0])
+            self.send_json(200, {"ok": True, "summaries": summary_storage.list_summaries()})
+            return
+        if path == "/api/summaries":
+            summary_storage.clear_summaries()
+            self.send_json(200, {"ok": True, "summaries": summary_storage.list_summaries()})
             return
         if path == "/api/background":
             try:
@@ -454,6 +488,9 @@ def main() -> None:
     memo_storage.initialize()
     if not memo_storage.check_integrity():
         raise RuntimeError("备忘录 SQLite 完整性检查失败")
+    summary_storage.initialize()
+    if not summary_storage.check_integrity():
+        raise RuntimeError("摘要清单 SQLite 完整性检查失败")
     SESSION_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     SESSION_TOKEN_FILE.write_text(SESSION_TOKEN, encoding="utf-8")
     SESSION_TOKEN_FILE.chmod(0o600)

@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from prompts import QUESTION_PROMPT, SYSTEM_PROMPT
+from prompts import PROJECT_PLAN_PROMPT, QUESTION_PROMPT, SUMMARY_PROMPT, SYSTEM_PROMPT
 
 APP_DIR = Path(__file__).resolve().parent
 MAX_CONVERSATION_MESSAGES = 12
@@ -158,13 +158,15 @@ def _mock_enabled() -> bool:
     return os.environ.get("TODO_AI_MOCK", "") == "1"
 
 
-def mock_call_question() -> dict[str, Any]:
+def mock_call_question(count: int = 3) -> dict[str, Any]:
+    count = max(1, min(5, int(count)))
+    questions = []
+    for index in range(count):
+        questions.append(
+            "（模拟题%d）针对薄弱点出的练习题：解释/预测/排错并说明原因。" % (index + 1)
+        )
     return {
-        "questions": [
-            "（模拟题1）预测下面这段代码的输出，并解释可变默认参数的创建时机：",
-            "（模拟题2）解释 nonlocal 与 global 的差别，并给一个可运行的例子：",
-            "（模拟题3）定位这段代码的 bug，说明根因与修复方向：",
-        ],
+        "questions": questions,
         "focus": "模拟：作用域与可变默认参数",
     }
 
@@ -469,6 +471,180 @@ def call_deepseek(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+
+
+def _normalize_plan_tree(value: Any) -> list[dict[str, Any]]:
+    """规范化 AI 返回的计划树（week/day/item），并做规模上限保护。"""
+    if not isinstance(value, list):
+        return []
+    weeks = []
+    for week in value[:8]:
+        if not isinstance(week, dict):
+            continue
+        week_text = str(week.get("text") or "").strip()[:200]
+        if not week_text:
+            continue
+        days = []
+        for day in (week.get("children") if isinstance(week.get("children"), list) else [])[:6]:
+            if not isinstance(day, dict):
+                continue
+            day_text = str(day.get("text") or "").strip()[:200]
+            if not day_text:
+                continue
+            items = []
+            for item in (day.get("children") if isinstance(day.get("children"), list) else [])[:8]:
+                if not isinstance(item, dict):
+                    continue
+                item_text = str(item.get("text") or "").strip()[:300]
+                if not item_text:
+                    continue
+                items.append({
+                    "id": None,
+                    "type": "item",
+                    "text": item_text,
+                    "optional": bool(item.get("optional")),
+                })
+                if len(items) >= 60:
+                    break
+            if not items:
+                continue
+            days.append({"id": None, "type": "day", "text": day_text, "children": items})
+        if not days:
+            continue
+        weeks.append({"id": None, "type": "week", "text": week_text, "children": days})
+        if len(weeks) >= 8:
+            break
+    return weeks
+
+
+def plan_project(topic: str, model_alias: str = "flash") -> dict[str, Any]:
+    settings = read_settings()
+    api_key = settings.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("未在 %s 中配置 DEEPSEEK_API_KEY" % CONFIG_FILE.name)
+    topic_text = str(topic or "").strip()[:2000]
+    if not topic_text:
+        raise ValueError("学习主题不能为空")
+    if _mock_enabled():
+        return {
+            "description": "围绕“%s”由易到难、从概念到实践的系统学习路径。" % topic_text[:60],
+            "tree": [
+                {"type": "week", "text": "第1周：基础入门", "children": [
+                    {"type": "day", "text": "单元1：核心概念", "children": [
+                        {"type": "item", "text": "用自己的话解释“%s”是什么、解决什么问题。" % topic_text[:40], "optional": False},
+                        {"type": "item", "text": "写出 3 个典型使用场景，各举一个最小示例。", "optional": False},
+                        {"type": "item", "text": "给出一个最容易踩的坑并说明原因。", "optional": False},
+                    ]},
+                ]},
+                {"type": "week", "text": "第2周：实践巩固", "children": [
+                    {"type": "day", "text": "单元1：动手练习", "children": [
+                        {"type": "item", "text": "完成一个包含%s的小项目并写清思路。" % topic_text[:40], "optional": False},
+                        {"type": "item", "text": "为关键逻辑补 2-3 条测试。", "optional": False},
+                        {"type": "item", "text": "复盘易错点并整理成清单。", "optional": False},
+                    ]},
+                ]},
+            ],
+        }
+    models = model_aliases(settings)
+    alias = model_alias if model_alias in models else "flash"
+    user_prompt = json.dumps({"想学习的主题": topic_text}, ensure_ascii=False, indent=2)
+    request_body = {
+        "model": models[alias],
+        "temperature": 0.4,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": PROJECT_PLAN_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    request = urllib.request.Request(
+        api_url(settings),
+        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                 "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            upstream = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
+    except urllib.error.URLError as error:
+        raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    try:
+        content = upstream["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("DeepSeek API 响应格式不正确") from None
+    try:
+        parsed = parse_json_object(str(content))
+    except ValueError:
+        raise RuntimeError("AI 未返回可解析的项目规划") from None
+    tree = _normalize_plan_tree(parsed.get("tree"))
+    if not tree:
+        raise RuntimeError("AI 未生成有效项目结构")
+    return {
+        "description": str(parsed.get("description", ""))[:500],
+        "tree": tree,
+    }
+
+
+def summarize_knowledge(question: str, context: dict[str, Any] | None = None,
+                        model_alias: str = "flash") -> dict[str, str]:
+    settings = read_settings()
+    api_key = settings.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("未在 %s 中配置 DEEPSEEK_API_KEY" % CONFIG_FILE.name)
+    ctx = context if isinstance(context, dict) else {}
+    user_prompt = json.dumps({
+        "题目": str(question or "").strip()[:4000],
+        "课程": str(ctx.get("project", ""))[:500],
+        "周": str(ctx.get("week", ""))[:500],
+        "学习单元": str(ctx.get("unit", ""))[:500],
+    }, ensure_ascii=False, indent=2)
+    if _mock_enabled():
+        return {"summary": "（模拟摘要）本题核心：理解函数作用域与闭包变量查找；注意 inner 里的 x 是作用于内层的绑定，不影响外层 x。"}
+    models = model_aliases(settings)
+    alias = model_alias if model_alias in models else "flash"
+    request_body = {
+        "model": models[alias],
+        "temperature": 0.3,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": SUMMARY_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    request = urllib.request.Request(
+        api_url(settings),
+        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                 "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=75) as response:
+            upstream = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
+    except urllib.error.URLError as error:
+        raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    try:
+        content = upstream["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("DeepSeek API 响应格式不正确") from None
+    summary = ""
+    try:
+        parsed = parse_json_object(str(content))
+        summary = str(parsed.get("summary", "")).strip()
+    except ValueError:
+        summary = str(content).strip()
+    if not summary:
+        raise RuntimeError("AI 未生成有效摘要")
+    return {"summary": summary[:5000]}
+
+
 def call_question(payload: dict[str, Any]) -> dict[str, Any]:
     settings = read_settings()
     api_key = settings.get("DEEPSEEK_API_KEY", "")
@@ -483,21 +659,38 @@ def call_question(payload: dict[str, Any]) -> dict[str, Any]:
     files = normalize_files(payload.get("files"))
     if not task:
         raise ValueError("任务不能为空")
+    count_raw = payload.get("count")
+    required = 3
+    if count_raw is not None:
+        try:
+            required = int(count_raw)
+        except (TypeError, ValueError):
+            required = 3
+        required = max(1, min(5, required))
+    weak_point = str(payload.get("weakPoint") or "").strip()[:2000]
+    prior = str(payload.get("priorSummary") or "")[:1800]
     if _mock_enabled():
-        return mock_call_question()
+        return mock_call_question(required)
     user_prompt = json.dumps({
         "课程": str(context.get("project", ""))[:500],
         "周": str(context.get("week", ""))[:500],
         "学习单元": str(context.get("unit", ""))[:500],
         "当前任务": task,
         "上传代码（只读，不执行）": files_text(files),
+        "聚焦薄弱点": weak_point or "无",
+        "此前已出的题（参考，不要重复）": prior or "无",
     }, ensure_ascii=False, indent=2)
     request_body = {
         "model": models[alias],
         "temperature": 0.3,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": QUESTION_PROMPT},
+            {"role": "system", "content": QUESTION_PROMPT
+                + ("" if count_raw is None else (
+                    chr(10) + chr(10) + "请再生成 %d 道难度与当前题相当、不同角度、不重复的针对题。"
+                    "题目要直击给定薄弱点，优先用真实可运行代码、预测输出、找 bug 或补测试；"
+                    "严禁复述已有题目；若学习者上传了代码，可结合其代码出题。" % required
+                ))},
             {"role": "user", "content": user_prompt},
         ],
     }
@@ -524,7 +717,7 @@ def call_question(payload: dict[str, Any]) -> dict[str, Any]:
         # Compatibility with an older model response that returns one question.
         single = str(parsed.get("question", "")).strip()
         questions = [single] if single else []
-    questions = [str(item).strip()[:5000] for item in questions[:5] if str(item).strip()]
-    if len(questions) < 3:
-        raise RuntimeError("模型没有返回至少三道有效题目")
-    return {"questions": questions, "focus": str(parsed.get("focus", ""))[:1000]}
+    questions = [str(item).strip()[:5000] for item in questions[:required] if str(item).strip()]
+    if len(questions) < required:
+        raise RuntimeError("模型没有返回至少 %d 道有效题目" % required)
+    return {"questions": questions[:required], "focus": str(parsed.get("focus", ""))[:1000]}

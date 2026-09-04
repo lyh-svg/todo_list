@@ -7,6 +7,7 @@
     const newProjectInput = document.getElementById('newProjectInput');
     const createProjectBtn = document.getElementById('createProjectBtn');
     const newProjectAiToggle = document.getElementById('newProjectAiToggle');
+    const newProjectPlanToggle = document.getElementById('newProjectPlanToggle');
     const backBtn = document.getElementById('backBtn');
     const detailTitle = document.getElementById('detailTitle');
     const detailDate = document.getElementById('detailDate');
@@ -72,6 +73,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const utilityBody = document.getElementById('utilityBody');
     const utilityCloseBtn = document.getElementById('utilityCloseBtn');
     const openMemoBtn = document.getElementById('openMemoBtn');
+    const copyQuestionBtn = document.getElementById('copyQuestionBtn');
+    const extraQuestionBtn = document.getElementById('extraQuestionBtn');
+    const extraAsk = document.getElementById('extraAsk');
+    const extraCount = document.getElementById('extraCount');
+    const extraConfirmBtn = document.getElementById('extraConfirmBtn');
+    const extraCancelBtn = document.getElementById('extraCancelBtn');
+    const summaryQuestionBtn = document.getElementById('summaryQuestionBtn');
+    const openSummaryBtn = document.getElementById('openSummaryBtn');
     const studyTools = window.TodoStudyTools;
     const DATA_SCHEMA_VERSION = 2;
     const CONTENT_VERSION = 7;
@@ -1402,6 +1411,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function renderAssessmentQuestions() {
+        closeExtraAsk();
         const total = assessmentQuestionItems.length;
         assessmentQuestions.hidden = assessmentStageName !== 'questions' || total < 3;
         assessmentQuestionProgress.textContent = total >= 3
@@ -2109,6 +2119,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         utilityModal.hidden = false;
         document.body.classList.add('modal-open');
         utilityModal.querySelector('.utility-dialog').classList.toggle('memo-dialog', kicker === '个人记录');
+        utilityModal.querySelector('.utility-dialog').classList.toggle('utility-wide', kicker === '摘要清单');
     }
 
     function closeUtilityModal() {
@@ -3674,7 +3685,28 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             runQueueAction(item, value);
         });
         actions.append(btnEasy, btnHard, btnAgain, more);
+        const aiGroup = document.createElement('div');
+        aiGroup.className = 'review-ai-group';
+        const aiBtns = [
+            ['拟题', 'queueOpenAssessment', '针对本任务再出题'],
+            ['复制', 'copyText', '复制任务文本'],
+            ['摘要', 'queueSummary', '生成核心摘要']
+        ];
+        aiBtns.forEach((pair) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'review-btn';
+            btn.textContent = pair[0];
+            btn.title = pair[2];
+            btn.addEventListener('click', () => {
+                if (pair[1] === 'copyText') copyText(item.node.text || '');
+                else if (pair[1] === 'queueSummary') queueSummary(item);
+                else queueOpenAssessment(item);
+            });
+            aiGroup.appendChild(btn);
+        });
         row.append(main, actions);
+        row.appendChild(aiGroup);
         return row;
     }
 
@@ -3714,6 +3746,40 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 path: item.path || '',
                 optional: Boolean(item.node.optional)
             });
+        }
+    }
+
+
+    async function queueSummary(item) {
+        if (!item || !item.node) return;
+        try {
+            const response = await apiFetch('/api/summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    question: item.node.text || '',
+                    context: { project: item.projectName || '' },
+                    model: 'flash'
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败');
+            showToast('已保存到摘要清单（同题去重）');
+        } catch (error) {
+            showToast(error.message || '生成摘要失败');
+        }
+    }
+
+    async function queueOpenAssessment(item) {
+        if (!item) return;
+        try {
+            const project = await ensureProjectLoaded(item.projectId);
+            const node = findNodeById(project.tree || [], item.node.id);
+            if (!node) throw new Error('任务不存在');
+            showDetailView(project.id);
+            openAssessment(node);
+        } catch (error) {
+            showToast(error.message || '打开验收失败');
         }
     }
 
@@ -3824,6 +3890,231 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (projectsView.classList.contains('active')) renderProjects();
     }
 
+
+    function copyText(text) {
+        if (!text) { showToast('没有可复制的内容'); return; }
+        const done = () => showToast('已复制');
+        const fallback = () => {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            let okCopy = false;
+            try { okCopy = document.execCommand('copy'); } catch (e) { okCopy = false; }
+            textarea.remove();
+            showToast(okCopy ? '已复制' : '复制失败，请手动选择');
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, fallback);
+        } else {
+            fallback();
+        }
+    }
+
+    function copyCurrentQuestion() {
+        copyText(assessmentQuestionItems[assessmentQuestionIndex] || '');
+        if (assessmentQuestionItems[assessmentQuestionIndex]) showToast('已复制当前题目');
+    }
+
+    async function generateSummary() {
+        if (!assessmentNode) return;
+        const question = assessmentQuestionItems[assessmentQuestionIndex] || '';
+        if (!question) { showToast('当前没有题目可总结'); return; }
+        summaryQuestionBtn.disabled = true;
+        const label = summaryQuestionBtn.textContent;
+        summaryQuestionBtn.textContent = '生成中…';
+        try {
+            const response = await apiFetch('/api/summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    question,
+                    context: getAssessmentContext(assessmentNode),
+                    model: assessmentModel.value
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败');
+            showToast('已保存到摘要清单（同题去重）');
+        } catch (error) {
+            showToast(error.message || '生成摘要失败');
+        } finally {
+            summaryQuestionBtn.disabled = false;
+            summaryQuestionBtn.textContent = label;
+        }
+    }
+
+    async function openSummaryList() {
+        showUtilityModal('核心摘要', '摘要清单');
+        utilityBody.innerHTML = '<p class="utility-empty">正在读取摘要…</p>';
+        try {
+            const response = await apiFetch('/api/summaries', { cache: 'no-store' });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || '读取摘要清单失败');
+            renderSummaryList(payload.summaries || []);
+        } catch (error) {
+            utilityBody.innerHTML = '<p class="utility-empty">' + (error.message || '读取摘要清单失败') + '</p>';
+        }
+    }
+
+    function renderSummaryList(summaries) {
+        utilityBody.innerHTML = '';
+        const toolbar = document.createElement('div');
+        toolbar.className = 'utility-toolbar';
+        const count = document.createElement('span');
+        count.textContent = '共 ' + summaries.length + ' 条摘要 · 点击卡片查看详情';
+        toolbar.appendChild(count);
+        if (summaries.length > 0) {
+            const clearBtn = document.createElement('button');
+            clearBtn.type = 'button';
+            clearBtn.className = 'utility-secondary-btn';
+            clearBtn.textContent = '清空全部';
+            clearBtn.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                if (!window.confirm('确认清空全部核心摘要？')) return;
+                try {
+                    const res = await apiFetch('/api/summaries', { method: 'DELETE' });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(body.error || '清空失败');
+                    renderSummaryList(body.summaries || []);
+                    showToast('已清空摘要清单');
+                } catch (error) {
+                    showToast(error.message || '清空失败');
+                }
+            });
+            toolbar.appendChild(clearBtn);
+        }
+        utilityBody.appendChild(toolbar);
+        if (summaries.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'utility-empty';
+            empty.textContent = '还没有摘要。在 AI 验收题目区点「核心摘要」即可生成并收藏。';
+            utilityBody.appendChild(empty);
+            return;
+        }
+        const grid = document.createElement('div');
+        grid.className = 'summary-grid';
+        for (const item of summaries) {
+            const card = document.createElement('div');
+            card.className = 'summary-item';
+            const title = document.createElement('div');
+            title.className = 'summary-question';
+            title.textContent = item.question || '未知知识点';
+            const content = document.createElement('div');
+            content.className = 'summary-content';
+            content.textContent = item.content || '';
+            const footer = document.createElement('div');
+            footer.className = 'summary-footer';
+            const date = document.createElement('span');
+            date.className = 'summary-date';
+            date.textContent = '创建于 ' + (item.createdAt || '').slice(0, 10);
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'utility-secondary-btn summary-delete';
+            del.textContent = '删除';
+            del.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                if (!window.confirm('删除这条摘要？')) return;
+                try {
+                    const res = await apiFetch('/api/summary?id=' + encodeURIComponent(item.id), { method: 'DELETE' });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(body.error || '删除失败');
+                    renderSummaryList(body.summaries || []);
+                    showToast('已删除');
+                } catch (error) {
+                    showToast(error.message || '删除失败');
+                }
+            });
+            footer.appendChild(date);
+            footer.appendChild(del);
+            card.appendChild(title);
+            card.appendChild(content);
+            card.appendChild(footer);
+            card.addEventListener('click', () => card.classList.toggle('expanded'));
+            grid.appendChild(card);
+        }
+        utilityBody.appendChild(grid);
+    }
+
+
+    function toggleExtraAsk() {
+        if (!extraAsk) return;
+        extraAsk.hidden = !extraAsk.hidden;
+    }
+    function closeExtraAsk() {
+        if (extraAsk) extraAsk.hidden = true;
+    }
+    async function generateExtraQuestions() {
+        if (!assessmentNode) return;
+        const count = Math.max(1, Math.min(5, Number(extraCount.value) || 1));
+        const weakPoint = assessmentQuestionItems[assessmentQuestionIndex] || '';
+        extraConfirmBtn.disabled = true;
+        const label = extraConfirmBtn.textContent;
+        extraConfirmBtn.textContent = '生成中…';
+        try {
+            const response = await apiFetch('/api/question', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    taskId: assessmentNode.id,
+                    task: assessmentNode.text,
+                    context: getAssessmentContext(assessmentNode),
+                    model: assessmentModel.value,
+                    files: await getAssessmentFilePayload(),
+                    count,
+                    weakPoint,
+                    priorSummary: buildPriorSummary()
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !Array.isArray(payload.questions) || payload.questions.length < count) {
+                throw new Error(payload.error || 'AI 未生成足够题目');
+            }
+            const extra = payload.questions.slice(0, count).map(String);
+            assessmentQuestionItems = assessmentQuestionItems.concat(extra);
+            assessmentNode.assessment = {
+                ...(assessmentNode.assessment || {}),
+                questionSet: assessmentQuestionItems,
+                model: assessmentModel.value
+            };
+            await saveProjects();
+            renderAssessmentQuestions();
+            closeExtraAsk();
+            showToast('已追加 ' + extra.length + ' 道拟题（当前共 ' + assessmentQuestionItems.length + ' 题）');
+        } catch (error) {
+            showToast(error.message || '生成拟题失败');
+        } finally {
+            extraConfirmBtn.disabled = false;
+            extraConfirmBtn.textContent = label;
+        }
+    }
+
+
+    function buildPlanTree(nodes) {
+        return (nodes || []).map((node) => {
+            const base = {
+                id: generateId(),
+                type: node.type === 'day' ? 'day' : node.type === 'item' ? 'item' : 'week',
+                text: String(node.text || '未命名内容'),
+                completed: false,
+                expanded: false,
+                createdAt: todayStr(),
+                children: []
+            };
+            if (base.type === 'item') {
+                base.optional = Boolean(node.optional);
+                base.assessmentRequired = Boolean(newProjectAiToggle.checked);
+                base.assessment = null;
+                base.assessmentHistory = 0;
+            } else {
+                base.children = buildPlanTree(node.children || []);
+            }
+            return base;
+        });
+    }
+
     function initEvents() {
         assessmentForm.addEventListener('submit', submitAssessment);
         assessmentAnswer.addEventListener('keydown', handleAssessmentEditorTab);
@@ -3836,6 +4127,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         utilityCloseBtn.addEventListener('click', closeUtilityModal);
         utilityModal.querySelector('[data-close-utility]').addEventListener('click', closeUtilityModal);
         openMemoBtn.addEventListener('click', openMemoTool);
+        if (extraQuestionBtn) extraQuestionBtn.addEventListener('click', toggleExtraAsk);
+        if (extraConfirmBtn) extraConfirmBtn.addEventListener('click', generateExtraQuestions);
+        if (extraCancelBtn) extraCancelBtn.addEventListener('click', closeExtraAsk);
+        if (copyQuestionBtn) copyQuestionBtn.addEventListener('click', copyCurrentQuestion);
+        if (summaryQuestionBtn) summaryQuestionBtn.addEventListener('click', generateSummary);
+        if (openSummaryBtn) openSummaryBtn.addEventListener('click', openSummaryList);
         document.querySelectorAll('[data-study-action]').forEach(button => {
             button.addEventListener('click', () => openStudyTool(button.dataset.studyAction));
         });
@@ -3889,21 +4186,63 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
         });
         restoreDatabaseBackupBtn.addEventListener('click', restoreDatabaseBackupFromUi);
-        createProjectBtn.addEventListener('click', () => {
+        createProjectBtn.addEventListener('click', async () => {
             const name = newProjectInput.value.trim();
             if (!name) return;
-            projects.push({
-                id: generateId(),
-                name: name,
-                description: '',
-                createdAt: todayStr(),
-                assessmentEnabled: Boolean(newProjectAiToggle.checked),
-                tree: []
-            });
-            saveProjects();
-            newProjectInput.value = '';
-            newProjectAiToggle.checked = false;
-            renderProjects();
+            const usePlan = newProjectPlanToggle ? newProjectPlanToggle.checked : false;
+            const clearInputs = () => {
+                newProjectInput.value = '';
+                newProjectAiToggle.checked = false;
+                if (newProjectPlanToggle) newProjectPlanToggle.checked = false;
+            };
+            const plainCreate = () => {
+                projects.push({
+                    id: generateId(),
+                    name: name,
+                    description: '',
+                    createdAt: todayStr(),
+                    assessmentEnabled: Boolean(newProjectAiToggle.checked),
+                    tree: []
+                });
+                saveProjects();
+                clearInputs();
+                renderProjects();
+            };
+            if (!usePlan) {
+                plainCreate();
+                return;
+            }
+            createProjectBtn.disabled = true;
+            const label = createProjectBtn.textContent;
+            createProjectBtn.textContent = '规划中…';
+            try {
+                const response = await apiFetch('/api/project/plan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ topic: name, model: 'flash' })
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || !payload.plan) throw new Error(payload.error || 'AI 规划失败');
+                const project = {
+                    id: generateId(),
+                    name: name,
+                    description: String(payload.plan.description || ''),
+                    createdAt: todayStr(),
+                    assessmentEnabled: Boolean(newProjectAiToggle.checked),
+                    tree: buildPlanTree(payload.plan.tree || [])
+                };
+                projects.push(project);
+                await saveProjects();
+                clearInputs();
+                await openProjectDetail(project.id);
+                showToast('已按 AI 规划创建项目');
+            } catch (error) {
+                plainCreate();
+                showToast('AI 规划失败，已创建空项目：' + (error.message || ''));
+            } finally {
+                createProjectBtn.disabled = false;
+                createProjectBtn.textContent = label;
+            }
         });
         newProjectInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') createProjectBtn.click();
