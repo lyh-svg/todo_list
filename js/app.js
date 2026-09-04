@@ -3920,8 +3920,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     async function generateSummary() {
         if (!assessmentNode) return;
-        const question = assessmentQuestionItems[assessmentQuestionIndex] || '';
-        if (!question) { showToast('当前没有题目可总结'); return; }
+        const question = assessmentQuestionItems[assessmentQuestionIndex] || assessmentNode.text || '';
+        if (!question) { showToast('没有可总结的内容'); return; }
         summaryQuestionBtn.disabled = true;
         const label = summaryQuestionBtn.textContent;
         summaryQuestionBtn.textContent = '生成中…';

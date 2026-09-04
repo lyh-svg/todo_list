@@ -2168,3 +2168,9 @@ body.modal-open { overflow: hidden; }
 .summary-item.expanded .summary-content { display: block; -webkit-line-clamp: unset; }
 .summary-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .summary-date { font-size: 11px; color: var(--text-light); }
+/* ===== 题目区排版优化 ===== */
+.assessment-question-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.assessment-question-heading > * { flex: 0 0 auto; white-space: nowrap; }
+.assessment-question-btn { white-space: nowrap; padding: 5px 10px; }
+.extra-ask { width: 100%; margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); flex-wrap: nowrap; gap: 8px; }
+.extra-count { font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
