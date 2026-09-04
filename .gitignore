@@ -17,6 +17,11 @@ data/
 *.b64.txt
 *.db
 
+# 但保留 data 下的这三个特定文件
+!data/memo.sqlite3
+!data/summary.sqlite3
+!data/todo.sqlite3
+
 # ===== 日志/临时 =====
 *.log
 *.tmp
