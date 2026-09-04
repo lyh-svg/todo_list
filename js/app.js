@@ -7,6 +7,7 @@
     const newProjectInput = document.getElementById('newProjectInput');
     const createProjectBtn = document.getElementById('createProjectBtn');
     const newProjectAiToggle = document.getElementById('newProjectAiToggle');
+    const newProjectPlanToggle = document.getElementById('newProjectPlanToggle');
     const backBtn = document.getElementById('backBtn');
     const detailTitle = document.getElementById('detailTitle');
     const detailDate = document.getElementById('detailDate');
@@ -24,6 +25,13 @@
     const projectStatusFilter = document.getElementById('projectStatusFilter');
     const nodeSearchInput = document.getElementById('nodeSearchInput');
     const nodeStatusFilter = document.getElementById('nodeStatusFilter');
+const reviewQueueBtn = document.getElementById('reviewQueueBtn');
+const reviewQueueCount = document.getElementById('reviewQueueCount');
+const reviewView = document.getElementById('reviewView');
+const reviewBackBtn = document.getElementById('reviewBackBtn');
+const reviewBody = document.getElementById('reviewBody');
+const reviewSubline = document.getElementById('reviewSubline');
+const projectReviewToggle = document.getElementById('projectReviewToggle');
     const exportBtn = document.getElementById('exportBtn');
     const importInput = document.getElementById('importInput');
     const backgroundInput = document.getElementById('backgroundInput');
@@ -53,6 +61,8 @@
     const assessmentAnswerLabel = document.getElementById('assessmentAnswerLabel');
     const assessmentQuestionBtn = document.getElementById('assessmentQuestionBtn');
     const assessmentResult = document.getElementById('assessmentResult');
+    const assessmentLive = document.getElementById('assessmentLive');
+    const assessmentLiveBody = document.getElementById('assessmentLiveBody');
     const assessmentCloseBtn = document.getElementById('assessmentCloseBtn');
     const assessmentCancelBtn = document.getElementById('assessmentCancelBtn');
     const assessmentSubmitBtn = document.getElementById('assessmentSubmitBtn');
@@ -63,6 +73,14 @@
     const utilityBody = document.getElementById('utilityBody');
     const utilityCloseBtn = document.getElementById('utilityCloseBtn');
     const openMemoBtn = document.getElementById('openMemoBtn');
+    const copyQuestionBtn = document.getElementById('copyQuestionBtn');
+    const extraQuestionBtn = document.getElementById('extraQuestionBtn');
+    const extraAsk = document.getElementById('extraAsk');
+    const extraCount = document.getElementById('extraCount');
+    const extraConfirmBtn = document.getElementById('extraConfirmBtn');
+    const extraCancelBtn = document.getElementById('extraCancelBtn');
+    const summaryQuestionBtn = document.getElementById('summaryQuestionBtn');
+    const openSummaryBtn = document.getElementById('openSummaryBtn');
     const studyTools = window.TodoStudyTools;
     const DATA_SCHEMA_VERSION = 2;
     const CONTENT_VERSION = 7;
@@ -76,6 +94,7 @@
     const MAX_QUESTION_RESULTS = 20;
     const SESSION_TOKEN_KEY = 'todo_list_session_token';
     let projects = [];
+    let reviewCounts = { byProject: new Map(), today: 0, overdue: 0 };
     let stateRevision = 0;
     let sessionToken = '';
     let apiClient = null;
@@ -136,6 +155,76 @@
     function setNodeCompleted(node, completed) {
         node.completed = Boolean(completed);
         node.completedAt = node.completed ? new Date().toISOString() : null;
+        if (!node || node.type !== 'item') return;
+        if (node.completed) {
+            const project = getCurrentProject();
+            if (project && projectAutoReview(project) && !node.optional && !node.review) {
+                node.review = { due: addDaysToIso(todayStr(), 1), learning: false,
+                    log: (node.review && Array.isArray(node.review.log)) ? node.review.log : [] };
+            }
+        } else if (node.review) {
+            delete node.review;
+        }
+    }
+
+    function addDaysToIso(baseIso, days) {
+        const parts = String(baseIso).split('-').map(Number);
+        const dt = new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
+        dt.setDate(dt.getDate() + Number(days));
+        const pad = value => String(value).padStart(2, '0');
+        return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate());
+    }
+
+    function normalizeNodeReview(value) {
+        if (!value || typeof value !== 'object') return undefined;
+        const due = typeof value.due === 'string' ? value.due.slice(0, 10) : '';
+        const learning = Boolean(value.learning);
+        const rawLog = Array.isArray(value.log) ? value.log : [];
+        const log = [];
+        for (const entry of rawLog.slice(-50)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const at = typeof entry.at === 'string' ? entry.at.slice(0, 10) : '';
+            const result = typeof entry.result === 'string' ? entry.result.slice(0, 10) : '';
+            if (at && result) log.push({ at: at, result: result });
+        }
+        if (!due && !learning && log.length === 0) return undefined;
+        return { due: due, learning: learning, log: log };
+    }
+
+    function projectAutoReview(project) {
+        if (!project) return false;
+        if (typeof project.reviewEnabled === 'boolean') return project.reviewEnabled;
+        return Boolean(project.assessmentEnabled);
+    }
+
+    function reviewLogPush(node, result) {
+        const existing = (node.review && Array.isArray(node.review.log)) ? node.review.log : [];
+        existing.push({ at: todayStr(), result: String(result).slice(0, 10) });
+        return existing.slice(-50);
+    }
+
+    function applyReviewResult(node, result) {
+        const days = result === 'easy' ? 7 : result === 'hard' ? 3 : 1;
+        node.review = {
+            due: addDaysToIso(todayStr(), days),
+            learning: result === 'again',
+            log: reviewLogPush(node, result)
+        };
+    }
+
+    function scheduleReview(node, dueIso) {
+        if (!node || node.type !== 'item') return;
+        if (!String(dueIso || '').trim()) return;
+        node.review = {
+            due: String(dueIso).slice(0, 10),
+            learning: false,
+            log: (node.review && Array.isArray(node.review.log)) ? node.review.log.slice(-50) : []
+        };
+    }
+
+    function clearReview(node) {
+        if (!node) return;
+        delete node.review;
     }
 
     function getCurrentProject() {
@@ -633,6 +722,7 @@
             assessmentHistory: type === 'item' ? Math.max(0, Number(node.assessmentHistory) || 0) : 0,
             expanded: type === 'item' ? false : node.expanded !== false,
             createdAt: String(node.createdAt || todayStr()),
+            review: type === 'item' ? normalizeNodeReview(node.review) : undefined,
             children
         };
     }
@@ -670,6 +760,9 @@
                 assessmentEnabled: typeof project.assessmentEnabled === 'boolean'
                     ? project.assessmentEnabled
                     : treeHasAssessment(tree),
+                reviewEnabled: typeof project.reviewEnabled === 'boolean'
+                    ? project.reviewEnabled
+                    : undefined,
                 tree
             };
             setProjectAssessmentEnabled(normalized, normalized.assessmentEnabled);
@@ -1255,7 +1348,8 @@
     function showAssessmentResult(result) {
         assessmentResult.hidden = false;
         assessmentResult.classList.toggle('failed', !result.passed);
-        assessmentResult.textContent = formatAssessmentResult(result);
+        assessmentResult.classList.add('rich-text');
+        assessmentResult.innerHTML = richToHtml(formatAssessmentResult(result));
     }
 
     function formatBytes(bytes) {
@@ -1317,12 +1411,14 @@
     }
 
     function renderAssessmentQuestions() {
+        closeExtraAsk();
         const total = assessmentQuestionItems.length;
         assessmentQuestions.hidden = assessmentStageName !== 'questions' || total < 3;
         assessmentQuestionProgress.textContent = total >= 3
             ? `第 ${assessmentQuestionIndex + 1} / ${total} 题`
             : '正在准备题目…';
-        assessmentCurrentQuestion.textContent = assessmentQuestionItems[assessmentQuestionIndex] || '';
+        const currentQuestion = assessmentQuestionItems[assessmentQuestionIndex] || '';
+        assessmentCurrentQuestion.innerHTML = currentQuestion ? richToHtml(currentQuestion) : '';
         assessmentQuestionBtn.textContent = total >= 3 ? '重新开始三题' : 'AI 出三道题';
         renderAssessmentConversation();
     }
@@ -1339,7 +1435,8 @@
             label.className = 'assessment-message-label';
             label.textContent = message.role === 'user' ? '你的回答' : 'AI';
             const content = document.createElement('span');
-            content.textContent = message.content;
+            content.className = 'rich-text';
+            content.innerHTML = richToHtml(message.content);
             bubble.append(label, content);
             assessmentConversation.appendChild(bubble);
         });
@@ -1444,6 +1541,7 @@
         assessmentAnswer.value = node.assessment && (node.assessment.implementationDraft || node.assessment.answer) || '';
         assessmentModel.value = node.assessment && node.assessment.model || 'flash';
         assessmentResult.hidden = true;
+        showAssessmentLive(false, true);
         assessmentCodeFiles = [];
         assessmentQuestionItems = Array.isArray(node.assessment?.questionSet)
             ? node.assessment.questionSet.map(String) : [];
@@ -1536,6 +1634,147 @@
         }
     }
 
+
+    function escapeHtmlText(value) {
+        return String(value).replace(/[&<>"']/g, function(ch) {
+            if (ch === '&') return '&amp;';
+            if (ch === '<') return '&lt;';
+            if (ch === '>') return '&gt;';
+            if (ch === '"') return '&quot;';
+            return '&#39;';
+        });
+    }
+
+    function fmtInline(seg) {
+        var parts = String(seg).split('\`');
+        var html = '';
+        for (var i = 0; i < parts.length; i += 1) {
+            if (i % 2 === 0) html += parts[i];
+            else html += '<code>' + parts[i] + '</code>';
+        }
+        return html;
+    }
+
+    function fmtBold(seg) {
+        var parts = String(seg).split('**');
+        var html = '';
+        for (var i = 0; i < parts.length; i += 1) {
+            if (i % 2 === 0) html += fmtInline(parts[i]);
+            else html += '<strong>' + fmtInline(parts[i]) + '</strong>';
+        }
+        return html;
+    }
+
+    function richToHtml(source) {
+        var esc = escapeHtmlText(source);
+        var NL = String.fromCharCode(10);
+        var html = '';
+        var rest = esc;
+        for (;;) {
+            var open = rest.indexOf('\`\`\`');
+            if (open < 0) {
+                html += fmtBold(rest);
+                break;
+            }
+            html += fmtBold(rest.slice(0, open));
+            var cursor = open + 3;
+            var nl = rest.indexOf(NL, cursor);
+            var lang = '';
+            if (nl >= 0) {
+                lang = rest.slice(cursor, nl).trim();
+                cursor = nl + 1;
+            } else {
+                cursor = open + 3;
+            }
+            var close = rest.indexOf('\`\`\`', cursor);
+            if (close < 0) {
+                html += fmtBold(rest.slice(cursor));
+                break;
+            }
+            var code = rest.slice(cursor, close);
+            html += '<pre class="rich-code"><code>';
+            if (lang) html += '<span class="rich-lang">' + escapeHtmlText(lang) + '</span>';
+            html += code + '</code></pre>';
+            rest = rest.slice(close + 3);
+        }
+        return html;
+    }
+
+    function showAssessmentLive(visible, clear) {
+        if (!assessmentLive) return;
+        if (clear && assessmentLiveBody) assessmentLiveBody.textContent = '';
+        assessmentLive.hidden = !visible;
+    }
+
+    function buildPriorSummary() {
+        var node = assessmentNode;
+        var results = node && node.assessment && Array.isArray(node.assessment.questionResults)
+            ? node.assessment.questionResults : [];
+        var passed = results.filter(function(item) { return item && item.passed; });
+        if (passed.length === 0) return '';
+        var NL = String.fromCharCode(10);
+        var lines = passed.map(function(item, index) {
+            var q = String(item.question || ('第 ' + (index + 1) + ' 题')).split(NL).join(' ').slice(0, 140);
+            var a = String(item.answer || '').split(NL).join(' ').slice(0, 220);
+            var s = String(item.summary || item.reply || '').split(NL).join(' ').slice(0, 140);
+            return '通过题: ' + q + ' | 回答要点: ' + a + ' | 结论: ' + s;
+        });
+        return lines.join(NL).slice(0, 1800);
+    }
+
+    async function streamEvaluate(payload, onToken, signal) {
+        var response = await apiFetch('/api/evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/x-ndjson' },
+            body: JSON.stringify(payload),
+            signal: signal
+        });
+        var contentType = String(response.headers.get('content-type') || '');
+        if (contentType.indexOf('application/json') === 0) {
+            var jsonBody = await response.json().catch(function() { return {}; });
+            if (!response.ok || !jsonBody.result) throw new Error(jsonBody.error || 'AI 验收失败');
+            return { result: jsonBody.result, streamed: '' };
+        }
+        if (!response.ok) {
+            var errorBody = await response.json().catch(function() { return {}; });
+            throw new Error(errorBody.error || ('AI 验收失败 (' + response.status + ')'));
+        }
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            throw new Error('当前浏览器不支持流式读取，请使用现代浏览器');
+        }
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var streamed = '';
+        for (;;) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var nlIndex;
+            while ((nlIndex = buffer.indexOf('\n')) >= 0) {
+                var line = buffer.slice(0, nlIndex).trim();
+                buffer = buffer.slice(nlIndex + 1);
+                if (!line) continue;
+                var event;
+                try { event = JSON.parse(line); } catch (err) { continue; }
+                if (!event || typeof event !== 'object') continue;
+                if (event.type === 'text') {
+                    var token = String(event.text || '');
+                    streamed += token;
+                    if (onToken) onToken(token);
+                } else if (event.type === 'result') {
+                    return {
+                        result: event.result,
+                        streamed: streamed || String((event.humanText) || '')
+                    };
+                } else if (event.type === 'error') {
+                    throw new Error(event.message || 'AI 验收失败');
+                }
+            }
+        }
+        throw new Error('AI 响应不完整，请重试');
+    }
+
     async function submitAssessment(event) {
         event.preventDefault();
         if (!assessmentNode || assessmentSubmitting) return;
@@ -1592,30 +1831,29 @@
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 90000);
         try {
-            const response = await apiFetch('/api/evaluate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    taskId: assessmentNode.id,
-                    task: assessmentNode.text,
-                    context: getAssessmentContext(assessmentNode),
-                    answer,
-                    model: assessmentModel.value,
-                    files: await getAssessmentFilePayload(),
-                    stage: assessmentStageName,
-                    conversation: assessmentStageName === 'questions'
-                        ? (assessmentQuestionConversations[assessmentQuestionIndex] || []) : [],
-                    questions: assessmentStageName === 'questions'
-                        ? [assessmentQuestionItems[assessmentQuestionIndex]] : [],
-                    questionIndex: assessmentQuestionIndex,
-                    totalQuestions: assessmentQuestionItems.length
-                }),
-                signal: controller.signal
-            });
-            const payload = await response.json();
-            if (!response.ok || !payload.result) {
-                throw new Error(payload.error || 'AI 验收失败');
-            }
+            showAssessmentLive(true, true);
+            const evaluatePayload = {
+                taskId: assessmentNode.id,
+                task: assessmentNode.text,
+                context: getAssessmentContext(assessmentNode),
+                answer,
+                model: assessmentModel.value,
+                files: await getAssessmentFilePayload(),
+                stage: assessmentStageName,
+                conversation: assessmentStageName === 'questions'
+                    ? (assessmentQuestionConversations[assessmentQuestionIndex] || []) : [],
+                questions: assessmentStageName === 'questions'
+                    ? [assessmentQuestionItems[assessmentQuestionIndex]] : [],
+                questionIndex: assessmentQuestionIndex,
+                totalQuestions: assessmentQuestionItems.length,
+                priorSummary: buildPriorSummary(),
+                stream: true
+            };
+            const payload = await streamEvaluate(evaluatePayload, (token) => {
+                assessmentLiveBody.textContent += token;
+                assessmentLiveBody.scrollTop = assessmentLiveBody.scrollHeight;
+            }, controller.signal);
+            showAssessmentLive(false);
             const result = {
                 passed: payload.result.passed === true && Number(payload.result.score) >= 80,
                 score: Math.max(0, Math.min(100, Number(payload.result.score) || 0)),
@@ -1631,13 +1869,16 @@
                 model: assessmentModel.value,
                 evaluatedAt: new Date().toISOString()
             };
+            result.question = assessmentStageName === 'questions'
+                ? String(assessmentQuestionItems[assessmentQuestionIndex] || '') : '';
             if (assessmentStageName === 'questions') {
                 assessmentQuestionAnswers[assessmentQuestionIndex] = answer;
                 const conversation = assessmentQuestionConversations[assessmentQuestionIndex] || [];
                 conversation.push({ role: 'user', content: answer.slice(0, MAX_CONVERSATION_MESSAGE_CHARS) });
                 conversation.push({
                     role: 'assistant',
-                    content: (result.reply || formatAssessmentResult(result)).slice(0, MAX_CONVERSATION_MESSAGE_CHARS)
+                    content: (payload.streamed || result.reply || formatAssessmentResult(result))
+                        .slice(0, MAX_CONVERSATION_MESSAGE_CHARS)
                 });
                 assessmentQuestionConversations[assessmentQuestionIndex] = conversation.slice(-MAX_CONVERSATION_MESSAGES);
                 assessmentNode.assessment = {
@@ -1698,6 +1939,7 @@
                 assessmentServiceStatus.textContent = '尚未通过，请按反馈补漏';
             }
         } catch (error) {
+            showAssessmentLive(false);
             const message = error.name === 'AbortError' ? '请求超时，请重试' : error.message || 'AI 验收失败';
             assessmentResult.hidden = false;
             assessmentResult.classList.add('failed');
@@ -1877,6 +2119,7 @@
         utilityModal.hidden = false;
         document.body.classList.add('modal-open');
         utilityModal.querySelector('.utility-dialog').classList.toggle('memo-dialog', kicker === '个人记录');
+        utilityModal.querySelector('.utility-dialog').classList.toggle('utility-wide', kicker === '摘要清单');
     }
 
     function closeUtilityModal() {
@@ -2499,6 +2742,32 @@
             grid.appendChild(item);
         });
         utilityBody.appendChild(grid);
+        const reviewStats = collectReviewStats(project.tree || []);
+        if (reviewStats.count > 0) {
+            const reviewHeading = document.createElement('div');
+            reviewHeading.className = 'stats-group-heading';
+            reviewHeading.textContent = '间隔复习';
+            utilityBody.appendChild(reviewHeading);
+            const grid2 = document.createElement('div');
+            grid2.className = 'stats-grid';
+            const rows2 = [
+                ['近 7 天复习', String(reviewStats.last7) + ' 次'],
+                ['连续复习', String(reviewStats.streak) + ' 天'],
+                ['待复习(含逾期)', String(reviewStats.due) + ' 项'],
+                ['需重学', String(reviewStats.learning) + ' 项']
+            ];
+            rows2.forEach((pair) => {
+                const cell = document.createElement('div');
+                cell.className = 'stats-item';
+                const cellLabel = document.createElement('span');
+                cellLabel.textContent = pair[0];
+                const cellValue = document.createElement('strong');
+                cellValue.textContent = pair[1];
+                cell.append(cellLabel, cellValue);
+                grid2.appendChild(cell);
+            });
+            utilityBody.appendChild(grid2);
+        }
     }
 
     function renderStudyTool(action, project) {
@@ -2519,6 +2788,11 @@
 
     function renderProjects() {
         projectGrid.innerHTML = '';
+        const reviewTotal = reviewCounts.today + reviewCounts.overdue;
+        if (reviewQueueCount) {
+            reviewQueueCount.textContent = String(reviewTotal);
+            reviewQueueBtn.classList.toggle('empty', reviewTotal === 0);
+        }
         const visibleProjects = getVisibleProjects();
         if (projects.length === 0) {
             emptyProjects.style.display = 'block';
@@ -2560,6 +2834,15 @@
                 description.className = 'card-description';
                 description.textContent = project.description;
                 info.appendChild(description);
+            }
+            const projectCounts = reviewCounts.byProject.get(String(project.id));
+            if (projectCounts && (projectCounts.today > 0 || projectCounts.overdue > 0)) {
+                const reviewBadge = document.createElement('span');
+                reviewBadge.className = 'review-card-badge' + (projectCounts.overdue > 0 ? ' overdue' : '');
+                reviewBadge.textContent = projectCounts.overdue > 0
+                    ? '待复习 ' + projectCounts.today + ' · 逾期 ' + projectCounts.overdue
+                    : '待复习 ' + projectCounts.today;
+                metaDiv.appendChild(reviewBadge);
             }
             info.appendChild(metaDiv);
             const actions = document.createElement('div');
@@ -2702,6 +2985,12 @@
         detailDate.textContent = '创建于 ' + (project.createdAt || '未知');
         projectAssessmentToggle.checked = Boolean(project.assessmentEnabled);
         projectAssessmentToggle.parentElement.classList.toggle('enabled', project.assessmentEnabled);
+        if (projectReviewToggle) {
+            projectReviewToggle.checked = Boolean(
+                typeof project.reviewEnabled === 'boolean' ? project.reviewEnabled : project.assessmentEnabled
+            );
+            projectReviewToggle.parentElement.classList.toggle('enabled', projectReviewToggle.checked);
+        }
         const remaining = getProjectRemaining(project);
         const optional = getProjectOptionalStats(project);
         countDisplay.textContent = `主线剩余 ${remaining} 项 · 选做 ${optional.completed}/${optional.total}`;
@@ -2807,6 +3096,18 @@
             });
             actions.appendChild(assessBtn);
         }
+        if (node.type === 'item') {
+            const reviewBtn = document.createElement('button');
+            reviewBtn.className = 'review-node-btn';
+            reviewBtn.innerHTML = '&#9675;';
+            reviewBtn.title = '安排复习';
+            reviewBtn.setAttribute('aria-label', '安排复习');
+            reviewBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openScheduleReview(node);
+            });
+            actions.appendChild(reviewBtn);
+        }
         const editBtn = document.createElement('button');
         editBtn.className = 'edit-btn';
         editBtn.innerHTML = '✎';
@@ -2832,6 +3133,19 @@
         row.appendChild(textSpan);
         if (optionalBadge) row.appendChild(optionalBadge);
         if (assessmentBadge) row.appendChild(assessmentBadge);
+        if (node.type === 'item' && node.review && node.review.due) {
+            if (node.review.learning) {
+                const learningBadge = document.createElement('span');
+                learningBadge.className = 'node-learning-badge';
+                learningBadge.textContent = '⚠ 需重学';
+                row.appendChild(learningBadge);
+            } else {
+                const dueBadge = document.createElement('span');
+                dueBadge.className = 'node-review-date';
+                dueBadge.textContent = '复习 ' + node.review.due.slice(5);
+                row.appendChild(dueBadge);
+            }
+        }
         row.appendChild(dateSpan);
         row.appendChild(actions);
         li.appendChild(row);
@@ -3078,13 +3392,16 @@
         }
         projectsView.classList.add('active');
         detailView.classList.remove('active');
+        reviewView.classList.remove('active');
         currentProjectId = null;
         renderProjects();
+        loadReviewCounts();
     }
 
     function showDetailView(projectId) {
         currentProjectId = projectId;
         projectsView.classList.remove('active');
+        reviewView.classList.remove('active');
         detailView.classList.add('active');
         renderDetail();
     }
@@ -3129,6 +3446,675 @@
         });
     }
 
+    function walkItems(nodes, callback) {
+        for (const node of nodes || []) {
+            if (node.type === 'item') callback(node);
+            else walkItems(node.children || [], callback);
+        }
+    }
+
+    function collectReviewStats(tree) {
+        const stats = { last7: 0, streak: 0, due: 0, learning: 0, count: 0 };
+        const today = todayStr();
+        const days = new Set();
+        walkItems(tree, (node) => {
+            if (!node.review || !node.completed) return;
+            stats.count += 1;
+            if (node.review.due && node.review.due <= today) stats.due += 1;
+            if (node.review.learning) stats.learning += 1;
+            for (const entry of node.review.log || []) {
+                if (entry && entry.at && entry.at >= addDaysToIso(today, -6) && entry.at <= today) {
+                    stats.last7 += 1;
+                    days.add(entry.at);
+                }
+            }
+        });
+        const sorted = Array.from(days).sort();
+        let cursor = sorted.includes(today) ? today : addDaysToIso(today, -1);
+        let run = 0;
+        while (sorted.includes(cursor)) {
+            run += 1;
+            cursor = addDaysToIso(cursor, -1);
+        }
+        stats.streak = run;
+        return stats;
+    }
+
+    function walkTreeEntries(nodes, ancestors, labels, callback) {
+        for (const node of nodes || []) {
+            if (node.type === 'item') {
+                callback({
+                    node: node,
+                    ancestorIds: ancestors.map(entry => entry.id),
+                    path: labels.join(' / ')
+                });
+                continue;
+            }
+            walkTreeEntries(node.children || [], ancestors.concat(node),
+                labels.concat(String(node.text || '')), callback);
+        }
+    }
+
+    function isValidIsoDate(value) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return false;
+        const parts = String(value).split('-').map(Number);
+        const probe = new Date(parts[0], parts[1] - 1, parts[2]);
+        return probe.getFullYear() === parts[0] && probe.getMonth() === parts[1] - 1
+            && probe.getDate() === parts[2];
+    }
+
+    let reviewQueueState = { dueItems: [], futureItems: [] };
+
+    async function showReviewQueue() {
+        if (saveTimer) {
+            try { await flushProjectsSave(); } catch (error) {
+                showToast('当前修改尚未保存，请处理保存错误后再返回');
+                return;
+            }
+        }
+        try {
+            await Promise.all(projects.map(project => ensureProjectLoaded(project.id)));
+        } catch (error) {
+            showToast(error.message || '复习队列加载失败');
+            return;
+        }
+        const today = todayStr();
+        const dueItems = [];
+        const futureItems = [];
+        for (const project of projects) {
+            if (!Array.isArray(project.tree)) continue;
+            walkTreeEntries(project.tree, [], [], (entry) => {
+                const node = entry.node;
+                if (!node.completed || !node.review || !node.review.due) return;
+                const item = {
+                    projectId: project.id,
+                    projectName: project.name,
+                    node: node,
+                    ancestorIds: entry.ancestorIds,
+                    path: entry.path,
+                    due: node.review.due,
+                    learning: Boolean(node.review.learning)
+                };
+                if (item.due <= today) dueItems.push(item);
+                else futureItems.push(item);
+            });
+        }
+        dueItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
+        futureItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
+        reviewQueueState = { dueItems: dueItems, futureItems: futureItems };
+        projectsView.classList.remove('active');
+        detailView.classList.remove('active');
+        reviewView.classList.add('active');
+        renderReviewQueue();
+        loadReviewCounts();
+    }
+
+    function renderReviewQueue() {
+        const body = reviewBody;
+        body.innerHTML = '';
+        const due = reviewQueueState.dueItems || [];
+        const future = reviewQueueState.futureItems || [];
+        const total = due.length + future.length;
+        reviewSubline.textContent = total > 0
+            ? '待复习 ' + due.length + ' 项 · 已安排 ' + future.length + ' 项'
+            : '暂无到期复习';
+        if (total === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'review-empty';
+            empty.textContent = '还没有排入复习的内容。✓ 完成任务后会自动排到明天；也可在项目里点任务旁的 ◷ 手动安排。';
+            body.appendChild(empty);
+            return;
+        }
+        if (due.length > 0) {
+            body.appendChild(renderReviewGroup('待复习 · 今天到期与逾期', due));
+        }
+        if (future.length > 0) {
+            body.appendChild(renderReviewGroup('已安排 · 未来', future));
+        }
+    }
+
+    function renderReviewGroup(title, items) {
+        const group = document.createElement('div');
+        group.className = 'review-group';
+        const head = document.createElement('div');
+        head.className = 'review-group-title';
+        const label = document.createElement('span');
+        label.textContent = title;
+        const count = document.createElement('span');
+        count.className = 'gcount';
+        count.textContent = String(items.length);
+        head.append(label, count);
+        group.appendChild(head);
+        const byProject = new Map();
+        for (const item of items) {
+            if (!byProject.has(item.projectId)) byProject.set(item.projectId, []);
+            byProject.get(item.projectId).push(item);
+        }
+        for (const entry of byProject.entries()) {
+            const projectBlock = document.createElement('div');
+            projectBlock.className = 'review-project-block';
+            const nameRow = document.createElement('div');
+            nameRow.className = 'review-project-name';
+            nameRow.textContent = entry[1][0].projectName;
+            projectBlock.appendChild(nameRow);
+            for (const item of entry[1]) {
+                projectBlock.appendChild(createReviewItemElement(item));
+            }
+            group.appendChild(projectBlock);
+        }
+        return group;
+    }
+
+    function createReviewItemElement(item) {
+        const row = document.createElement('div');
+        row.className = 'review-item';
+        const main = document.createElement('div');
+        main.className = 'review-item-main';
+        const pathSpan = document.createElement('span');
+        pathSpan.className = 'review-item-path';
+        pathSpan.textContent = item.path || '项目任务';
+        const text = document.createElement('div');
+        text.className = 'review-item-text';
+        text.textContent = item.node.text || '未命名任务';
+        text.title = item.node.text || '';
+        text.addEventListener('click', () => row.classList.toggle('expanded'));
+        main.append(pathSpan, text);
+        if (item.learning) {
+            const tag = document.createElement('span');
+            tag.className = 'review-tag learning';
+            tag.textContent = '需重学';
+            text.appendChild(tag);
+        }
+        if (item.due < todayStr()) {
+            const days = Math.max(1, daysBetween(item.due, todayStr()));
+            const tag = document.createElement('span');
+            tag.className = 'review-tag overdue';
+            tag.textContent = '逾期 ' + days + ' 天';
+            main.appendChild(tag);
+        } else {
+            const tag = document.createElement('span');
+            tag.className = 'review-tag today';
+            tag.textContent = '今天';
+            main.appendChild(tag);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'review-actions';
+        const btnEasy = document.createElement('button');
+        btnEasy.type = 'button';
+        btnEasy.className = 'review-btn easy';
+        btnEasy.textContent = '记住了 +7';
+        btnEasy.title = '顺延 7 天';
+        btnEasy.addEventListener('click', () => runQueueAction(item, 'easy'));
+        const btnHard = document.createElement('button');
+        btnHard.type = 'button';
+        btnHard.className = 'review-btn hard';
+        btnHard.textContent = '模糊 +3';
+        btnHard.title = '顺延 3 天';
+        btnHard.addEventListener('click', () => runQueueAction(item, 'hard'));
+        const btnAgain = document.createElement('button');
+        btnAgain.type = 'button';
+        btnAgain.className = 'review-btn again';
+        btnAgain.textContent = '忘了';
+        btnAgain.title = '明天重学（需重学标记）';
+        btnAgain.addEventListener('click', () => runQueueAction(item, 'again'));
+        const more = document.createElement('select');
+        more.className = 'review-btn';
+        more.setAttribute('aria-label', '更多复习操作');
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '⋯ 更多';
+        more.appendChild(placeholder);
+        const choices = [
+            ['d1', '顺延到明天'],
+            ['d3', '顺延 3 天'],
+            ['d7', '顺延 7 天'],
+            ['d30', '顺延 30 天'],
+            ['custom', '自定义日期…'],
+            ['locate', '在项目中定位'],
+            ['clear', '清除复习安排']
+        ];
+        for (const choice of choices) {
+            const option = document.createElement('option');
+            option.value = choice[0];
+            option.textContent = choice[1];
+            more.appendChild(option);
+        }
+        more.addEventListener('change', () => {
+            const value = more.value;
+            more.value = '';
+            runQueueAction(item, value);
+        });
+        actions.append(btnEasy, btnHard, btnAgain, more);
+        const aiGroup = document.createElement('div');
+        aiGroup.className = 'review-ai-group';
+        const aiBtns = [
+            ['拟题', 'queueOpenAssessment', '针对本任务再出题'],
+            ['复制', 'copyText', '复制任务文本'],
+            ['摘要', 'queueSummary', '生成核心摘要']
+        ];
+        aiBtns.forEach((pair) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'review-btn';
+            btn.textContent = pair[0];
+            btn.title = pair[2];
+            btn.addEventListener('click', () => {
+                if (pair[1] === 'copyText') copyText(item.node.text || '');
+                else if (pair[1] === 'queueSummary') queueSummary(item);
+                else queueOpenAssessment(item);
+            });
+            aiGroup.appendChild(btn);
+        });
+        row.append(main, actions);
+        row.appendChild(aiGroup);
+        return row;
+    }
+
+    function daysBetween(fromIso, toIso) {
+        const a = fromIso.split('-').map(Number);
+        const b = toIso.split('-').map(Number);
+        const start = new Date(a[0], a[1] - 1, a[2]);
+        const end = new Date(b[0], b[1] - 1, b[2]);
+        return Math.round((end - start) / 86400000);
+    }
+
+    function runQueueAction(item, action) {
+        if (!item || !item.node) return;
+        if (action === 'easy' || action === 'hard' || action === 'again') {
+            applyReviewResult(item.node, action);
+            finishQueueAction();
+        } else if (action === 'd1' || action === 'd3' || action === 'd7' || action === 'd30') {
+            const days = action === 'd1' ? 1 : action === 'd3' ? 3 : action === 'd7' ? 7 : 30;
+            scheduleReview(item.node, addDaysToIso(todayStr(), days));
+            finishQueueAction();
+        } else if (action === 'clear') {
+            if (!window.confirm('清除该任务的复习安排？')) return;
+            clearReview(item.node);
+            finishQueueAction();
+        } else if (action === 'custom') {
+            const chosen = window.prompt('自定义复习日期（YYYY-MM-DD）：', addDaysToIso(todayStr(), 7));
+            if (chosen === null) return;
+            const date = String(chosen).trim();
+            if (!isValidIsoDate(date)) { showToast('日期格式不正确（应为 YYYY-MM-DD）'); return; }
+            scheduleReview(item.node, date);
+            finishQueueAction();
+        } else if (action === 'locate') {
+            locateStudyTask(item.projectId, {
+                id: item.node.id,
+                text: item.node.text || '',
+                ancestorIds: item.ancestorIds || [],
+                path: item.path || '',
+                optional: Boolean(item.node.optional)
+            });
+        }
+    }
+
+
+    async function queueSummary(item) {
+        if (!item || !item.node) return;
+        try {
+            const response = await apiFetch('/api/summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    question: item.node.text || '',
+                    context: { project: item.projectName || '' },
+                    model: 'flash'
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败');
+            showToast('已保存到摘要清单（同题去重）');
+        } catch (error) {
+            showToast(error.message || '生成摘要失败');
+        }
+    }
+
+    async function queueOpenAssessment(item) {
+        if (!item) return;
+        try {
+            const project = await ensureProjectLoaded(item.projectId);
+            const node = findNodeById(project.tree || [], item.node.id);
+            if (!node) throw new Error('任务不存在');
+            showDetailView(project.id);
+            openAssessment(node);
+        } catch (error) {
+            showToast(error.message || '打开验收失败');
+        }
+    }
+
+    async function finishQueueAction() {
+        try {
+            await saveProjects();
+        } catch (error) {
+            showToast(error.message || '保存失败');
+            return;
+        }
+        loadReviewCounts();
+        showReviewQueue();
+    }
+
+    function openScheduleReview(node) {
+        if (!node) return;
+        if (!node.completed) {
+            showToast('请先完成任务，再安排复习');
+            return;
+        }
+        const project = getCurrentProject();
+        if (!project) return;
+        showUtilityModal('安排复习', '间隔复习');
+        utilityBody.innerHTML = '';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = '任务：' + (node.text || '');
+        utilityBody.appendChild(hint);
+        const list = document.createElement('div');
+        list.className = 'utility-task-list';
+        const choices = [
+            ['明天', addDaysToIso(todayStr(), 1)],
+            ['3 天后', addDaysToIso(todayStr(), 3)],
+            ['7 天后', addDaysToIso(todayStr(), 7)],
+            ['30 天后', addDaysToIso(todayStr(), 30)]
+        ];
+        for (const choice of choices) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'utility-task';
+            const content = document.createElement('span');
+            content.className = 'utility-task-content';
+            const name = document.createElement('strong');
+            name.textContent = choice[0];
+            const path = document.createElement('small');
+            path.textContent = '到期：' + choice[1];
+            content.append(name, path);
+            button.append(content);
+            button.addEventListener('click', () => {
+                scheduleReview(node, choice[1]);
+                finishScheduleModal();
+            });
+            list.appendChild(button);
+        }
+        const customButton = document.createElement('button');
+        customButton.type = 'button';
+        customButton.className = 'utility-task';
+        customButton.textContent = '自定义日期…';
+        customButton.addEventListener('click', () => {
+            const chosen = window.prompt('自定义复习日期（YYYY-MM-DD）：', addDaysToIso(todayStr(), 7));
+            if (chosen === null) return;
+            const date = String(chosen).trim();
+            if (!isValidIsoDate(date)) { showToast('日期格式不正确（应为 YYYY-MM-DD）'); return; }
+            scheduleReview(node, date);
+            finishScheduleModal();
+        });
+        list.appendChild(customButton);
+        const clearButton = document.createElement('button');
+        clearButton.type = 'button';
+        clearButton.className = 'utility-task delete-proj-btn';
+        clearButton.textContent = '清除复习安排';
+        clearButton.addEventListener('click', () => {
+            if (!window.confirm('清除该任务的复习安排？')) return;
+            clearReview(node);
+            finishScheduleModal();
+        });
+        list.appendChild(clearButton);
+        utilityBody.appendChild(list);
+    }
+
+    function finishScheduleModal() {
+        closeUtilityModal();
+        renderDetail();
+        saveProjects();
+        loadReviewCounts();
+    }
+
+    async function loadReviewCounts() {
+        try {
+            const stored = await readStoredState();
+            const totals = (stored && stored.reviewTotals) || { today: 0, overdue: 0 };
+            const byProject = new Map();
+            const list = (stored && Array.isArray(stored.projects)) ? stored.projects : [];
+            for (const summary of list) {
+                byProject.set(String(summary.id), {
+                    today: Number(summary.reviewToday) || 0,
+                    overdue: Number(summary.reviewOverdue) || 0
+                });
+            }
+            reviewCounts = {
+                byProject: byProject,
+                today: Number(totals.today) || 0,
+                overdue: Number(totals.overdue) || 0
+            };
+        } catch (error) {
+            console.warn('刷新复习计数失败', error);
+        }
+        if (projectsView.classList.contains('active')) renderProjects();
+    }
+
+
+    function copyText(text) {
+        if (!text) { showToast('没有可复制的内容'); return; }
+        const done = () => showToast('已复制');
+        const fallback = () => {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            let okCopy = false;
+            try { okCopy = document.execCommand('copy'); } catch (e) { okCopy = false; }
+            textarea.remove();
+            showToast(okCopy ? '已复制' : '复制失败，请手动选择');
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, fallback);
+        } else {
+            fallback();
+        }
+    }
+
+    function copyCurrentQuestion() {
+        copyText(assessmentQuestionItems[assessmentQuestionIndex] || '');
+        if (assessmentQuestionItems[assessmentQuestionIndex]) showToast('已复制当前题目');
+    }
+
+    async function generateSummary() {
+        if (!assessmentNode) return;
+        const question = assessmentQuestionItems[assessmentQuestionIndex] || assessmentNode.text || '';
+        if (!question) { showToast('没有可总结的内容'); return; }
+        summaryQuestionBtn.disabled = true;
+        const label = summaryQuestionBtn.textContent;
+        summaryQuestionBtn.textContent = '生成中…';
+        try {
+            const response = await apiFetch('/api/summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    question,
+                    context: getAssessmentContext(assessmentNode),
+                    model: assessmentModel.value
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败');
+            showToast('已保存到摘要清单（同题去重）');
+        } catch (error) {
+            showToast(error.message || '生成摘要失败');
+        } finally {
+            summaryQuestionBtn.disabled = false;
+            summaryQuestionBtn.textContent = label;
+        }
+    }
+
+    async function openSummaryList() {
+        showUtilityModal('核心摘要', '摘要清单');
+        utilityBody.innerHTML = '<p class="utility-empty">正在读取摘要…</p>';
+        try {
+            const response = await apiFetch('/api/summaries', { cache: 'no-store' });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || '读取摘要清单失败');
+            renderSummaryList(payload.summaries || []);
+        } catch (error) {
+            utilityBody.innerHTML = '<p class="utility-empty">' + (error.message || '读取摘要清单失败') + '</p>';
+        }
+    }
+
+    function renderSummaryList(summaries) {
+        utilityBody.innerHTML = '';
+        const toolbar = document.createElement('div');
+        toolbar.className = 'utility-toolbar';
+        const count = document.createElement('span');
+        count.textContent = '共 ' + summaries.length + ' 条摘要 · 点击卡片查看详情';
+        toolbar.appendChild(count);
+        if (summaries.length > 0) {
+            const clearBtn = document.createElement('button');
+            clearBtn.type = 'button';
+            clearBtn.className = 'utility-secondary-btn';
+            clearBtn.textContent = '清空全部';
+            clearBtn.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                if (!window.confirm('确认清空全部核心摘要？')) return;
+                try {
+                    const res = await apiFetch('/api/summaries', { method: 'DELETE' });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(body.error || '清空失败');
+                    renderSummaryList(body.summaries || []);
+                    showToast('已清空摘要清单');
+                } catch (error) {
+                    showToast(error.message || '清空失败');
+                }
+            });
+            toolbar.appendChild(clearBtn);
+        }
+        utilityBody.appendChild(toolbar);
+        if (summaries.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'utility-empty';
+            empty.textContent = '还没有摘要。在 AI 验收题目区点「核心摘要」即可生成并收藏。';
+            utilityBody.appendChild(empty);
+            return;
+        }
+        const grid = document.createElement('div');
+        grid.className = 'summary-grid';
+        for (const item of summaries) {
+            const card = document.createElement('div');
+            card.className = 'summary-item';
+            const title = document.createElement('div');
+            title.className = 'summary-question';
+            title.textContent = item.question || '未知知识点';
+            const content = document.createElement('div');
+            content.className = 'summary-content';
+            content.textContent = item.content || '';
+            const footer = document.createElement('div');
+            footer.className = 'summary-footer';
+            const date = document.createElement('span');
+            date.className = 'summary-date';
+            date.textContent = '创建于 ' + (item.createdAt || '').slice(0, 10);
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'utility-secondary-btn summary-delete';
+            del.textContent = '删除';
+            del.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                if (!window.confirm('删除这条摘要？')) return;
+                try {
+                    const res = await apiFetch('/api/summary?id=' + encodeURIComponent(item.id), { method: 'DELETE' });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(body.error || '删除失败');
+                    renderSummaryList(body.summaries || []);
+                    showToast('已删除');
+                } catch (error) {
+                    showToast(error.message || '删除失败');
+                }
+            });
+            footer.appendChild(date);
+            footer.appendChild(del);
+            card.appendChild(title);
+            card.appendChild(content);
+            card.appendChild(footer);
+            card.addEventListener('click', () => card.classList.toggle('expanded'));
+            grid.appendChild(card);
+        }
+        utilityBody.appendChild(grid);
+    }
+
+
+    function toggleExtraAsk() {
+        if (!extraAsk) return;
+        extraAsk.hidden = !extraAsk.hidden;
+    }
+    function closeExtraAsk() {
+        if (extraAsk) extraAsk.hidden = true;
+    }
+    async function generateExtraQuestions() {
+        if (!assessmentNode) return;
+        const count = Math.max(1, Math.min(5, Number(extraCount.value) || 1));
+        const weakPoint = assessmentQuestionItems[assessmentQuestionIndex] || '';
+        extraConfirmBtn.disabled = true;
+        const label = extraConfirmBtn.textContent;
+        extraConfirmBtn.textContent = '生成中…';
+        try {
+            const response = await apiFetch('/api/question', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    taskId: assessmentNode.id,
+                    task: assessmentNode.text,
+                    context: getAssessmentContext(assessmentNode),
+                    model: assessmentModel.value,
+                    files: await getAssessmentFilePayload(),
+                    count,
+                    weakPoint,
+                    priorSummary: buildPriorSummary()
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !Array.isArray(payload.questions) || payload.questions.length < count) {
+                throw new Error(payload.error || 'AI 未生成足够题目');
+            }
+            const extra = payload.questions.slice(0, count).map(String);
+            assessmentQuestionItems = assessmentQuestionItems.concat(extra);
+            assessmentNode.assessment = {
+                ...(assessmentNode.assessment || {}),
+                questionSet: assessmentQuestionItems,
+                model: assessmentModel.value
+            };
+            await saveProjects();
+            renderAssessmentQuestions();
+            closeExtraAsk();
+            showToast('已追加 ' + extra.length + ' 道拟题（当前共 ' + assessmentQuestionItems.length + ' 题）');
+        } catch (error) {
+            showToast(error.message || '生成拟题失败');
+        } finally {
+            extraConfirmBtn.disabled = false;
+            extraConfirmBtn.textContent = label;
+        }
+    }
+
+
+    function buildPlanTree(nodes) {
+        return (nodes || []).map((node) => {
+            const base = {
+                id: generateId(),
+                type: node.type === 'day' ? 'day' : node.type === 'item' ? 'item' : 'week',
+                text: String(node.text || '未命名内容'),
+                completed: false,
+                expanded: false,
+                createdAt: todayStr(),
+                children: []
+            };
+            if (base.type === 'item') {
+                base.optional = Boolean(node.optional);
+                base.assessmentRequired = Boolean(newProjectAiToggle.checked);
+                base.assessment = null;
+                base.assessmentHistory = 0;
+            } else {
+                base.children = buildPlanTree(node.children || []);
+            }
+            return base;
+        });
+    }
+
     function initEvents() {
         assessmentForm.addEventListener('submit', submitAssessment);
         assessmentAnswer.addEventListener('keydown', handleAssessmentEditorTab);
@@ -3141,6 +4127,12 @@
         utilityCloseBtn.addEventListener('click', closeUtilityModal);
         utilityModal.querySelector('[data-close-utility]').addEventListener('click', closeUtilityModal);
         openMemoBtn.addEventListener('click', openMemoTool);
+        if (extraQuestionBtn) extraQuestionBtn.addEventListener('click', toggleExtraAsk);
+        if (extraConfirmBtn) extraConfirmBtn.addEventListener('click', generateExtraQuestions);
+        if (extraCancelBtn) extraCancelBtn.addEventListener('click', closeExtraAsk);
+        if (copyQuestionBtn) copyQuestionBtn.addEventListener('click', copyCurrentQuestion);
+        if (summaryQuestionBtn) summaryQuestionBtn.addEventListener('click', generateSummary);
+        if (openSummaryBtn) openSummaryBtn.addEventListener('click', openSummaryList);
         document.querySelectorAll('[data-study-action]').forEach(button => {
             button.addEventListener('click', () => openStudyTool(button.dataset.studyAction));
         });
@@ -3194,26 +4186,82 @@
             }
         });
         restoreDatabaseBackupBtn.addEventListener('click', restoreDatabaseBackupFromUi);
-        createProjectBtn.addEventListener('click', () => {
+        createProjectBtn.addEventListener('click', async () => {
             const name = newProjectInput.value.trim();
             if (!name) return;
-            projects.push({
-                id: generateId(),
-                name: name,
-                description: '',
-                createdAt: todayStr(),
-                assessmentEnabled: Boolean(newProjectAiToggle.checked),
-                tree: []
-            });
-            saveProjects();
-            newProjectInput.value = '';
-            newProjectAiToggle.checked = false;
-            renderProjects();
+            const usePlan = newProjectPlanToggle ? newProjectPlanToggle.checked : false;
+            const clearInputs = () => {
+                newProjectInput.value = '';
+                newProjectAiToggle.checked = false;
+                if (newProjectPlanToggle) newProjectPlanToggle.checked = false;
+            };
+            const plainCreate = () => {
+                projects.push({
+                    id: generateId(),
+                    name: name,
+                    description: '',
+                    createdAt: todayStr(),
+                    assessmentEnabled: Boolean(newProjectAiToggle.checked),
+                    tree: []
+                });
+                saveProjects();
+                clearInputs();
+                renderProjects();
+            };
+            if (!usePlan) {
+                plainCreate();
+                return;
+            }
+            createProjectBtn.disabled = true;
+            const label = createProjectBtn.textContent;
+            createProjectBtn.textContent = '规划中…';
+            try {
+                const response = await apiFetch('/api/project/plan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ topic: name, model: 'flash' })
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || !payload.plan) throw new Error(payload.error || 'AI 规划失败');
+                const project = {
+                    id: generateId(),
+                    name: name,
+                    description: String(payload.plan.description || ''),
+                    createdAt: todayStr(),
+                    assessmentEnabled: Boolean(newProjectAiToggle.checked),
+                    tree: buildPlanTree(payload.plan.tree || [])
+                };
+                projects.push(project);
+                await saveProjects();
+                clearInputs();
+                await openProjectDetail(project.id);
+                showToast('已按 AI 规划创建项目');
+            } catch (error) {
+                plainCreate();
+                showToast('AI 规划失败，已创建空项目：' + (error.message || ''));
+            } finally {
+                createProjectBtn.disabled = false;
+                createProjectBtn.textContent = label;
+            }
         });
         newProjectInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') createProjectBtn.click();
         });
         backBtn.addEventListener('click', showProjectsView);
+        reviewQueueBtn.addEventListener('click', () => { showReviewQueue(); });
+        reviewBackBtn.addEventListener('click', () => { showProjectsView(); });
+        if (projectReviewToggle) {
+            projectReviewToggle.addEventListener('change', () => {
+                const reviewProject = getCurrentProject();
+                if (!reviewProject) return;
+                reviewProject.reviewEnabled = projectReviewToggle.checked;
+                saveProjects();
+                renderDetail();
+                showToast(reviewProject.reviewEnabled
+                    ? '已开启本项目的间隔复习'
+                    : '已关闭本项目的间隔复习（仍可手动安排）');
+            });
+        }
         projectAssessmentToggle.addEventListener('change', () => {
             const project = getCurrentProject();
             if (!project) return;
@@ -3260,6 +4308,7 @@
     async function init() {
         await Promise.all([loadProjects(), loadSavedBackground()]);
         renderProjects();
+        loadReviewCounts();
         initEvents();
         startServiceHeartbeat();
         checkStorageHealth();

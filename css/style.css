@@ -1961,3 +1961,216 @@ body.modal-open { overflow: hidden; }
     .memo-database-tools { flex-wrap: wrap; }
     .memo-database-tools > * { flex: 1; }
 }
+/* ===== 间隔复习 v1 ===== */
+.review-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: var(--transition);
+    margin: 10px 0 2px;
+}
+.review-pill:hover { border-color: var(--primary); color: var(--primary); box-shadow: var(--shadow); }
+.review-pill.empty { opacity: 0.62; cursor: default; }
+.review-pill-icon { font-size: 14px; }
+.review-pill-count {
+    min-width: 22px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.review-pill.empty .review-pill-count { background: var(--complete); }
+.review-card-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary);
+    background: var(--primary-soft);
+    border-radius: 999px;
+    padding: 2px 8px;
+    margin-right: 6px;
+}
+.review-card-badge.overdue { color: #d9480f; background: rgba(217, 72, 15, 0.1); }
+
+#reviewView .review-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 22px 10px;
+    max-width: 980px;
+    margin: 0 auto;
+    width: 100%;
+}
+#reviewView .review-heading h2 { font-size: 20px; color: var(--text); }
+#reviewView .review-subline { color: var(--text-light); font-size: 12px; }
+.review-body {
+    max-width: 980px;
+    margin: 0 auto;
+    width: 100%;
+    padding: 4px 22px 60px;
+}
+.review-group { margin-bottom: 22px; }
+.review-group-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-light);
+    margin: 14px 0 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.review-group-title .gcount { color: var(--primary); font-weight: 700; }
+.review-project-block { margin-bottom: 12px; }
+.review-project-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    padding: 6px 10px 4px;
+    border-bottom: 1px solid var(--border);
+}
+.review-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 10px;
+    border-bottom: 1px solid rgba(228, 231, 239, 0.6);
+    background: var(--card);
+}
+.review-item:hover { background: var(--primary-softer); }
+.review-item-main { flex: 1; min-width: 0; }
+.review-item-path { font-size: 11px; color: var(--text-light); display: block; margin-bottom: 2px; }
+.review-item-text {
+    font-size: 14px;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.review-item.expanded .review-item-text {
+    white-space: normal;
+}
+.review-tag {
+    display: inline-block;
+    font-size: 11px;
+    border-radius: 6px;
+    padding: 1px 6px;
+    margin-right: 6px;
+    vertical-align: 1px;
+    font-weight: 600;
+}
+.review-tag.overdue { color: #d9480f; background: rgba(217, 72, 15, 0.12); }
+.review-tag.today { color: var(--primary); background: var(--primary-soft); }
+.review-tag.learning { color: #e03131; background: rgba(224, 49, 49, 0.1); }
+.review-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.review-btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+.review-btn:hover { border-color: var(--primary); color: var(--primary); }
+.review-btn.easy:hover { border-color: #2f9e44; color: #2f9e44; }
+.review-btn.hard:hover { border-color: #f08c00; color: #f08c00; }
+.review-btn.again:hover { border-color: var(--delete); color: var(--delete); }
+.review-empty { color: var(--text-light); text-align: center; padding: 30px 10px; font-size: 14px; }
+
+.node-learning-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    color: #e03131;
+    background: rgba(224, 49, 49, 0.1);
+    border-radius: 999px;
+    padding: 1px 8px;
+    margin-left: 8px;
+    vertical-align: 1px;
+}
+.node-review-date {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--text-light);
+    margin-left: 8px;
+    vertical-align: 1px;
+}
+
+.review-node-btn {
+    background: transparent;
+    border: none;
+    color: var(--primary);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 6px;
+    line-height: 1;
+}
+.review-node-btn:hover { background: var(--primary-soft); }
+.review-node-btn[hidden] { display: none; }
+.stats-group-heading {
+    margin-top: 14px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-light);
+}
+
+/* ===== AI 体验优化 ===== */
+.assessment-live { margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--primary-softer); padding: 10px 12px; }
+.assessment-live-label { font-size: 11px; color: var(--text-light); margin-bottom: 6px; }
+.assessment-live-body { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.55; color: var(--text); max-height: 240px; overflow-y: auto; }
+.rich-text { white-space: pre-wrap; line-height: 1.6; word-break: break-word; }
+.rich-text code, .assessment-message code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; background: rgba(92,124,250,0.08); border-radius: 4px; padding: 1px 5px; }
+.rich-text pre.rich-code, .assessment-message pre.rich-code { background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 8px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; }
+.rich-text pre.rich-code code { background: transparent; padding: 0; color: inherit; }
+.rich-text .rich-lang { display: block; font-size: 11px; color: #94a3b8; margin-bottom: 6px; text-transform: lowercase; }
+.assessment-current-question.rich-text { border: 1px solid var(--border); background: var(--card); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 14px; max-height: 220px; overflow-y: auto; white-space: pre-wrap; }
+/* ===== 核心摘要清单 ===== */
+.summary-list { display: flex; flex-direction: column; gap: 10px; }
+.summary-item { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); padding: 10px 12px; }
+.summary-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.summary-question { font-size: 12px; color: var(--text-light); word-break: break-word; }
+.summary-content { white-space: pre-wrap; margin-top: 6px; font-size: 14px; line-height: 1.6; color: var(--text); word-break: break-word; }
+.summary-meta { margin-top: 6px; font-size: 11px; color: var(--text-light); }
+.summary-delete { flex-shrink: 0; }
+/* ===== 拟题 ===== */
+.extra-ask { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-light); }
+.extra-ask select { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.review-ai-group { display: flex; align-items: center; gap: 5px; margin-left: auto; padding-left: 8px; border-left: 1px solid var(--border); }
+/* ===== 摘要清单: 大弹窗 + 网格卡片 ===== */
+.utility-modal .utility-dialog.utility-wide { width: min(96vw, 1120px); max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column; }
+.utility-modal .utility-dialog.utility-wide .utility-body { overflow-y: auto; flex: 1; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.summary-item { cursor: pointer; transition: border-color var(--transition), box-shadow var(--transition); }
+.summary-item:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+.summary-question { font-weight: 700; color: var(--text); }
+.summary-content { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.summary-item.expanded .summary-content { display: block; -webkit-line-clamp: unset; }
+.summary-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.summary-date { font-size: 11px; color: var(--text-light); }
+/* ===== 题目区排版优化 ===== */
+.assessment-question-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.assessment-question-heading > * { flex: 0 0 auto; white-space: nowrap; }
+.assessment-question-btn { white-space: nowrap; padding: 5px 10px; }
+.extra-ask { width: 100%; margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); flex-wrap: nowrap; gap: 8px; }
+.extra-count { font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }

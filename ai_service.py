@@ -11,10 +11,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from prompts import QUESTION_PROMPT, SYSTEM_PROMPT
+from prompts import PROJECT_PLAN_PROMPT, QUESTION_PROMPT, SUMMARY_PROMPT, SYSTEM_PROMPT
 
 APP_DIR = Path(__file__).resolve().parent
 MAX_CONVERSATION_MESSAGES = 12
+STREAM_SUFFIX_PROMPT = chr(10).join([
+    chr(39) + '请先直接输出一段给学习者的回复正文：像教练当面点评那样，先给结论，再说哪里差、具体怎么补，最后一句鼓励。允许分多段，并可使用 Markdown 排版：加粗、行内代码（用反引号包住）、以及用三反引号围起的代码块。' + chr(39),
+    chr(39) + '正文结束后，另起一行单独输出一行：REPLY_JSON_MARKER' + chr(39),
+    chr(39) + '随后只输出一个 JSON 对象（不要任何 Markdown 围栏）。JSON 字段与验收要求完全一致：passed、score、summary、reply、strengths、problems、missingEvidence、nextAction。其中 reply 给一句简短总结即可。' + chr(39),
+])
+
 MAX_CONVERSATION_MESSAGE_CHARS = 8000
 CONFIG_FILE = Path(os.environ.get("TODO_AI_ENV_FILE", str(APP_DIR / "deepseek.env"))).expanduser()
 CONFIG_KEYS = {
@@ -147,6 +153,239 @@ def normalize_result(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
+def _mock_enabled() -> bool:
+    return os.environ.get("TODO_AI_MOCK", "") == "1"
+
+
+def mock_call_question(count: int = 3) -> dict[str, Any]:
+    count = max(1, min(5, int(count)))
+    questions = []
+    for index in range(count):
+        questions.append(
+            "（模拟题%d）针对薄弱点出的练习题：解释/预测/排错并说明原因。" % (index + 1)
+        )
+    return {
+        "questions": questions,
+        "focus": "模拟：作用域与可变默认参数",
+    }
+
+
+def mock_call_deepseek() -> dict[str, Any]:
+    return {
+        "passed": True,
+        "score": 92,
+        "summary": "模拟验收通过：核心理解清晰。",
+        "reply": "通过。你已经把关键机制讲清楚了，继续保持这种讲因果的答法。",
+        "strengths": ["结论正确", "解释了机制"],
+        "problems": [],
+        "missingEvidence": [],
+        "nextAction": "进入下一题或提交实现。",
+    }
+
+
+class ReplyScanner:
+    """Incrementally extracts the value of the first top-level "reply" key."""
+
+    def __init__(self) -> None:
+        self.text = ""
+        self.value = ""
+        self.yielded = 0
+        self.state = "seek_key"
+        self.i = 0
+        self.esc_hex = ""
+        self._simple = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}
+
+    def push(self, chunk: str) -> str:
+        self.text += chunk
+        self._run()
+        visible = self.value[self.yielded:]
+        self.yielded = len(self.value)
+        return visible
+
+    def _run(self) -> None:
+        while True:
+            if self.state == "seek_key":
+                idx = self.text.find('"reply"', self.i)
+                if idx < 0:
+                    break
+                self.i = idx + len('"reply"')
+                self.state = "seek_colon"
+                continue
+            if self.state == "seek_colon":
+                idx = self.text.find(":", self.i)
+                if idx < 0:
+                    break
+                self.i = idx + 1
+                self.state = "seek_quote"
+                continue
+            if self.state == "seek_quote":
+                k = self.i
+                while k < len(self.text) and self.text[k] in " \t\r\n":
+                    k += 1
+                if k >= len(self.text):
+                    break
+                if self.text[k] == '"':
+                    self.i = k + 1
+                    self.state = "value"
+                    continue
+                # 冒号后不是引号: 可能遇到嵌套/乱序, 回到找键
+                self.state = "seek_key"
+                continue
+            if self.state == "u_hex":
+                while self.i < len(self.text) and len(self.esc_hex) < 4:
+                    ch = self.text[self.i]
+                    self.i += 1
+                    if ch in "0123456789abcdefABCDEF":
+                        self.esc_hex += ch
+                if len(self.esc_hex) == 4:
+                    self.value += chr(int(self.esc_hex, 16))
+                    self.esc_hex = ""
+                    self.state = "value"
+                    continue
+                break
+            if self.state == "value":
+                while self.i < len(self.text):
+                    ch = self.text[self.i]
+                    self.i += 1
+                    if ch == "\\":
+                        if self.i < len(self.text):
+                            nxt = self.text[self.i]
+                            self.i += 1
+                            if nxt == "u":
+                                self.state = "u_hex"
+                                self.esc_hex = ""
+                                break
+                            self.value += self._simple.get(nxt, nxt)
+                        continue
+                    if ch == '"':
+                        self.state = "done"
+                        break
+                    self.value += ch
+                if self.state == "value":
+                    break
+                if self.state == "u_hex":
+                    continue
+                if self.state == "done":
+                    break
+            else:
+                break
+
+
+def call_deepseek_stream(payload: dict[str, Any]) -> Any:
+    settings = read_settings()
+    api_key = settings.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("未在 %s 中配置 DEEPSEEK_API_KEY" % CONFIG_FILE.name)
+    alias = str(payload.get("model", "flash"))
+    models = model_aliases(settings)
+    if alias not in models:
+        raise ValueError("不支持的模型选项")
+    model = models[alias]
+    task = str(payload.get("task", "")).strip()[:4000]
+    answer = str(payload.get("answer", "")).strip()[:20000]
+    files = normalize_files(payload.get("files"))
+    stage = str(payload.get("stage", "questions"))
+    questions = payload.get("questions") if isinstance(payload.get("questions"), list) else []
+    conversation = normalize_conversation(payload.get("conversation"))
+    if stage == "questions":
+        if len(questions) != 1:
+            raise ValueError("第一阶段每次只能提交当前一道题")
+    elif stage == "implementation" and not files and not answer:
+        raise ValueError("第二阶段请上传代码文件，或直接在回答框中写实现代码")
+    elif stage not in {"questions", "implementation"}:
+        raise ValueError("不支持的验收阶段")
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    if not task or (stage == "questions" and not answer):
+        raise ValueError("任务和回答不能为空")
+    prior = str(payload.get("priorSummary") or "")[:2000]
+    user_prompt = json.dumps(
+        {
+            "课程": str(context.get("project", ""))[:500],
+            "周": str(context.get("week", ""))[:500],
+            "学习单元": str(context.get("unit", ""))[:500],
+            "验收任务": task,
+            "学习者回答或代码": answer,
+            "上传的代码文件（只读，不执行）": files_text(files),
+            "验收阶段": stage,
+            "第一阶段题目": [str(item)[:5000] for item in questions[:5]],
+            "此前已通过的题（仅作参考，不要重复原题）": prior or "无",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    if _mock_enabled():
+        result = mock_call_deepseek()
+        yield {"type": "text", "text": result["reply"] + chr(10)}
+        yield {"type": "result", "result": result, "humanText": result["reply"]}
+        return
+    request_body = {
+        "model": model,
+        "temperature": 0.2,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT + STREAM_SUFFIX_PROMPT},
+            *conversation,
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    request = urllib.request.Request(
+        api_url(settings),
+        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                 "Accept": "text/event-stream"},
+        method="POST",
+    )
+    scanner = ReplyScanner()
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            for raw in response:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                try:
+                    content = obj["choices"][0]["delta"]["content"]
+                except (KeyError, IndexError, TypeError):
+                    continue
+                if not content:
+                    continue
+                visible = scanner.push(content)
+                if visible:
+                    yield {"type": "text", "text": visible}
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
+    except urllib.error.URLError as error:
+        raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    full_text = scanner.text
+    json_part = full_text
+    if "REPLY_JSON_MARKER" in full_text:
+        json_part = full_text.split("REPLY_JSON_MARKER", 1)[1]
+    parsed = None
+    try:
+        parsed = parse_json_object(json_part)
+    except ValueError:
+        parsed = None
+    if parsed is None:
+        try:
+            parsed = parse_json_object(full_text)
+        except ValueError:
+            parsed = None
+    if parsed is None:
+        raise RuntimeError("模型未返回可解析的验收结果，请重试")
+    result = normalize_result(parsed)
+    result["reply"] = str(parsed.get("reply", ""))[:2000]
+    human = scanner.value.strip() or result["reply"]
+    yield {"type": "result", "result": result, "humanText": human[:8000]}
+
+
 def call_deepseek(payload: dict[str, Any]) -> dict[str, Any]:
     settings = read_settings()
     api_key = settings.get("DEEPSEEK_API_KEY", "")
@@ -186,10 +425,13 @@ def call_deepseek(payload: dict[str, Any]) -> dict[str, Any]:
             "上传的代码文件（只读，不执行）": files_text(files),
             "验收阶段": stage,
             "第一阶段题目": [str(item)[:5000] for item in questions[:5]],
+            "此前已通过的题（仅作参考，不要重复原题）": str(payload.get("priorSummary") or "")[:2000] or "无",
         },
         ensure_ascii=False,
         indent=2,
     )
+    if _mock_enabled():
+        return mock_call_deepseek()
     request_body = {
         "model": model,
         "temperature": 0.1,
@@ -229,6 +471,180 @@ def call_deepseek(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+
+
+def _normalize_plan_tree(value: Any) -> list[dict[str, Any]]:
+    """规范化 AI 返回的计划树（week/day/item），并做规模上限保护。"""
+    if not isinstance(value, list):
+        return []
+    weeks = []
+    for week in value[:8]:
+        if not isinstance(week, dict):
+            continue
+        week_text = str(week.get("text") or "").strip()[:200]
+        if not week_text:
+            continue
+        days = []
+        for day in (week.get("children") if isinstance(week.get("children"), list) else [])[:6]:
+            if not isinstance(day, dict):
+                continue
+            day_text = str(day.get("text") or "").strip()[:200]
+            if not day_text:
+                continue
+            items = []
+            for item in (day.get("children") if isinstance(day.get("children"), list) else [])[:8]:
+                if not isinstance(item, dict):
+                    continue
+                item_text = str(item.get("text") or "").strip()[:300]
+                if not item_text:
+                    continue
+                items.append({
+                    "id": None,
+                    "type": "item",
+                    "text": item_text,
+                    "optional": bool(item.get("optional")),
+                })
+                if len(items) >= 60:
+                    break
+            if not items:
+                continue
+            days.append({"id": None, "type": "day", "text": day_text, "children": items})
+        if not days:
+            continue
+        weeks.append({"id": None, "type": "week", "text": week_text, "children": days})
+        if len(weeks) >= 8:
+            break
+    return weeks
+
+
+def plan_project(topic: str, model_alias: str = "flash") -> dict[str, Any]:
+    settings = read_settings()
+    api_key = settings.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("未在 %s 中配置 DEEPSEEK_API_KEY" % CONFIG_FILE.name)
+    topic_text = str(topic or "").strip()[:2000]
+    if not topic_text:
+        raise ValueError("学习主题不能为空")
+    if _mock_enabled():
+        return {
+            "description": "围绕“%s”由易到难、从概念到实践的系统学习路径。" % topic_text[:60],
+            "tree": [
+                {"type": "week", "text": "第1周：基础入门", "children": [
+                    {"type": "day", "text": "单元1：核心概念", "children": [
+                        {"type": "item", "text": "用自己的话解释“%s”是什么、解决什么问题。" % topic_text[:40], "optional": False},
+                        {"type": "item", "text": "写出 3 个典型使用场景，各举一个最小示例。", "optional": False},
+                        {"type": "item", "text": "给出一个最容易踩的坑并说明原因。", "optional": False},
+                    ]},
+                ]},
+                {"type": "week", "text": "第2周：实践巩固", "children": [
+                    {"type": "day", "text": "单元1：动手练习", "children": [
+                        {"type": "item", "text": "完成一个包含%s的小项目并写清思路。" % topic_text[:40], "optional": False},
+                        {"type": "item", "text": "为关键逻辑补 2-3 条测试。", "optional": False},
+                        {"type": "item", "text": "复盘易错点并整理成清单。", "optional": False},
+                    ]},
+                ]},
+            ],
+        }
+    models = model_aliases(settings)
+    alias = model_alias if model_alias in models else "flash"
+    user_prompt = json.dumps({"想学习的主题": topic_text}, ensure_ascii=False, indent=2)
+    request_body = {
+        "model": models[alias],
+        "temperature": 0.4,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": PROJECT_PLAN_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    request = urllib.request.Request(
+        api_url(settings),
+        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                 "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            upstream = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
+    except urllib.error.URLError as error:
+        raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    try:
+        content = upstream["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("DeepSeek API 响应格式不正确") from None
+    try:
+        parsed = parse_json_object(str(content))
+    except ValueError:
+        raise RuntimeError("AI 未返回可解析的项目规划") from None
+    tree = _normalize_plan_tree(parsed.get("tree"))
+    if not tree:
+        raise RuntimeError("AI 未生成有效项目结构")
+    return {
+        "description": str(parsed.get("description", ""))[:500],
+        "tree": tree,
+    }
+
+
+def summarize_knowledge(question: str, context: dict[str, Any] | None = None,
+                        model_alias: str = "flash") -> dict[str, str]:
+    settings = read_settings()
+    api_key = settings.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("未在 %s 中配置 DEEPSEEK_API_KEY" % CONFIG_FILE.name)
+    ctx = context if isinstance(context, dict) else {}
+    user_prompt = json.dumps({
+        "题目": str(question or "").strip()[:4000],
+        "课程": str(ctx.get("project", ""))[:500],
+        "周": str(ctx.get("week", ""))[:500],
+        "学习单元": str(ctx.get("unit", ""))[:500],
+    }, ensure_ascii=False, indent=2)
+    if _mock_enabled():
+        return {"summary": "（模拟摘要）本题核心：理解函数作用域与闭包变量查找；注意 inner 里的 x 是作用于内层的绑定，不影响外层 x。"}
+    models = model_aliases(settings)
+    alias = model_alias if model_alias in models else "flash"
+    request_body = {
+        "model": models[alias],
+        "temperature": 0.3,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": SUMMARY_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    request = urllib.request.Request(
+        api_url(settings),
+        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                 "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=75) as response:
+            upstream = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
+    except urllib.error.URLError as error:
+        raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    try:
+        content = upstream["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("DeepSeek API 响应格式不正确") from None
+    summary = ""
+    try:
+        parsed = parse_json_object(str(content))
+        summary = str(parsed.get("summary", "")).strip()
+    except ValueError:
+        summary = str(content).strip()
+    if not summary:
+        raise RuntimeError("AI 未生成有效摘要")
+    return {"summary": summary[:5000]}
+
+
 def call_question(payload: dict[str, Any]) -> dict[str, Any]:
     settings = read_settings()
     api_key = settings.get("DEEPSEEK_API_KEY", "")
@@ -243,19 +659,38 @@ def call_question(payload: dict[str, Any]) -> dict[str, Any]:
     files = normalize_files(payload.get("files"))
     if not task:
         raise ValueError("任务不能为空")
+    count_raw = payload.get("count")
+    required = 3
+    if count_raw is not None:
+        try:
+            required = int(count_raw)
+        except (TypeError, ValueError):
+            required = 3
+        required = max(1, min(5, required))
+    weak_point = str(payload.get("weakPoint") or "").strip()[:2000]
+    prior = str(payload.get("priorSummary") or "")[:1800]
+    if _mock_enabled():
+        return mock_call_question(required)
     user_prompt = json.dumps({
         "课程": str(context.get("project", ""))[:500],
         "周": str(context.get("week", ""))[:500],
         "学习单元": str(context.get("unit", ""))[:500],
         "当前任务": task,
         "上传代码（只读，不执行）": files_text(files),
+        "聚焦薄弱点": weak_point or "无",
+        "此前已出的题（参考，不要重复）": prior or "无",
     }, ensure_ascii=False, indent=2)
     request_body = {
         "model": models[alias],
         "temperature": 0.3,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": QUESTION_PROMPT},
+            {"role": "system", "content": QUESTION_PROMPT
+                + ("" if count_raw is None else (
+                    chr(10) + chr(10) + "请再生成 %d 道难度与当前题相当、不同角度、不重复的针对题。"
+                    "题目要直击给定薄弱点，优先用真实可运行代码、预测输出、找 bug 或补测试；"
+                    "严禁复述已有题目；若学习者上传了代码，可结合其代码出题。" % required
+                ))},
             {"role": "user", "content": user_prompt},
         ],
     }
@@ -282,7 +717,7 @@ def call_question(payload: dict[str, Any]) -> dict[str, Any]:
         # Compatibility with an older model response that returns one question.
         single = str(parsed.get("question", "")).strip()
         questions = [single] if single else []
-    questions = [str(item).strip()[:5000] for item in questions[:5] if str(item).strip()]
-    if len(questions) < 3:
-        raise RuntimeError("模型没有返回至少三道有效题目")
-    return {"questions": questions, "focus": str(parsed.get("focus", ""))[:1000]}
+    questions = [str(item).strip()[:5000] for item in questions[:required] if str(item).strip()]
+    if len(questions) < required:
+        raise RuntimeError("模型没有返回至少 %d 道有效题目" % required)
+    return {"questions": questions[:required], "focus": str(parsed.get("focus", ""))[:1000]}
