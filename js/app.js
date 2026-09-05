@@ -3536,7 +3536,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
         markProjectDirty(getCurrentProject());
         saveProjects();
-        renderDetail();
+        if (node.type === 'item') {
+            refreshAfterToggle(getCurrentProject(), node);
+        } else {
+            renderDetail();
+        }
     }
 
     function startEditNode(node, textSpan, row) {
@@ -4738,6 +4742,96 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
         } else {
             ul.classList.remove('expanded');
+        }
+    }
+
+    function nodeByIdMap(project) {
+        const map = {};
+        function walk(nodes) {
+            for (const n of nodes || []) {
+                if (n && n.id != null) map[String(n.id)] = n;
+                if (n && n.children) walk(n.children);
+            }
+        }
+        walk(project && project.tree);
+        return map;
+    }
+    function setRowCompletionVisual(li, node) {
+        if (!li || !node) return;
+        const row = li.querySelector(':scope > .node-row');
+        if (!row) return;
+        const state = getNodeCompletionState(node);
+        row.classList.toggle('completed-row', state === 'completed');
+        const cb = row.querySelector('.checkbox');
+        if (cb) {
+            cb.classList.toggle('checked', state === 'completed');
+            cb.classList.toggle('indeterminate', state === 'partial');
+            cb.setAttribute('aria-checked', state === 'partial' ? 'mixed' : (state === 'completed' ? 'true' : 'false'));
+        }
+        const text = row.querySelector('.node-text');
+        if (text) text.classList.toggle('completed-text', state === 'completed');
+        const anchor = row.querySelector('.node-date') || row.lastElementChild;
+        const oldLearning = row.querySelector('.node-learning-badge');
+        const oldDate = row.querySelector('.node-review-date');
+        const hasLearning = node.type === 'item' && node.review && node.review.learning;
+        const hasDue = node.type === 'item' && node.review && node.review.due;
+        if (hasLearning) {
+            if (!oldLearning) {
+                const badge = document.createElement('span');
+                badge.className = 'node-learning-badge';
+                badge.textContent = '⚠ 需重学';
+                row.insertBefore(badge, anchor);
+            }
+        } else if (oldLearning) {
+            oldLearning.remove();
+        }
+        if (!hasLearning && hasDue) {
+            if (!oldDate) {
+                const span = document.createElement('span');
+                span.className = 'node-review-date';
+                span.textContent = '复习 ' + node.review.due.slice(5);
+                row.insertBefore(span, anchor);
+            }
+        } else if (oldDate) {
+            oldDate.remove();
+        }
+    }
+    function refreshItemCompletion(project, node) {
+        if (!project || !node || node.type !== 'item' || isNodeFiltering()) {
+            renderDetail();
+            return;
+        }
+        let li = null;
+        const all = document.querySelectorAll('#detailView .tree-node');
+        for (const el of all) {
+            if (String(el.dataset.id) === String(node.id)) { li = el; break; }
+        }
+        if (!li) { renderDetail(); return; }
+        const map = nodeByIdMap(project);
+        setRowCompletionVisual(li, node);
+        let cursor = li.parentElement;
+        while (cursor) {
+            const up = cursor.parentElement;
+            if (!up) break;
+            if (up.classList && up.classList.contains('tree-node')) {
+                const pid = String(up.dataset.id);
+                if (pid && map[pid]) setRowCompletionVisual(up, map[pid]);
+                cursor = up.parentElement;
+            } else {
+                break;
+            }
+        }
+        const remaining = getProjectRemaining(project);
+        const optional = getProjectOptionalStats(project);
+        const count = document.getElementById('countDisplay');
+        if (count) count.textContent = '主线剩余 ' + remaining + ' 项 · 选做 ' + optional.completed + '/' + optional.total;
+    }
+    function refreshAfterToggle(project, node) {
+        try {
+            refreshItemCompletion(project, node);
+        } catch (err) {
+            console.warn('局部刷新失败，退回整树重绘', err);
+            renderDetail();
         }
     }
 
