@@ -9,7 +9,7 @@ import re
 import sqlite3
 import sys
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,7 @@ BACKUP_DIR = Path(
 ).expanduser()
 MAX_PROJECT_PAYLOAD_BYTES = 50 * 1024 * 1024
 MAX_DATABASE_BACKUPS = 30
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _database_lock = threading.RLock()
 
@@ -130,6 +130,20 @@ def open_state_database() -> sqlite3.Connection:
             file_name TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS trash_items (
+            trash_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('project', 'node')),
+            project_id TEXT NOT NULL,
+            parent_id TEXT,
+            position INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            context TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            deleted_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_trash_deleted_at
+            ON trash_items(deleted_at DESC, trash_id);
         """
     )
     node_columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
@@ -519,6 +533,164 @@ def _mark_normalized_state(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE app_state SET payload=? WHERE key='projects'", (_json(state),))
 
 
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _new_trash_id() -> str:
+    import uuid
+    return str(uuid.uuid4())
+
+
+def _project_title(project: dict[str, Any]) -> str:
+    return str(project.get("name") or "未命名项目")
+
+
+def _node_title(node: dict[str, Any]) -> str:
+    return str(node.get("text") or "未命名任务")
+
+
+def store_trash_item(
+    kind: str,
+    project_id: Any,
+    title: str,
+    payload: dict[str, Any],
+    *,
+    parent_id: Any | None = None,
+    position: int = 0,
+    context: str = "",
+    revision: int = 0,
+) -> dict[str, Any]:
+    if kind not in {"project", "node"}:
+        raise ValueError("不支持的回收站条目类型")
+    trash_id = _new_trash_id()
+    now = _now()
+    with _database_lock, open_state_database() as connection:
+        connection.execute(
+            """INSERT INTO trash_items(
+                trash_id,kind,project_id,parent_id,position,title,context,payload,deleted_at,revision
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                trash_id,
+                kind,
+                str(project_id),
+                str(parent_id) if parent_id is not None else None,
+                int(position),
+                str(title or "未命名条目"),
+                str(context or ""),
+                _json(payload),
+                now,
+                int(revision or 0),
+            ),
+        )
+    return {
+        "id": trash_id,
+        "kind": kind,
+        "projectId": str(project_id),
+        "parentId": str(parent_id) if parent_id is not None else None,
+        "position": int(position),
+        "title": str(title or "未命名条目"),
+        "context": str(context or ""),
+        "deletedAt": now,
+        "revision": int(revision or 0),
+    }
+
+
+def purge_trash_items(days: int = 7) -> int:
+    """删除早于 days 天的回收站条目（默认 7 天）。"""
+    cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
+    with _database_lock, open_state_database() as connection:
+        cursor = connection.execute(
+            "DELETE FROM trash_items WHERE deleted_at < ?", (cutoff,)
+        )
+    return cursor.rowcount
+
+
+def list_trash_items() -> list[dict[str, Any]]:
+    purge_trash_items()
+    
+    with _database_lock, open_state_database() as connection:
+        rows = connection.execute(
+            "SELECT trash_id,kind,project_id,parent_id,position,title,context,deleted_at,revision "
+            "FROM trash_items ORDER BY deleted_at DESC,trash_id"
+        ).fetchall()
+    return [{
+        "id": row["trash_id"],
+        "kind": row["kind"],
+        "projectId": row["project_id"],
+        "parentId": row["parent_id"],
+        "position": int(row["position"]),
+        "title": row["title"],
+        "context": row["context"],
+        "deletedAt": row["deleted_at"],
+        "revision": int(row["revision"]),
+    } for row in rows]
+
+
+def delete_trash_item(trash_id: Any) -> None:
+    with _database_lock, open_state_database() as connection:
+        connection.execute("DELETE FROM trash_items WHERE trash_id=?", (str(trash_id),))
+
+
+def _find_parent_and_insert(tree: list[dict[str, Any]], parent_id: str | None, node: dict[str, Any], position: int) -> None:
+    if parent_id is None:
+        tree.insert(max(0, min(position, len(tree))), node)
+        return
+    def walk(nodes: list[dict[str, Any]]) -> bool:
+        for current in nodes:
+            if str(current.get("id")) == parent_id:
+                children = current.setdefault("children", [])
+                children.insert(max(0, min(position, len(children))), node)
+                return True
+            if walk(current.get("children") or []):
+                return True
+        return False
+    if not walk(tree):
+        raise ValueError("找不到原父节点，无法恢复任务")
+
+
+def restore_trash_item(trash_id: Any) -> dict[str, Any]:
+    trash_id = str(trash_id)
+    with _database_lock:
+        with open_state_database() as connection:
+            row = connection.execute("SELECT * FROM trash_items WHERE trash_id=?", (trash_id,)).fetchone()
+            if not row:
+                raise ValueError("回收站条目不存在")
+            payload = _decode_object(row["payload"], "回收站中的数据损坏")
+            kind = str(row["kind"])
+            if kind == "project":
+                project = payload
+                if project.get("id") is None:
+                    raise ValueError("回收站中的项目缺少 ID")
+                project_id = str(project["id"])
+                current = connection.execute(
+                    "SELECT 1 FROM projects WHERE project_id=?",
+                    (project_id,),
+                ).fetchone()
+                if current:
+                    raise StateConflictError("同名项目已经存在，请先删除现有项目")
+                revision = int(row["revision"] or 0) or 1
+                _upsert_project(connection, project, int(row["position"]), revision, _now())
+            else:
+                project_id = str(row["project_id"])
+                project_row = connection.execute(
+                    "SELECT revision FROM projects WHERE project_id=?",
+                    (project_id,),
+                ).fetchone()
+                if not project_row:
+                    raise ValueError("原项目已不存在，无法恢复任务")
+                project = _read_project_from_connection(connection, project_id)
+                if not project:
+                    raise ValueError("原项目已不存在，无法恢复任务")
+                root, revision = project
+                _find_parent_and_insert(root.get("tree") or [], row["parent_id"], payload, int(row["position"]))
+                _upsert_project(connection, root, int(connection.execute(
+                    "SELECT position FROM projects WHERE project_id=?", (project_id,)
+                ).fetchone()[0]), int(revision) + 1, _now())
+            connection.execute("DELETE FROM trash_items WHERE trash_id=?", (trash_id,))
+    return {"id": trash_id, "kind": kind}
+
+
 def read_project_summaries() -> list[dict[str, Any]]:
     with _database_lock, open_state_database() as connection:
         rows = connection.execute("SELECT summary_json,revision FROM projects ORDER BY position,project_id").fetchall()
@@ -592,11 +764,34 @@ def delete_project(project_id: Any, expected_revision: int) -> None:
     with _database_lock:
         with open_state_database() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT revision FROM projects WHERE project_id=?", (str(project_id),)).fetchone()
+            row = connection.execute(
+                "SELECT project_id,position,revision FROM projects WHERE project_id=?",
+                (str(project_id),)
+            ).fetchone()
             if not row:
                 raise StateConflictError("项目已经被删除")
-            if int(row[0]) != expected_revision:
-                raise StateConflictError(f"项目已被其他页面更新（当前版本 {int(row[0])}）")
+            if int(row["revision"]) != expected_revision:
+                raise StateConflictError(f"项目已被其他页面更新（当前版本 {int(row['revision'])}）")
+            project = _read_project_from_connection(connection, str(project_id))
+            if project:
+                stored_project, project_revision = project
+                connection.execute(
+                    """INSERT INTO trash_items(
+                        trash_id,kind,project_id,parent_id,position,title,context,payload,deleted_at,revision
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        _new_trash_id(),
+                        "project",
+                        str(project_id),
+                        None,
+                        int(row["position"]),
+                        _project_title(stored_project),
+                        str(stored_project.get("description") or ""),
+                        _json(stored_project),
+                        _now(),
+                        int(project_revision),
+                    ),
+                )
             connection.execute("DELETE FROM projects WHERE project_id=?", (str(project_id),))
 
 

@@ -1033,6 +1033,12 @@ body {
     flex-wrap: wrap;
     margin: -2px 0 10px;
 }
+.assessment-templates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+}
 .assessment-code-tools[hidden] {
     display: none;
 }
@@ -1065,6 +1071,48 @@ body {
 .assessment-file-hint {
     color: #68717c;
     font-size: 11px;
+}
+.search-results,
+.trash-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+.search-result,
+.trash-item {
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    padding: 10px 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fff;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--transition), box-shadow var(--transition), transform 0.15s;
+}
+.search-result:hover,
+.trash-item:hover {
+    border-color: var(--primary);
+    box-shadow: 0 6px 18px rgba(92, 124, 250, 0.12);
+    transform: translateY(-1px);
+}
+.search-result strong,
+.trash-item strong {
+    font-size: 13px;
+    color: var(--text);
+}
+.search-result small,
+.trash-item small,
+.trash-context {
+    color: var(--text-light);
+    font-size: 11px;
+    line-height: 1.5;
+}
+.trash-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
 }
 .assessment-files {
     display: grid;

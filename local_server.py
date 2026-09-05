@@ -59,6 +59,10 @@ delete_database_backup = storage_service.delete_database_backup
 restore_database_backup = storage_service.restore_database_backup
 check_database_integrity = storage_service.check_database_integrity
 checkpoint_database = storage_service.checkpoint_database
+list_trash_items = storage_service.list_trash_items
+store_trash_item = storage_service.store_trash_item
+restore_trash_item = storage_service.restore_trash_item
+delete_trash_item = storage_service.delete_trash_item
 CONFIG_FILE = ai_service.CONFIG_FILE
 read_settings = ai_service.read_settings
 model_aliases = ai_service.model_aliases
@@ -275,6 +279,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
         if path == "/api/backups":
             self.send_json(200, {"backups": list_database_backups()})
             return
+        if path == "/api/trash":
+            try:
+                self.send_json(200, {"items": list_trash_items()})
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取回收站失败：{error}"})
+            return
         if path == "/api/background":
             try:
                 row = storage_service.read_asset("background")
@@ -320,6 +330,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
                         "/api/background",
                         "/api/memo", "/api/memos/database-import",
+                        "/api/trash",
                         "/api/summary",
                         "/api/project/plan"}:
             self.send_json(404, {"error": "接口不存在"})
@@ -407,6 +418,32 @@ class TodoHandler(SimpleHTTPRequestHandler):
             elif path == "/api/memo":
                 memo = memo_storage.write_memo(payload)
                 self.send_json(200, {"ok": True, "memo": memo})
+            elif path == "/api/trash":
+                action = str(payload.get("action") or "store")
+                if action == "store":
+                    item = payload.get("item")
+                    if not isinstance(item, dict):
+                        raise ValueError("回收站条目格式不正确")
+                    saved = store_trash_item(
+                        str(item.get("kind") or "node"),
+                        item.get("projectId"),
+                        str(item.get("title") or "未命名条目"),
+                        item.get("payload") if isinstance(item.get("payload"), dict) else {},
+                        parent_id=item.get("parentId"),
+                        position=int(item.get("position") or 0),
+                        context=str(item.get("context") or ""),
+                        revision=int(item.get("revision") or 0),
+                    )
+                    self.send_json(200, {"ok": True, "item": saved, "items": list_trash_items()})
+                elif action == "restore":
+                    trash_id = str(payload.get("id") or "")
+                    result = restore_trash_item(trash_id)
+                    self.send_json(200, {"ok": True, "item": result, "items": list_trash_items(), "projects": read_project_summaries()})
+                elif action == "delete":
+                    delete_trash_item(str(payload.get("id") or ""))
+                    self.send_json(200, {"ok": True, "items": list_trash_items()})
+                else:
+                    raise ValueError("不支持的回收站操作")
             elif path == "/api/project/plan":
                 topic = str(payload.get("topic") or "").strip()[:2000]
                 model = str(payload.get("model") or "flash")
@@ -485,6 +522,7 @@ def main() -> None:
             f"SQLite integrity check failed; restore a backup from {BACKUP_DIR}"
         )
     migrate_legacy_state()
+    storage_service.purge_trash_items()
     memo_storage.initialize()
     if not memo_storage.check_integrity():
         raise RuntimeError("备忘录 SQLite 完整性检查失败")

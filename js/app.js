@@ -73,6 +73,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const utilityBody = document.getElementById('utilityBody');
     const utilityCloseBtn = document.getElementById('utilityCloseBtn');
     const openMemoBtn = document.getElementById('openMemoBtn');
+    const globalSearchBtn = document.getElementById('globalSearchBtn');
+    const openTrashBtn = document.getElementById('openTrashBtn');
     const copyQuestionBtn = document.getElementById('copyQuestionBtn');
     const extraQuestionBtn = document.getElementById('extraQuestionBtn');
     const extraAsk = document.getElementById('extraAsk');
@@ -81,6 +83,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const extraCancelBtn = document.getElementById('extraCancelBtn');
     const summaryQuestionBtn = document.getElementById('summaryQuestionBtn');
     const openSummaryBtn = document.getElementById('openSummaryBtn');
+    const assessmentFileHint = document.getElementById('assessmentFileHint');
+    const assessmentTemplateConclusionBtn = document.getElementById('assessmentTemplateConclusionBtn');
+    const assessmentTemplateExplainBtn = document.getElementById('assessmentTemplateExplainBtn');
+    const assessmentTemplateCodeBtn = document.getElementById('assessmentTemplateCodeBtn');
+    const assessmentTemplateCustomBar = document.getElementById('assessmentTemplateCustomBar');
+    const manageTemplatesBtn = document.getElementById('manageTemplatesBtn');
+    const assessmentRestoreBtn = document.getElementById('assessmentRestoreBtn');
     const studyTools = window.TodoStudyTools;
     const DATA_SCHEMA_VERSION = 2;
     const CONTENT_VERSION = 7;
@@ -117,6 +126,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     let assessmentQuestionAnswers = [];
     let assessmentQuestionConversations = [];
     let assessmentDraftTimer = null;
+    let assessmentFileSummary = '';
+    let trashItems = [];
+    let dirtyProjectIds = new Set();
+    let projectStatsCache = new Map();
+    let nodeStatsCache = new Map();
     let memoState = { memos: [], selectedId: null, query: '', saveTimer: null, pendingMemoId: null,
         saveQueue: Promise.resolve() };
     const projectFilters = { query: '', status: 'all' };
@@ -165,6 +179,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         } else if (node.review) {
             delete node.review;
         }
+        markProjectDirty(getCurrentProject());
     }
 
     function addDaysToIso(baseIso, days) {
@@ -191,6 +206,18 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return { due: due, learning: learning, log: log };
     }
 
+    function normalizeAssessmentFiles(value) {
+        if (!Array.isArray(value)) return [];
+        const files = [];
+        for (const item of value.slice(0, 10)) {
+            if (!item || typeof item !== 'object') continue;
+            const name = String(item.name || '未命名文件').slice(0, 200);
+            const content = String(item.content || '').slice(0, 120000);
+            if (name && content) files.push({ name: name, content: content });
+        }
+        return files;
+    }
+
     function projectAutoReview(project) {
         if (!project) return false;
         if (typeof project.reviewEnabled === 'boolean') return project.reviewEnabled;
@@ -210,6 +237,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             learning: result === 'again',
             log: reviewLogPush(node, result)
         };
+        markProjectDirty(getCurrentProject());
     }
 
     function scheduleReview(node, dueIso) {
@@ -220,15 +248,82 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             learning: false,
             log: (node.review && Array.isArray(node.review.log)) ? node.review.log.slice(-50) : []
         };
+        markProjectDirty(getCurrentProject());
     }
 
     function clearReview(node) {
         if (!node) return;
         delete node.review;
+        markProjectDirty(getCurrentProject());
     }
 
     function getCurrentProject() {
         return projects.find(p => p.id === currentProjectId) || null;
+    }
+
+    function markProjectDirty(project) {
+        if (!project || project.id == null) return;
+        const key = String(project.id);
+        dirtyProjectIds.add(key);
+        projectStatsCache.delete(key);
+        nodeStatsCache.delete(key);
+    }
+
+    function refreshProjectCaches(project) {
+        if (!project || !Array.isArray(project.tree)) return null;
+        const key = String(project.id);
+        const nodeMap = new Map();
+        const projectStats = { total: 0, remaining: 0, optionalTotal: 0, optionalCompleted: 0 };
+        function walk(nodes) {
+            let total = 0;
+            let remaining = 0;
+            for (const node of nodes || []) {
+                let stats;
+                if (node.type === 'item') {
+                    const mainItem = !node.optional;
+                    if (mainItem) {
+                        projectStats.total += 1;
+                        if (!node.completed) projectStats.remaining += 1;
+                    } else {
+                        projectStats.optionalTotal += 1;
+                        if (node.completed) projectStats.optionalCompleted += 1;
+                    }
+                    stats = {
+                        total: mainItem ? 1 : 0,
+                        remaining: mainItem && !node.completed ? 1 : 0
+                    };
+                } else {
+                    stats = walk(node.children || []);
+                }
+                nodeMap.set(String(node.id), stats);
+                total += stats.total;
+                remaining += stats.remaining;
+            }
+            return { total, remaining };
+        }
+        walk(project.tree || []);
+        projectStatsCache.set(key, projectStats);
+        nodeStatsCache.set(key, nodeMap);
+        return projectStats;
+    }
+
+    function ensureProjectCaches(project) {
+        if (!project || !Array.isArray(project.tree)) return null;
+        const key = String(project.id);
+        const cached = projectStatsCache.get(key);
+        if (cached && nodeStatsCache.has(key)) return cached;
+        return refreshProjectCaches(project);
+    }
+
+    function getCachedNodeStats(project, node) {
+        if (!project || !node) return { total: 0, remaining: 0 };
+        const key = String(project.id);
+        const nodeMap = nodeStatsCache.get(key);
+        if (!nodeMap) {
+            ensureProjectCaches(project);
+            return nodeStatsCache.get(key)?.get(String(node.id)) || { total: 0, remaining: 0 };
+        }
+        return nodeMap.get(String(node.id)) || { total: 0, remaining: 0 };
     }
 
     function createDefaultTree() {
@@ -545,6 +640,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
         }
         walk(project.tree);
+        markProjectDirty(project);
     }
 
     function ensureRemedialQueueAtBottom(projectList) {
@@ -697,6 +793,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             : [];
         assessment.questionResults = Array.isArray(assessment.questionResults)
             ? assessment.questionResults.slice(-MAX_QUESTION_RESULTS) : [];
+        assessment.uploadedFiles = normalizeAssessmentFiles(assessment.uploadedFiles);
+        assessment.lastSubmittedAt = typeof assessment.lastSubmittedAt === 'string'
+            ? assessment.lastSubmittedAt : '';
         return assessment;
     }
 
@@ -815,6 +914,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         projects = storedProjects.map(normalizeProjectSummary);
         if (projects.length === 0) {
             projects = createDefaultProjects();
+            projects.forEach(markProjectDirty);
             await saveProjects();
         }
     }
@@ -830,6 +930,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         project.stats = projects[index].stats;
         if (index === 0) ensureRemedialQueueAtBottom([project]);
         expandAllNodes(project.tree || [], false);
+        refreshProjectCaches(project);
         projects[index] = project;
         savedProjectJsonById.set(String(project.id), JSON.stringify(serializeProject(project)));
         return project;
@@ -843,22 +944,43 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const waiters = saveWaiters.splice(0);
         const operation = saveQueue.catch(() => undefined).then(async () => {
             if (saveConflict) throw new Error('存在未解决的版本冲突，请先刷新页面');
-            // Recompute after earlier queued saves finish so this operation never submits a stale snapshot.
-            const snapshot = projects.filter(project => Array.isArray(project.tree)).map(project => cloneData(project));
+            const snapshot = projects
+                .filter(project => Array.isArray(project.tree))
+                .map(project => cloneData(project));
             const currentProjectJsonById = new Map(
                 snapshot.map(project => [String(project.id), JSON.stringify(serializeProject(project))])
             );
+            // 只要“被标记为脏”或“与上次保存的 JSON 不一致”就写入；
+            // 即便个别改动路径漏标 dirty，也仍会被差集兜住，不会丢保存。
             const changedProjects = snapshot.filter(project =>
-                savedProjectJsonById.get(String(project.id)) !== currentProjectJsonById.get(String(project.id))
+                dirtyProjectIds.has(String(project.id))
+                || savedProjectJsonById.get(String(project.id)) !== currentProjectJsonById.get(String(project.id))
             );
             if (changedProjects.length === 0) return;
             setSaveStatus('保存中…', 'saving');
             for (const project of changedProjects) {
                 const current = projects.find(item => String(item.id) === String(project.id));
-                const expectedRevision = current ? current._revision : project._revision;
-                const payload = await writeStoredProject(project, expectedRevision);
-                const savedJson = currentProjectJsonById.get(String(project.id));
+                const projectId = String(project.id);
+                let expectedRevision = current ? current._revision : project._revision;
+                let payload;
+                try {
+                    payload = await writeStoredProject(project, expectedRevision);
+                } catch (writeError) {
+                    if (!(writeError && writeError.status === 409)) throw writeError;
+                    // 409：本地版本过期。取服务端最新 revision 自动重试一次（单机工具）。
+                    try {
+                        const fresh = await readStoredProject(projectId);
+                        payload = await writeStoredProject(project, Number(fresh.revision));
+                    } catch (retryError) {
+                        const finalError = (retryError && retryError.status === 409)
+                            ? new Error('项目已被其他页面修改，请刷新后重试')
+                            : (retryError || new Error('保存失败'));
+                        throw finalError;
+                    }
+                }
+                const savedJson = currentProjectJsonById.get(projectId);
                 savedProjectJsonById.set(String(project.id), savedJson);
+                dirtyProjectIds.delete(String(project.id));
                 if (current) {
                     current._revision = Number(payload.revision) || expectedRevision + 1;
                     if (payload.summary) current.stats = payload.summary.stats;
@@ -1011,21 +1133,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     function getProjectRemaining(project) {
         if (!Array.isArray(project.tree)) return Math.max(0, Number(project.stats?.remaining) || 0);
-        return countRemainingInTree(project.tree || []);
+        const cached = ensureProjectCaches(project);
+        return cached ? cached.remaining : countRemainingInTree(project.tree || []);
     }
 
     function getProjectTotal(project) {
         if (!Array.isArray(project.tree)) return Math.max(0, Number(project.stats?.total) || 0);
-        let total = 0;
-
-        function walk(nodes) {
-            for (const node of nodes) {
-                if (node.type === 'item' && !node.optional) total++;
-                if (node.children && node.children.length > 0) walk(node.children);
-            }
-        }
-        walk(project.tree || []);
-        return total;
+        const cached = ensureProjectCaches(project);
+        return cached ? cached.total : 0;
     }
 
     function getProjectOptionalStats(project) {
@@ -1035,18 +1150,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 completed: Math.max(0, Number(project.stats?.optionalCompleted) || 0)
             };
         }
-        const stats = { total: 0, completed: 0 };
-        function walk(nodes) {
-            for (const node of nodes) {
-                if (node.type === 'item' && node.optional) {
-                    stats.total++;
-                    if (node.completed) stats.completed++;
-                }
-                if (node.children && node.children.length > 0) walk(node.children);
-            }
-        }
-        walk(project.tree || []);
-        return stats;
+        const cached = ensureProjectCaches(project);
+        return cached ? {
+            total: cached.optionalTotal || 0,
+            completed: cached.optionalCompleted || 0
+        } : { total: 0, completed: 0 };
     }
 
     function findNodeById(nodes, id) {
@@ -1071,6 +1179,23 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
         }
         return false;
+    }
+
+    function snapshotNodeForTrash(nodes, targetId, ancestors = []) {
+        for (let index = 0; index < (nodes || []).length; index += 1) {
+            const node = nodes[index];
+            if (String(node.id) === String(targetId)) {
+                return {
+                    node: cloneData(node),
+                    parentId: ancestors.length > 0 ? ancestors[ancestors.length - 1].id : null,
+                    position: index,
+                    path: ancestors.map(item => item.text || '').filter(Boolean).join(' / ')
+                };
+            }
+            const child = snapshotNodeForTrash(node.children || [], targetId, ancestors.concat(node));
+            if (child) return child;
+        }
+        return null;
     }
 
     function toggleAllChildren(node, completed) {
@@ -1358,10 +1483,22 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     }
 
+    function updateAssessmentFileHint() {
+        if (!assessmentFileHint) return;
+        if (assessmentCodeFiles.length === 0) {
+            assessmentFileHint.textContent = '可上传代码文件，也可直接在回答框中写代码；只读文本，不会执行';
+            return;
+        }
+        const totalBytes = assessmentCodeFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+        const truncated = assessmentCodeFiles.some(file => Number(file.size) > 120000);
+        assessmentFileHint.textContent = `已选 ${assessmentCodeFiles.length} 个文件 · ${formatBytes(totalBytes)} · 每个文件会截断到 120 KB${truncated ? '，超出部分不会发送' : ''}`;
+    }
+
     function renderAssessmentFiles() {
         assessmentFilesList.replaceChildren();
         if (assessmentCodeFiles.length === 0) {
             assessmentFilesList.hidden = true;
+            updateAssessmentFileHint();
             return;
         }
         assessmentFilesList.hidden = false;
@@ -1380,6 +1517,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             row.append(name, remove);
             assessmentFilesList.appendChild(row);
         });
+        updateAssessmentFileHint();
     }
 
     async function readAssessmentFiles(fileList) {
@@ -1400,6 +1538,17 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (!existing.has(file.name)) assessmentCodeFiles.push(file);
         }
         assessmentFiles.value = '';
+        if (assessmentNode) {
+            assessmentNode.assessment = {
+                ...(assessmentNode.assessment || {}),
+                uploadedFiles: await Promise.all(assessmentCodeFiles.map(async file => ({
+                    name: file.name,
+                    content: (await file.text()).slice(0, 120000)
+                })))
+            };
+            markProjectDirty(getCurrentProject());
+            saveProjects();
+        }
         renderAssessmentFiles();
     }
 
@@ -1461,9 +1610,24 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         assessmentSubmitBtn.textContent = questions ? '提交本题' : '提交';
     }
 
+    function setQuickDisabled(disabled) {
+        const els = [copyQuestionBtn, summaryQuestionBtn, extraQuestionBtn,
+            assessmentTemplateConclusionBtn, assessmentTemplateExplainBtn,
+            assessmentTemplateCodeBtn];
+        for (const el of els) {
+            if (el) el.disabled = !!disabled;
+        }
+        if (assessmentTemplateCustomBar) {
+            Array.from(assessmentTemplateCustomBar.querySelectorAll('button')).forEach(function(btn) {
+                btn.disabled = !!disabled;
+            });
+        }
+    }
+
     async function requestAssessmentQuestion() {
         if (!assessmentNode || assessmentQuestioning) return;
         assessmentQuestioning = true;
+        setQuickDisabled(true);
         assessmentQuestionBtn.disabled = true;
         assessmentQuestionBtn.textContent = '出题中…';
         assessmentServiceStatus.textContent = '正在生成针对题…';
@@ -1496,14 +1660,17 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 questionIndex: 0,
                 questionAnswers: [],
                 questionConversations: [],
+                uploadedFiles: await getAssessmentFilePayload(),
                 model: assessmentModel.value
             };
+            markProjectDirty(getCurrentProject());
             await saveProjects();
             assessmentServiceStatus.textContent = '题目已生成，请回答当前题';
         } catch (error) {
             assessmentServiceStatus.textContent = error.message || 'AI 出题失败';
         } finally {
             assessmentQuestioning = false;
+            setQuickDisabled(false);
             assessmentQuestionBtn.disabled = false;
         assessmentQuestionBtn.textContent = '重新出三道题';
         }
@@ -1543,6 +1710,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         assessmentResult.hidden = true;
         showAssessmentLive(false, true);
         assessmentCodeFiles = [];
+        if (Array.isArray(node.assessment?.uploadedFiles) && node.assessment.uploadedFiles.length > 0 && typeof window.File === 'function') {
+            assessmentCodeFiles = normalizeAssessmentFiles(node.assessment.uploadedFiles).map(item =>
+                new File([item.content], item.name, { type: 'text/plain' })
+            );
+        }
         assessmentQuestionItems = Array.isArray(node.assessment?.questionSet)
             ? node.assessment.questionSet.map(String) : [];
         assessmentQuestionIndex = Math.max(0, Number(node.assessment?.questionIndex) || 0);
@@ -1573,6 +1745,151 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             renderAssessmentConversation();
         });
         setTimeout(() => assessmentAnswer.focus(), 0);
+    }
+
+    function restoreAssessmentSubmission() {
+        if (!assessmentNode || !assessmentNode.assessment) return;
+        if (assessmentNode.assessment.answer || assessmentNode.assessment.implementationDraft) {
+            assessmentAnswer.value = assessmentNode.assessment.implementationDraft || assessmentNode.assessment.answer || '';
+        }
+        const restored = normalizeAssessmentFiles(assessmentNode.assessment.uploadedFiles);
+        assessmentCodeFiles = restored.map(item => new File([item.content], item.name, { type: 'text/plain' }));
+        renderAssessmentFiles();
+        if (assessmentStageName === 'questions') {
+            const questionText = assessmentQuestionAnswers[assessmentQuestionIndex] || '';
+            if (questionText) assessmentAnswer.value = questionText;
+        }
+        showToast('已恢复上次输入');
+    }
+
+
+    function customTemplatesLoad() {
+        try {
+            const raw = localStorage.getItem('todo_ai_custom_templates');
+            if (raw) {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr)) {
+                    return arr.filter(function(item) { return item && item.label && item.text; });
+                }
+            }
+        } catch (error) { /* 忽略 */ }
+        return [];
+    }
+    function customTemplatesSave(list) {
+        try { localStorage.setItem('todo_ai_custom_templates', JSON.stringify(list)); } catch (error) { /* 忽略 */ }
+    }
+    function renderCustomTemplates() {
+        if (!assessmentTemplateCustomBar) return;
+        assessmentTemplateCustomBar.innerHTML = '';
+        const list = customTemplatesLoad();
+        assessmentTemplateCustomBar.hidden = list.length === 0;
+        list.forEach(function(item) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'assessment-question-btn template-custom';
+            btn.textContent = item.label;
+            btn.title = item.text;
+            btn.addEventListener('click', function() { insertTemplateText(item.text); });
+            assessmentTemplateCustomBar.appendChild(btn);
+        });
+    }
+    function openTemplateManager() {
+        showUtilityModal('答案模板', '模板管理');
+        utilityBody.innerHTML = '';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = '自定义模板保存在本浏览器；点「添加」后即可在答题框一键插入。';
+        utilityBody.appendChild(hint);
+        const listBox = document.createElement('div');
+        listBox.className = 'summary-list';
+        function rerender() {
+            listBox.innerHTML = '';
+            const cur = customTemplatesLoad();
+            if (cur.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'utility-empty';
+                empty.textContent = '还没有自定义模板';
+                listBox.appendChild(empty);
+                return;
+            }
+            cur.forEach(function(item, index) {
+                const card = document.createElement('div');
+                card.className = 'summary-item';
+                const row = document.createElement('div');
+                row.className = 'summary-row';
+                const q = document.createElement('div');
+                q.className = 'summary-question';
+                q.textContent = item.label;
+                const del = document.createElement('button');
+                del.type = 'button';
+                del.className = 'utility-secondary-btn summary-delete';
+                del.textContent = '删除';
+                del.addEventListener('click', function() {
+                    if (!window.confirm('删除模板「' + item.label + '」？')) return;
+                    const cur2 = customTemplatesLoad();
+                    cur2.splice(index, 1);
+                    customTemplatesSave(cur2);
+                    rerender();
+                    renderCustomTemplates();
+                });
+                row.appendChild(q);
+                row.appendChild(del);
+                const c = document.createElement('div');
+                c.className = 'summary-content';
+                c.textContent = item.text;
+                card.appendChild(row);
+                card.appendChild(c);
+                listBox.appendChild(card);
+            });
+        }
+        utilityBody.appendChild(listBox);
+        rerender();
+        const editor = document.createElement('div');
+        editor.className = 'template-editor';
+        const labelInput = document.createElement('input');
+        labelInput.type = 'text';
+        labelInput.className = 'memo-title-input';
+        labelInput.placeholder = '模板名称（如：排错三步）';
+        const ta = document.createElement('textarea');
+        ta.className = 'memo-content-input';
+        ta.rows = 6;
+        ta.placeholder = '模板内容：可含 Markdown / 代码块 / 换行';
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'utility-primary-btn';
+        add.textContent = '添加模板';
+        add.addEventListener('click', function() {
+            const label = labelInput.value.trim();
+            const text = ta.value;
+            if (!label || !text) { showToast('请填写模板名称和内容'); return; }
+            const cur = customTemplatesLoad();
+            cur.push({ label: label.slice(0, 20), text: text });
+            customTemplatesSave(cur);
+            labelInput.value = '';
+            ta.value = '';
+            rerender();
+            renderCustomTemplates();
+            showToast('已添加模板');
+        });
+        editor.append(labelInput, ta, add);
+        utilityBody.appendChild(editor);
+    }
+    function insertTemplateText(text) {
+        if (!text) return;
+        const start = assessmentAnswer.selectionStart ?? assessmentAnswer.value.length;
+        const end = assessmentAnswer.selectionEnd ?? assessmentAnswer.value.length;
+        assessmentAnswer.value = assessmentAnswer.value.slice(0, start) + text + assessmentAnswer.value.slice(end);
+        assessmentAnswer.selectionStart = assessmentAnswer.selectionEnd = start + text.length;
+        assessmentAnswer.focus();
+        saveAssessmentDraft();
+    }
+    function insertAssessmentTemplate(kind) {
+        const templates = {
+            conclusion: '结论：\n原因：\n边界：\n',
+            explain: '我先说结论：\n然后解释机制：\n最后补充容易错的边界：\n',
+            code: '```python\n# 先写核心思路\n\n```\n'
+        };
+        insertTemplateText(templates[kind]);
     }
 
     function closeAssessment() {
@@ -1611,6 +1928,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 model: assessmentModel.value
             };
         }
+        markProjectDirty(getCurrentProject());
         saveProjects();
     }
 
@@ -1792,6 +2110,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
         }
         assessmentSubmitting = true;
+        setQuickDisabled(true);
         assessmentSubmitBtn.disabled = true;
         assessmentSubmitBtn.textContent = skipsImplementation ? '提交中…' : '验收中…';
         assessmentServiceStatus.textContent = skipsImplementation ? '正在完成任务…' : '正在发送给 DeepSeek…';
@@ -1823,6 +2142,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 assessmentServiceStatus.textContent = '提交失败';
             } finally {
                 assessmentSubmitting = false;
+            setQuickDisabled(false);
                 assessmentSubmitBtn.disabled = false;
                 assessmentSubmitBtn.textContent = '提交';
             }
@@ -1887,11 +2207,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     questionIndex: assessmentQuestionIndex,
                     questionAnswers: assessmentQuestionAnswers,
                     questionConversations: assessmentQuestionConversations,
+                    uploadedFiles: await getAssessmentFilePayload(),
                     questionResults: [...(assessmentNode.assessment?.questionResults || []), result]
                         .slice(-MAX_QUESTION_RESULTS),
                     model: assessmentModel.value
                 };
                 if (!result.passed) {
+                    markProjectDirty(getCurrentProject());
                     await saveProjects();
                     showAssessmentResult(result);
                     renderAssessmentConversation();
@@ -1916,6 +2238,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 assessmentAnswer.value = '';
                 assessmentCodeFiles = [];
                 renderAssessmentFiles();
+                markProjectDirty(getCurrentProject());
                 await saveProjects();
                 showAssessmentResult({ ...result, summary: '三道题全部通过。第二阶段可留空提交；填写内容则继续由 AI 验收。' });
                 assessmentServiceStatus.textContent = '第一阶段已通过；第二阶段可留空提交';
@@ -1924,8 +2247,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             assessmentNode.assessment = { ...(assessmentNode.assessment || {}), ...result,
                 stage: assessmentStageName,
                 answer: answer.slice(0, MAX_ASSESSMENT_ANSWER_CHARS),
-                implementationDraft: '' };
+                implementationDraft: '',
+                uploadedFiles: await getAssessmentFilePayload()
+            };
             setNodeCompleted(assessmentNode, assessmentStageName === 'implementation' && result.passed);
+            markProjectDirty(getCurrentProject());
             await saveProjects();
             if (result.passed) {
                 assessmentModal.setAttribute('hidden', '');
@@ -1948,6 +2274,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         } finally {
             clearTimeout(timeout);
             assessmentSubmitting = false;
+            setQuickDisabled(false);
             assessmentSubmitBtn.disabled = false;
             assessmentSubmitBtn.textContent = assessmentStageName === 'questions' ? '提交本题' : '提交';
         }
@@ -1959,17 +2286,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function getNodeStats(node) {
-        if (node.type === 'item') {
-            if (node.optional) return { total: 0, remaining: 0 };
-            return { total: 1, remaining: node.completed ? 0 : 1 };
-        }
-        return (node.children || []).reduce((stats, child) => {
-            const childStats = getNodeStats(child);
-            return {
-                total: stats.total + childStats.total,
-                remaining: stats.remaining + childStats.remaining
-            };
-        }, { total: 0, remaining: 0 });
+        const project = getCurrentProject();
+        if (!project) return { total: 0, remaining: 0 };
+        return getCachedNodeStats(project, node);
     }
 
     function getNodeCompletionState(node) {
@@ -2067,6 +2386,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             );
             node.assessment = Object.keys(preserved).length > 0 ? preserved : null;
         });
+        markProjectDirty(project);
         saveProjects();
         renderDetail();
         showToast(`已清理 ${candidates.length} 个任务的验收记录`);
@@ -2806,6 +3126,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
         emptyProjects.style.display = 'none';
         visibleProjects.forEach(project => {
+            ensureProjectCaches(project);
             const card = document.createElement('div');
             card.className = 'project-card';
             card.dataset.id = project.id;
@@ -2930,6 +3251,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const newName = input.value.trim();
             if (newName) {
                 project.name = newName;
+                markProjectDirty(project);
                 saveProjects();
             }
             renderProjects();
@@ -2981,6 +3303,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showProjectsView();
             return;
         }
+        ensureProjectCaches(project);
         detailTitle.textContent = project.name;
         detailDate.textContent = '创建于 ' + (project.createdAt || '未知');
         projectAssessmentToggle.checked = Boolean(project.assessmentEnabled);
@@ -3164,8 +3487,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             li.appendChild(childrenUl);
             row.addEventListener('click', (e) => {
                 if (e.target.closest('.node-actions') || e.target.closest('.checkbox')) return;
-                node.expanded = !node.expanded;
-                renderDetail();
+                updateBranch(node, li);
             });
         } else {
             row.addEventListener('click', (e) => {
@@ -3212,6 +3534,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
             toggleAllChildren(node, getNodeCompletionState(node) !== 'completed');
         }
+        markProjectDirty(getCurrentProject());
         saveProjects();
         renderDetail();
     }
@@ -3224,10 +3547,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         row.replaceChild(input, textSpan);
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
-        const save = () => {
+            const save = () => {
             const newText = input.value.trim();
             if (newText) {
                 node.text = newText;
+                markProjectDirty(getCurrentProject());
                 saveProjects();
             }
             renderDetail();
@@ -3287,6 +3611,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 }
                 if (!parentNode.children) parentNode.children = [];
                 parentNode.children.push(child);
+                markProjectDirty(getCurrentProject());
                 saveProjects();
             }
             renderDetail();
@@ -3301,12 +3626,31 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         });
     }
 
-    function deleteNode(node, row) {
+    async function deleteNode(node, row) {
         const project = getCurrentProject();
         if (!project) return;
         if (node.id === 1600) {
             showToast('补漏队列是固定入口，不能删除；可以继续添加或删除其中的具体任务');
             return;
+        }
+        const snapshot = snapshotNodeForTrash(project.tree || [], node.id);
+        let trashId = null;
+        if (snapshot) {
+            try {
+                const savedTrash = await storeTrashItem({
+                    kind: 'node',
+                    projectId: project.id,
+                    title: node.text || '未命名任务',
+                    context: `${project.name || '未命名项目'} · ${snapshot.path || ''}`.trim(),
+                    parentId: snapshot.parentId,
+                    position: snapshot.position,
+                    revision: project._revision || 0,
+                    payload: snapshot.node
+                });
+                trashId = savedTrash.id;
+            } catch (error) {
+                console.warn('写入回收站失败', error);
+            }
         }
         const treeBeforeDelete = cloneData(project.tree);
         let finalized = false;
@@ -3315,13 +3659,20 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             finalized = true;
             removeNodeById(project.tree, node.id);
             cleanupEmptyNodes(project.tree);
+            markProjectDirty(project);
             saveProjects();
             renderDetail();
             showToast(`已删除：${node.text}`, {
                 label: '撤销',
-                onClick: () => {
+                onClick: async () => {
                     if (!projects.includes(project)) return;
                     project.tree = treeBeforeDelete;
+                    markProjectDirty(project);
+                    try {
+                        if (trashId) await deleteTrashItemById(trashId);
+                    } catch (error) {
+                        console.warn('清理回收站条目失败', error);
+                    }
                     saveProjects();
                     renderDetail();
                 }
@@ -3350,6 +3701,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         setTimeout(() => {
             completedIds.forEach(id => removeNodeById(project.tree, id));
             cleanupEmptyNodes(project.tree);
+            markProjectDirty(project);
             saveProjects();
             renderDetail();
             showToast(`已清空 ${completedIds.length} 项`, {
@@ -3357,6 +3709,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 onClick: () => {
                     if (!projects.includes(project)) return;
                     project.tree = treeBeforeClear;
+                    markProjectDirty(project);
                     saveProjects();
                     renderDetail();
                 }
@@ -3432,6 +3785,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const newName = input.value.trim();
             if (newName) {
                 project.name = newName;
+                markProjectDirty(project);
                 saveProjects();
             }
             renderDetail();
@@ -4038,6 +4392,255 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         utilityBody.appendChild(grid);
     }
 
+    async function loadTrashItems() {
+        const response = await apiFetch('/api/trash', { cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !Array.isArray(payload.items)) throw new Error(payload.error || '读取回收站失败');
+        trashItems = payload.items;
+        return trashItems;
+    }
+
+    async function storeTrashItem(item) {
+        const response = await apiFetch('/api/trash', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'store', item })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.item) throw new Error(payload.error || '写入回收站失败');
+        trashItems = payload.items || trashItems;
+        return payload.item;
+    }
+
+    async function restoreTrashItem(id) {
+        const response = await apiFetch('/api/trash', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'restore', id })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '恢复失败');
+        trashItems = payload.items || trashItems;
+        if (Array.isArray(payload.projects)) {
+            projects = payload.projects.map(normalizeProjectSummary);
+            savedProjectJsonById.clear();
+            dirtyProjectIds.clear();
+            saveConflict = false;
+            renderProjects();
+        }
+        return payload.item;
+    }
+
+    async function deleteTrashItemById(id) {
+        const response = await apiFetch('/api/trash', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'delete', id })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '删除回收站条目失败');
+        trashItems = payload.items || trashItems;
+    }
+
+    function renderTrashItems(items) {
+        utilityBody.innerHTML = '';
+        const toolbar = document.createElement('div');
+        toolbar.className = 'utility-toolbar';
+        const count = document.createElement('span');
+        count.textContent = `共 ${items.length} 条最近删除记录`;
+        toolbar.appendChild(count);
+        if (items.length > 0) {
+            const clearBtn = document.createElement('button');
+            clearBtn.type = 'button';
+            clearBtn.className = 'utility-secondary-btn';
+            clearBtn.textContent = '清空记录';
+            clearBtn.addEventListener('click', async () => {
+                if (!window.confirm('确认清空全部回收站记录？')) return;
+                try {
+                    for (const item of [...items]) {
+                        await deleteTrashItemById(item.id);
+                    }
+                    renderTrashItems(trashItems);
+                } catch (error) {
+                    showToast(error.message || '清空回收站失败');
+                }
+            });
+            toolbar.appendChild(clearBtn);
+        }
+        utilityBody.appendChild(toolbar);
+        if (items.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'utility-empty';
+            empty.textContent = '最近删除的项目会出现在这里。';
+            utilityBody.appendChild(empty);
+            return;
+        }
+        const list = document.createElement('div');
+        list.className = 'trash-list';
+        items.forEach(item => {
+            const card = document.createElement('div');
+            card.className = 'trash-item';
+            const title = document.createElement('strong');
+            title.textContent = item.title || '未命名条目';
+            const meta = document.createElement('small');
+            meta.textContent = `${item.kind === 'project' ? '项目' : '任务'} · ${item.deletedAt || ''}`;
+            const context = document.createElement('div');
+            context.className = 'trash-context';
+            context.textContent = item.context || item.projectId || '';
+            const actions = document.createElement('div');
+            actions.className = 'trash-actions';
+            const restoreBtn = document.createElement('button');
+            restoreBtn.type = 'button';
+            restoreBtn.className = 'utility-primary-btn';
+            restoreBtn.textContent = '恢复';
+            restoreBtn.addEventListener('click', async () => {
+                try {
+                    await restoreTrashItem(item.id);
+                    renderTrashItems(trashItems);
+                    showToast('已恢复');
+                } catch (error) {
+                    showToast(error.message || '恢复失败');
+                }
+            });
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.className = 'utility-secondary-btn';
+            deleteBtn.textContent = '删除';
+            deleteBtn.addEventListener('click', async () => {
+                if (!window.confirm('确认永久删除这条记录？')) return;
+                try {
+                    await deleteTrashItemById(item.id);
+                    renderTrashItems(trashItems);
+                } catch (error) {
+                    showToast(error.message || '删除失败');
+                }
+            });
+            actions.append(restoreBtn, deleteBtn);
+            card.append(title, meta, context, actions);
+            list.appendChild(card);
+        });
+        utilityBody.appendChild(list);
+    }
+
+    async function openTrashBin() {
+        showUtilityModal('回收站', '最近删除');
+        utilityBody.innerHTML = '<p class="utility-empty">正在读取回收站…</p>';
+        try {
+            const items = await loadTrashItems();
+            renderTrashItems(items);
+        } catch (error) {
+            utilityBody.innerHTML = `<p class="utility-empty">${error.message || '读取回收站失败'}</p>`;
+        }
+    }
+
+    function collectSearchMatches(project, query) {
+        const normalized = String(query || '').trim().toLowerCase();
+        const results = [];
+        const projectText = `${project.name || ''} ${project.description || ''}`.toLowerCase();
+        if (projectText.includes(normalized)) {
+            results.push({
+                kind: 'project',
+                projectId: project.id,
+                label: project.name,
+                detail: project.description || '项目摘要'
+            });
+        }
+        walkTreeEntries(project.tree || [], [], [], entry => {
+            const text = `${entry.node.text || ''} ${entry.path || ''}`.toLowerCase();
+            if (text.includes(normalized)) {
+                results.push({
+                    kind: 'node',
+                    projectId: project.id,
+                    nodeId: entry.node.id,
+                    label: entry.node.text || '未命名任务',
+                    detail: entry.path || project.name,
+                    ancestorIds: entry.ancestorIds || []
+                });
+            }
+        });
+        return results;
+    }
+
+    async function openGlobalSearch() {
+        showUtilityModal('全局搜索', '跨项目');
+        utilityBody.innerHTML = '';
+        const toolbar = document.createElement('div');
+        toolbar.className = 'utility-toolbar';
+        const search = document.createElement('input');
+        search.type = 'search';
+        search.className = 'memo-search';
+        search.placeholder = '搜索项目名、描述、周、单元、任务';
+        const meta = document.createElement('span');
+        meta.textContent = '正在加载全部项目…';
+        toolbar.append(search, meta);
+        utilityBody.appendChild(toolbar);
+        const results = document.createElement('div');
+        results.className = 'search-results';
+        utilityBody.appendChild(results);
+        const allProjects = [];
+        try {
+            await Promise.all(projects.map(project => ensureProjectLoaded(project.id)));
+            allProjects.push(...projects.filter(project => Array.isArray(project.tree)));
+            meta.textContent = `已加载 ${allProjects.length} 个项目`;
+        } catch (error) {
+            meta.textContent = error.message || '加载项目失败';
+            return;
+        }
+        const render = () => {
+            results.innerHTML = '';
+            const query = search.value.trim().toLowerCase();
+            if (!query) {
+                const empty = document.createElement('p');
+                empty.className = 'utility-empty';
+                empty.textContent = '输入关键词后可跨项目搜索。';
+                results.appendChild(empty);
+                return;
+            }
+            const matched = [];
+            for (const project of allProjects) {
+                matched.push(...collectSearchMatches(project, query));
+            }
+            meta.textContent = `找到 ${matched.length} 条结果`;
+            if (matched.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'utility-empty';
+                empty.textContent = '没有找到匹配项';
+                results.appendChild(empty);
+                return;
+            }
+            matched.slice(0, 100).forEach(item => {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'search-result';
+                const title = document.createElement('strong');
+                title.textContent = item.label;
+                const detail = document.createElement('small');
+                detail.textContent = item.kind === 'project'
+                    ? `项目 · ${item.detail || ''}`
+                    : `任务 · ${item.detail || ''}`;
+                row.append(title, detail);
+                row.addEventListener('click', async () => {
+                    if (item.kind === 'project') {
+                        await openProjectDetail(item.projectId);
+                        closeUtilityModal();
+                    } else {
+                        await locateStudyTask(item.projectId, {
+                            id: item.nodeId,
+                            text: item.label,
+                            ancestorIds: item.ancestorIds || [],
+                            path: item.detail || '',
+                            optional: false
+                        });
+                    }
+                });
+                results.appendChild(row);
+            });
+        };
+        search.addEventListener('input', render);
+        render();
+        search.focus();
+    }
+
 
     function toggleExtraAsk() {
         if (!extraAsk) return;
@@ -4115,6 +4718,29 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         });
     }
 
+
+    function updateBranch(node, li) {
+        if (!node || !li) return;
+        if (isNodeFiltering()) { renderDetail(); return; }
+        node.expanded = !node.expanded;
+        const arrow = li.querySelector(':scope > .node-row .arrow');
+        if (arrow) arrow.classList.toggle('expanded', node.expanded);
+        const ul = li.querySelector(':scope > .children');
+        if (!ul) return;
+        if (node.expanded) {
+            ul.classList.add('expanded');
+            if (ul.childElementCount === 0) {
+                const project = getCurrentProject();
+                const projectCreatedAt = project ? (project.createdAt || '') : '';
+                (node.children || []).forEach(child => {
+                    ul.appendChild(renderNode(child, projectCreatedAt, false));
+                });
+            }
+        } else {
+            ul.classList.remove('expanded');
+        }
+    }
+
     function initEvents() {
         assessmentForm.addEventListener('submit', submitAssessment);
         assessmentAnswer.addEventListener('keydown', handleAssessmentEditorTab);
@@ -4133,6 +4759,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (copyQuestionBtn) copyQuestionBtn.addEventListener('click', copyCurrentQuestion);
         if (summaryQuestionBtn) summaryQuestionBtn.addEventListener('click', generateSummary);
         if (openSummaryBtn) openSummaryBtn.addEventListener('click', openSummaryList);
+        if (globalSearchBtn) globalSearchBtn.addEventListener('click', openGlobalSearch);
+        if (openTrashBtn) openTrashBtn.addEventListener('click', openTrashBin);
+        if (assessmentTemplateConclusionBtn) assessmentTemplateConclusionBtn.addEventListener('click', () => insertAssessmentTemplate('conclusion'));
+        if (assessmentTemplateExplainBtn) assessmentTemplateExplainBtn.addEventListener('click', () => insertAssessmentTemplate('explain'));
+        if (assessmentTemplateCodeBtn) assessmentTemplateCodeBtn.addEventListener('click', () => insertAssessmentTemplate('code'));
+        if (assessmentRestoreBtn) assessmentRestoreBtn.addEventListener('click', restoreAssessmentSubmission);
+        if (manageTemplatesBtn) manageTemplatesBtn.addEventListener('click', openTemplateManager);
+        renderCustomTemplates();
         document.querySelectorAll('[data-study-action]').forEach(button => {
             button.addEventListener('click', () => openStudyTool(button.dataset.studyAction));
         });
@@ -4196,14 +4830,16 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 if (newProjectPlanToggle) newProjectPlanToggle.checked = false;
             };
             const plainCreate = () => {
-                projects.push({
+                const project = {
                     id: generateId(),
                     name: name,
                     description: '',
                     createdAt: todayStr(),
                     assessmentEnabled: Boolean(newProjectAiToggle.checked),
                     tree: []
-                });
+                };
+                projects.push(project);
+                markProjectDirty(project);
                 saveProjects();
                 clearInputs();
                 renderProjects();
@@ -4232,6 +4868,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     tree: buildPlanTree(payload.plan.tree || [])
                 };
                 projects.push(project);
+                markProjectDirty(project);
                 await saveProjects();
                 clearInputs();
                 await openProjectDetail(project.id);
@@ -4255,6 +4892,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 const reviewProject = getCurrentProject();
                 if (!reviewProject) return;
                 reviewProject.reviewEnabled = projectReviewToggle.checked;
+                markProjectDirty(reviewProject);
                 saveProjects();
                 renderDetail();
                 showToast(reviewProject.reviewEnabled
@@ -4266,6 +4904,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const project = getCurrentProject();
             if (!project) return;
             setProjectAssessmentEnabled(project, projectAssessmentToggle.checked);
+            markProjectDirty(project);
             saveProjects();
             renderDetail();
             showToast(project.assessmentEnabled ? '已开启本项目 AI 验收' : '已关闭本项目 AI 验收');
@@ -4287,6 +4926,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 children: []
             });
             ensureRemedialQueueAtBottom([project]);
+            markProjectDirty(project);
             saveProjects();
             newNodeInput.value = '';
             renderDetail();

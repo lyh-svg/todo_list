@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>项目管理器 · 文件夹式清单</title>
-<link rel="stylesheet" href="css/style.css?v=22" />
+<link rel="stylesheet" href="css/style.css?v=23" />
 </head>
 <body>
 <div class="app" id="app">
@@ -14,6 +14,8 @@
 <h1><span class="brand-mark" aria-hidden="true">✓</span>复习清单</h1>
 <div class="study-shortcuts" aria-label="学习快捷工具">
 <button class="shortcut-btn" id="openSummaryBtn" type="button"><span aria-hidden="true">◫</span>摘要清单</button>
+<button class="shortcut-btn" id="globalSearchBtn" type="button"><span aria-hidden="true">⌕</span>全局搜索</button>
+<button class="shortcut-btn" id="openTrashBtn" type="button"><span aria-hidden="true">🗑</span>回收站</button>
 <button class="shortcut-btn" data-study-action="focus" type="button"><span aria-hidden="true">◎</span>今日聚焦</button>
 <button class="shortcut-btn" data-study-action="random" type="button"><span aria-hidden="true">⌁</span>随机复习</button>
 <button class="shortcut-btn" data-study-action="stats" type="button"><span aria-hidden="true">▥</span>进度统计</button>
@@ -217,7 +219,15 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 上传代码文件
 <input type="file" id="assessmentFiles" accept=".py,.pyw,.pyi,.txt,.md,.json,.toml" multiple />
 </label>
-<span class="assessment-file-hint">可上传代码文件，也可直接在回答框中写代码；只读文本，不会执行</span>
+<div class="assessment-templates" aria-label="答案模板">
+<button type="button" class="assessment-question-btn" id="assessmentTemplateConclusionBtn">结论模板</button>
+<button type="button" class="assessment-question-btn" id="assessmentTemplateExplainBtn">解释模板</button>
+<button type="button" class="assessment-question-btn" id="assessmentTemplateCodeBtn">代码模板</button>
+<div class="assessment-templates" id="assessmentTemplateCustomBar" aria-label="自定义模板" hidden></div>
+<button type="button" class="assessment-question-btn" id="manageTemplatesBtn">自定义模板…</button>
+<button type="button" class="assessment-question-btn" id="assessmentRestoreBtn">恢复上次提交</button>
+</div>
+<span class="assessment-file-hint" id="assessmentFileHint">可上传代码文件，也可直接在回答框中写代码；只读文本，不会执行</span>
 </div>
 <div class="assessment-files" id="assessmentFilesList" hidden></div>
 <div class="assessment-consent">
@@ -239,6 +249,6 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 
 <script src="js/api-client.js?v=1"></script>
 <script src="js/study-tools.js?v=1"></script>
-<script src="js/app.js?v=26"></script>
+<script src="js/app.js?v=27"></script>
 </body>
 </html>
