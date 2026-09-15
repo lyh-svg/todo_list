@@ -90,7 +90,7 @@ echo "   健康检查 OK (pid $SERVER_PID)"
 
 echo "### 3) HTTP 断言"
 python3 - "$TODO_SESSION_TOKEN" "$BASE" <<'PY'
-import json, sys, urllib.error, urllib.parse, urllib.request
+import json, re, sys, urllib.error, urllib.parse, urllib.request
 
 TOKEN = sys.argv[1]
 BASE = sys.argv[2]
@@ -188,7 +188,13 @@ def raw_headers(path):
     except urllib.error.HTTPError as error:
         return error.code, error.headers
 
-for path in ("/js/app.js?v=41", "/css/style.css?v=25", "/js/api-client.js?v=1", "/js/study-tools.js?v=1"):
+# 版本号直接从 index.html 读，避免每次改前端都来同步这个脚本
+_, _, _index_html = call("/index.html", header_token=False)
+_versions = dict(re.findall(r"(js/app\.js|css/style\.css|js/api-client\.js|js/study-tools\.js)\?v=(\d+)",
+                            _index_html.decode("utf-8")))
+assert set(_versions) == {"js/app.js", "css/style.css", "js/api-client.js", "js/study-tools.js"}, _versions
+for path in (f"/js/app.js?v={_versions['js/app.js']}", f"/css/style.css?v={_versions['css/style.css']}",
+             f"/js/api-client.js?v={_versions['js/api-client.js']}", f"/js/study-tools.js?v={_versions['js/study-tools.js']}"):
     status, headers = raw_headers(path)
     values = headers.get_all("Cache-Control") or []
     check(f"⑥ {path} → public, max-age=86400 且不重复",
@@ -325,7 +331,8 @@ check("④ /api/config → 200（mock 模式 ready）", status == 200 and json.l
 status, _, body = call("/index.html", header_token=False)
 html = body.decode("utf-8")
 check("④ 页面已带新的下载按钮与文案",
-      status == 200 and 'downloadDatabaseBackupBtn' in html and '导出 JSON' in html and 'app.js?v=41' in html)
+      status == 200 and 'downloadDatabaseBackupBtn' in html and '导出 JSON' in html
+      and re.search(r'js/app\.js\?v=\d+', html) is not None)
 
 
 # --- R3 ⑦ 复习计数按客户端日期计算 ---

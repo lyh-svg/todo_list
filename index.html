@@ -1,306 +1,306 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>项目管理器 · 文件夹式清单</title>
-<link rel="stylesheet" href="css/style.css?v=32" />
-</head>
-<body>
-<div class="app" id="app">
-<div class="save-status" id="saveStatus" role="status" aria-live="polite">已保存</div>
-<div class="view active" id="projectsView">
-<div class="projects-header">
-<h1><span class="brand-mark" aria-hidden="true">✓</span>复习清单</h1>
-<div class="study-shortcuts" aria-label="学习快捷工具">
-<button class="shortcut-btn" id="openWorkbenchBtn" type="button"><span aria-hidden="true">☀</span>今日工作台</button>
-<button class="shortcut-btn" id="openRecentBtn" type="button"><span aria-hidden="true">⟲</span>最近</button>
-<button class="shortcut-btn" id="openSummaryBtn" type="button"><span aria-hidden="true">◫</span>摘要清单</button>
-<button class="shortcut-btn" id="globalSearchBtn" type="button"><span aria-hidden="true">⌕</span>全局搜索</button>
-<button class="shortcut-btn" id="openTrashBtn" type="button"><span aria-hidden="true">🗑</span>回收站</button>
-<button class="shortcut-btn" data-study-action="focus" type="button"><span aria-hidden="true">◎</span>今日聚焦</button>
-<button class="shortcut-btn" data-study-action="random" type="button"><span aria-hidden="true">⌁</span>随机复习</button>
-<button class="shortcut-btn" data-study-action="stats" type="button"><span aria-hidden="true">▥</span>进度统计</button>
-</div>
-</div>
-<button type="button" class="review-pill" id="reviewQueueBtn" title="打开复习队列（今天到期 + 逾期）">
-<span class="review-pill-icon" aria-hidden="true">◷</span>
-<span class="review-pill-label">今日待复习</span>
-<span class="review-pill-count" id="reviewQueueCount">0</span>
-</button>
-<div class="project-tools">
-<div class="search-field">
-<span aria-hidden="true">⌕</span>
-<input type="search" id="projectSearchInput" placeholder="搜索项目" autocomplete="off" />
-</div>
-<select id="projectStatusFilter" aria-label="筛选项目状态">
-<option value="all">全部项目</option>
-<option value="active">进行中</option>
-<option value="completed">已完成</option>
-<option value="empty">空项目</option>
-<option value="archived">已归档</option>
-</select>
-</div>
-<div class="create-project-area">
-<input type="text" id="newProjectInput" placeholder="输入新项目名称，如：JavaScript 基础复习" />
-<label class="project-ai-toggle">
-<input type="checkbox" id="newProjectAiToggle" />
-<span>启用 AI 验收</span>
-</label>
-<label class="project-ai-toggle" title="勾选后，AI 会按你输入的主题自动规划出周/单元/任务的结构化项目">
-<input type="checkbox" id="newProjectPlanToggle" />
-<span>AI 帮我规划</span>
-</label>
-<button id="createProjectBtn">新建项目</button>
-</div>
-<details class="more-tools" id="moreTools">
-<summary><span aria-hidden="true">⋯</span>更多工具</summary>
-<div class="more-tools-content">
-<section class="tool-group" aria-labelledby="dataToolsTitle">
-<h2 id="dataToolsTitle">数据管理</h2>
-<div class="backup-actions tool-button-row">
-<button id="exportBtn" type="button"><span aria-hidden="true">↓</span>导出 JSON</button>
-<label class="import-btn"><span aria-hidden="true">↑</span>导入 JSON
-<input type="file" id="importInput" accept="application/json,.json" />
-</label>
-<button id="createDatabaseBackupBtn" type="button"><span aria-hidden="true">＋</span>创建数据库备份</button>
-</div>
-<div class="backup-row">
-<div class="backup-picker" id="backupPicker">
-<button class="backup-picker-toggle" id="databaseBackupPickerButton" type="button" aria-haspopup="listbox" aria-expanded="false">还没有数据库备份</button>
-<div class="backup-picker-menu" id="databaseBackupMenu" role="listbox" hidden></div>
-<select id="databaseBackupSelect" aria-label="数据库备份" hidden></select>
-</div>
-<div class="backup-actions backup-row-actions">
-<button id="downloadDatabaseBackupBtn" type="button"><span aria-hidden="true">↓</span>下载</button>
-<button id="inspectDatabaseBackupBtn" type="button"><span aria-hidden="true">◫</span>查看内容</button>
-<button id="renameDatabaseBackupBtn" type="button"><span aria-hidden="true">✎</span>重命名</button>
-<button id="restoreDatabaseBackupBtn" type="button"><span aria-hidden="true">↺</span>恢复</button>
-</div>
-</div>
-</section>
-<section class="tool-group" aria-labelledby="appearanceToolsTitle">
-<h2 id="appearanceToolsTitle">外观</h2>
-<div class="backup-actions tool-button-row">
-<label class="background-upload-btn"><span aria-hidden="true">▣</span>上传背景
-<input type="file" id="backgroundInput" accept="image/*" />
-</label>
-<button id="resetBackgroundBtn" type="button"><span aria-hidden="true">↺</span>默认背景</button>
-</div>
-</section>
-<section class="tool-group" aria-labelledby="reminderToolsTitle">
-<h2 id="reminderToolsTitle">提醒</h2>
-<div class="backup-actions tool-button-row">
-<button id="reminderToggleBtn" type="button">开启提醒</button>
-<button id="reminderPermissionBtn" type="button">允许浏览器通知</button>
-</div>
-<p class="utility-hint" id="reminderStatus">提醒只在页面开着时生效（本机服务无法在页面关闭后推送）。</p>
-</section>
-<section class="tool-group memo-tools" aria-labelledby="memoToolsTitle">
-<h2 id="memoToolsTitle">个人记录</h2>
-<button class="memo-open-btn" id="openMemoBtn" type="button"><span aria-hidden="true">▤</span>打开备忘录</button>
-</section>
-</div>
-</details>
-<div class="view-bar" id="viewBar">
-<span class="view-bar-label">筛选视图</span>
-<div class="view-chips" id="viewChips"></div>
-<button id="saveViewBtn" type="button">保存当前筛选</button>
-</div>
-<div class="project-grid" id="projectGrid"></div>
-<div class="empty-projects" id="emptyProjects">正在加载项目…</div>
-</div>
-<div class="view" id="detailView">
-<div class="detail-header">
-<button class="back-btn" id="backBtn" aria-label="返回">←</button>
-<h2 id="detailTitle" title="点击编辑项目名称"></h2>
-<span class="detail-date" id="detailDate"></span>
-<label class="detail-ai-toggle" title="项目级设置：开启后本项目所有任务都需要 AI 验收">
-<input type="checkbox" id="projectAssessmentToggle" />
-<span>AI 验收</span>
-</label>
-<button class="shortcut-btn" id="projectArchiveBtn" type="button" title="归档后默认列表不再显示该项目"><span aria-hidden="true">▣</span>归档</button>
-<label class="detail-ai-toggle" id="reviewToggleWrap" title="开启后：本项目内完成任务会自动进入到期复习队列">
-<input type="checkbox" id="projectReviewToggle" />
-<span>间隔复习</span>
-</label>
-<div class="study-shortcuts detail-shortcuts" aria-label="当前项目快捷工具">
-<button class="shortcut-btn" data-study-action="focus" type="button" title="今日聚焦"><span aria-hidden="true">◎</span><span class="shortcut-label">今日聚焦</span></button>
-<button class="shortcut-btn" data-study-action="random" type="button" title="随机复习"><span aria-hidden="true">⌁</span><span class="shortcut-label">随机复习</span></button>
-<button class="shortcut-btn" data-study-action="stats" type="button" title="进度统计"><span aria-hidden="true">▥</span><span class="shortcut-label">进度统计</span></button>
-</div>
-</div>
-<div class="detail-card">
-<div class="detail-tools">
-<div class="search-field">
-<span aria-hidden="true">⌕</span>
-<input type="search" id="nodeSearchInput" placeholder="搜索周、学习单元或任务" autocomplete="off" />
-</div>
-<select id="nodeStatusFilter" aria-label="筛选内容状态">
-<option value="all">全部内容</option>
-<option value="active">未完成</option>
-<option value="completed">已完成</option>
-</select>
-<select id="nodePriorityFilter" aria-label="按优先级筛选">
-<option value="all">全部优先级</option>
-<option value="high">高优先级</option>
-<option value="mid">中优先级</option>
-<option value="low">低优先级</option>
-<option value="none">未设优先级</option>
-</select>
-<select id="nodeDueFilter" aria-label="按截止日期筛选">
-<option value="all">全部截止</option>
-<option value="overdue">已逾期</option>
-<option value="today">今天到期</option>
-<option value="week">未来 1-7 天</option>
-<option value="none">无截止日期</option>
-<option value="soon">7 天内到期（含今天）</option>
-</select>
-<input type="search" id="nodeTagFilter" placeholder="按标签筛选" autocomplete="off" />
-</div>
-<div class="detail-input-area">
-<input type="text" id="newNodeInput" placeholder="输入新的一周主题，如：第9周：Web API 实践" />
-<button id="addWeekBtn"><span aria-hidden="true">＋</span>添加周</button>
-</div>
-<ul class="tree" id="treeRoot"></ul>
-<div class="empty-tree-tip" id="emptyTreeTip">还没有内容，添加第一周开始吧</div>
-<div class="batch-toolbar" id="batchToolbar" hidden></div>
-<div class="detail-footer">
-<span class="count" id="countDisplay">剩余 0 项未完成</span>
-<div class="footer-btns">
-<button class="expand-all-btn" id="batchToggleBtn">批量选择</button>
-<button class="expand-all-btn" id="expandAllBtn">展开全部</button>
-<button class="clear-btn" id="clearBtn">清空已完成</button>
-<button class="clear-history-btn" id="clearHistoryBtn">清理验收记录</button>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="view" id="reviewView">
-<div class="review-header">
-<button class="back-btn" id="reviewBackBtn" type="button" aria-label="返回">←</button>
-<div class="review-heading">
-<h2>复习队列</h2>
-<span class="review-subline" id="reviewSubline"></span>
-</div>
-</div>
-<div class="review-body" id="reviewBody"></div>
-</div>
-<div class="view" id="workbenchView">
-<div class="review-header">
-<button class="back-btn" id="workbenchBackBtn" type="button" aria-label="返回">←</button>
-<div class="review-heading">
-<h2>今日工作台</h2>
-<span class="review-subline" id="workbenchSubline"></span>
-</div>
-<div class="workbench-quick">
-<input type="text" id="quickAddInput" placeholder="快速记录一条任务，稍后再归类" autocomplete="off" />
-<button id="quickAddBtn" type="button">加入收集箱</button>
-<button id="workbenchRefreshBtn" type="button" class="utility-secondary-btn">刷新</button>
-</div>
-</div>
-<div class="review-body" id="workbenchBody"></div>
-</div>
-<div class="toast" id="toast" role="status" aria-live="polite">
-<span id="toastMessage"></span>
-<button id="toastAction" type="button" hidden></button>
-</div>
-<div class="utility-modal" id="utilityModal" hidden>
-<div class="utility-backdrop" data-close-utility></div>
-<section class="utility-dialog" role="dialog" aria-modal="true" aria-labelledby="utilityTitle">
-<header class="utility-header">
-<div>
-<span class="utility-kicker" id="utilityKicker">学习工具</span>
-<h3 id="utilityTitle"></h3>
-</div>
-<button class="utility-close" id="utilityCloseBtn" type="button" aria-label="关闭">×</button>
-</header>
-<div class="utility-body" id="utilityBody"></div>
-</section>
-</div>
-<div class="assessment-modal" id="assessmentModal" hidden>
-<div class="assessment-backdrop" data-close-assessment></div>
-<section class="assessment-dialog" role="dialog" aria-modal="true" aria-labelledby="assessmentTitle">
-<header class="assessment-header">
-<div>
-<span class="assessment-kicker">AI 验收</span>
-<h3 id="assessmentTitle"></h3>
-</div>
-<button class="assessment-close" id="assessmentCloseBtn" type="button" aria-label="关闭">×</button>
-</header>
-<form id="assessmentForm">
-<div class="assessment-stage" id="assessmentStage">第一阶段：AI 三题验收</div>
-<label class="assessment-field">
-<span>验收模型</span>
-<select id="assessmentModel">
-<option value="flash">deepseek-v4-flash</option>
-<option value="pro">deepseek-v4-pro</option>
-</select>
-</label>
-<div class="assessment-questions" id="assessmentQuestions" hidden>
-<div class="assessment-question-heading">
-<span id="assessmentQuestionProgress">第 1 / 3 题</span>
-<button class="assessment-question-btn" id="extraQuestionBtn" type="button">拟题</button>
-<button class="assessment-question-btn" id="copyQuestionBtn" type="button">复制</button>
-<button class="assessment-question-btn" id="summaryQuestionBtn" type="button">核心摘要</button>
-<button class="assessment-question-btn" id="assessmentQuestionBtn" type="button">重新出三道题</button>
-<div class="extra-ask" id="extraAsk" hidden>
-<select class="extra-count" id="extraCount" title="选择加练数量">
-<option value="1">1</option>
-<option value="2">2</option>
-<option value="3">3</option>
-<option value="4">4</option>
-<option value="5">5</option>
-</select>
-<button class="assessment-question-btn" id="extraConfirmBtn" type="button">生成</button>
-<button class="assessment-question-btn" id="extraCancelBtn" type="button">取消</button>
-</div>
-</div>
-<div class="assessment-current-question rich-text" id="assessmentCurrentQuestion"></div>
-</div>
-<div class="assessment-conversation" id="assessmentConversation" hidden></div>
-<label class="assessment-field">
-<span id="assessmentAnswerLabel">当前题回答（写结论和解释）</span>
-<textarea id="assessmentAnswer" rows="9" maxlength="20000"
-class="assessment-code-editor"
-placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4 个空格。"required></textarea>
-</label>
-<div class="assessment-code-tools">
-<label class="assessment-upload-btn">
-上传代码文件
-<input type="file" id="assessmentFiles" accept=".py,.pyw,.pyi,.txt,.md,.json,.toml" multiple />
-</label>
-<div class="assessment-templates" aria-label="答案模板">
-<button type="button" class="assessment-question-btn" id="assessmentTemplateConclusionBtn">结论模板</button>
-<button type="button" class="assessment-question-btn" id="assessmentTemplateExplainBtn">解释模板</button>
-<button type="button" class="assessment-question-btn" id="assessmentTemplateCodeBtn">代码模板</button>
-<div class="assessment-templates" id="assessmentTemplateCustomBar" aria-label="自定义模板" hidden></div>
-<button type="button" class="assessment-question-btn" id="manageTemplatesBtn">自定义模板…</button>
-<button type="button" class="assessment-question-btn" id="assessmentRestoreBtn">恢复上次提交</button>
-</div>
-<span class="assessment-file-hint" id="assessmentFileHint">可上传代码文件，也可直接在回答框中写代码；只读文本，不会执行</span>
-</div>
-<div class="assessment-files" id="assessmentFilesList" hidden></div>
-<div class="assessment-consent">
-每次只回答当前题；当前题通过后自动进入下一题。三题全部通过后，第二阶段可以留空，也可以提交实现继续验收。
-</div>
-<div class="assessment-result" id="assessmentResult" hidden></div>
-<div class="assessment-live" id="assessmentLive" hidden>
-<div class="assessment-live-label">验收中 · 实时回复</div>
-<div class="assessment-live-body" id="assessmentLiveBody"></div>
-</div>
-<footer class="assessment-footer">
-<span class="assessment-service-status" id="assessmentServiceStatus">正在检查本地 AI 服务…</span>
-<button class="assessment-cancel" id="assessmentCancelBtn" type="button">取消</button>
-<button class="assessment-submit" id="assessmentSubmitBtn" type="submit">提交本题</button>
-</footer>
-</form>
-</section>
-</div>
-
-<script src="js/api-client.js?v=1"></script>
-<script src="js/study-tools.js?v=1"></script>
-<script src="js/app.js?v=41"></script>
-</body>
-</html>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>项目管理器 · 文件夹式清单</title>
+<link rel="stylesheet" href="css/style.css?v=33" />
+</head>
+<body>
+<div class="app" id="app">
+<div class="save-status" id="saveStatus" role="status" aria-live="polite">已保存</div>
+<div class="view active" id="projectsView">
+<div class="projects-header">
+<h1><span class="brand-mark" aria-hidden="true">✓</span>复习清单</h1>
+<div class="study-shortcuts" aria-label="学习快捷工具">
+<button class="shortcut-btn" id="openWorkbenchBtn" type="button"><span aria-hidden="true">☀</span>今日工作台</button>
+<button class="shortcut-btn" id="openRecentBtn" type="button"><span aria-hidden="true">⟲</span>最近</button>
+<button class="shortcut-btn" id="openSummaryBtn" type="button"><span aria-hidden="true">◫</span>摘要清单</button>
+<button class="shortcut-btn" id="globalSearchBtn" type="button"><span aria-hidden="true">⌕</span>全局搜索</button>
+<button class="shortcut-btn" id="openTrashBtn" type="button"><span aria-hidden="true">🗑</span>回收站</button>
+<button class="shortcut-btn" data-study-action="focus" type="button"><span aria-hidden="true">◎</span>今日聚焦</button>
+<button class="shortcut-btn" data-study-action="random" type="button"><span aria-hidden="true">⌁</span>随机复习</button>
+<button class="shortcut-btn" data-study-action="stats" type="button"><span aria-hidden="true">▥</span>进度统计</button>
+</div>
+</div>
+<button type="button" class="review-pill" id="reviewQueueBtn" title="打开复习队列（今天到期 + 逾期）">
+<span class="review-pill-icon" aria-hidden="true">◷</span>
+<span class="review-pill-label">今日待复习</span>
+<span class="review-pill-count" id="reviewQueueCount">0</span>
+</button>
+<div class="project-tools">
+<div class="search-field">
+<span aria-hidden="true">⌕</span>
+<input type="search" id="projectSearchInput" placeholder="搜索项目" autocomplete="off" />
+</div>
+<select id="projectStatusFilter" aria-label="筛选项目状态">
+<option value="all">全部项目</option>
+<option value="active">进行中</option>
+<option value="completed">已完成</option>
+<option value="empty">空项目</option>
+<option value="archived">已归档</option>
+</select>
+</div>
+<div class="create-project-area">
+<input type="text" id="newProjectInput" placeholder="输入新项目名称，如：JavaScript 基础复习" />
+<label class="project-ai-toggle">
+<input type="checkbox" id="newProjectAiToggle" />
+<span>启用 AI 验收</span>
+</label>
+<label class="project-ai-toggle" title="勾选后，AI 会按你输入的主题自动规划出周/单元/任务的结构化项目">
+<input type="checkbox" id="newProjectPlanToggle" />
+<span>AI 帮我规划</span>
+</label>
+<button id="createProjectBtn">新建项目</button>
+</div>
+<details class="more-tools" id="moreTools">
+<summary><span aria-hidden="true">⋯</span>更多工具</summary>
+<div class="more-tools-content">
+<section class="tool-group" aria-labelledby="dataToolsTitle">
+<h2 id="dataToolsTitle">数据管理</h2>
+<div class="backup-actions tool-button-row">
+<button id="exportBtn" type="button"><span aria-hidden="true">↓</span>导出 JSON</button>
+<label class="import-btn"><span aria-hidden="true">↑</span>导入 JSON
+<input type="file" id="importInput" accept="application/json,.json" />
+</label>
+<button id="createDatabaseBackupBtn" type="button"><span aria-hidden="true">＋</span>创建数据库备份</button>
+</div>
+<div class="backup-row">
+<div class="backup-picker" id="backupPicker">
+<button class="backup-picker-toggle" id="databaseBackupPickerButton" type="button" aria-haspopup="listbox" aria-expanded="false">还没有数据库备份</button>
+<div class="backup-picker-menu" id="databaseBackupMenu" role="listbox" hidden></div>
+<select id="databaseBackupSelect" aria-label="数据库备份" hidden></select>
+</div>
+<div class="backup-actions backup-row-actions">
+<button id="downloadDatabaseBackupBtn" type="button"><span aria-hidden="true">↓</span>下载</button>
+<button id="inspectDatabaseBackupBtn" type="button"><span aria-hidden="true">◫</span>查看内容</button>
+<button id="renameDatabaseBackupBtn" type="button"><span aria-hidden="true">✎</span>重命名</button>
+<button id="restoreDatabaseBackupBtn" type="button"><span aria-hidden="true">↺</span>恢复</button>
+</div>
+</div>
+</section>
+<section class="tool-group" aria-labelledby="appearanceToolsTitle">
+<h2 id="appearanceToolsTitle">外观</h2>
+<div class="backup-actions tool-button-row">
+<label class="background-upload-btn"><span aria-hidden="true">▣</span>上传背景
+<input type="file" id="backgroundInput" accept="image/*" />
+</label>
+<button id="resetBackgroundBtn" type="button"><span aria-hidden="true">↺</span>默认背景</button>
+</div>
+</section>
+<section class="tool-group" aria-labelledby="reminderToolsTitle">
+<h2 id="reminderToolsTitle">提醒</h2>
+<div class="backup-actions tool-button-row">
+<button id="reminderToggleBtn" type="button">开启提醒</button>
+<button id="reminderPermissionBtn" type="button">允许浏览器通知</button>
+</div>
+<p class="utility-hint" id="reminderStatus">提醒只在页面开着时生效（本机服务无法在页面关闭后推送）。</p>
+</section>
+<section class="tool-group memo-tools" aria-labelledby="memoToolsTitle">
+<h2 id="memoToolsTitle">个人记录</h2>
+<button class="memo-open-btn" id="openMemoBtn" type="button"><span aria-hidden="true">▤</span>打开备忘录</button>
+</section>
+</div>
+</details>
+<div class="view-bar" id="viewBar">
+<span class="view-bar-label">筛选视图</span>
+<div class="view-chips" id="viewChips"></div>
+<button id="saveViewBtn" type="button">保存当前筛选</button>
+</div>
+<div class="project-grid" id="projectGrid"></div>
+<div class="empty-projects" id="emptyProjects">正在加载项目…</div>
+</div>
+<div class="view" id="detailView">
+<div class="detail-header">
+<button class="back-btn" id="backBtn" aria-label="返回">←</button>
+<h2 id="detailTitle" title="点击编辑项目名称"></h2>
+<span class="detail-date" id="detailDate"></span>
+<label class="detail-ai-toggle" title="项目级设置：开启后本项目所有任务都需要 AI 验收">
+<input type="checkbox" id="projectAssessmentToggle" />
+<span>AI 验收</span>
+</label>
+<button class="shortcut-btn" id="projectArchiveBtn" type="button" title="归档后默认列表不再显示该项目"><span aria-hidden="true">▣</span>归档</button>
+<label class="detail-ai-toggle" id="reviewToggleWrap" title="开启后：本项目内完成任务会自动进入到期复习队列">
+<input type="checkbox" id="projectReviewToggle" />
+<span>间隔复习</span>
+</label>
+<div class="study-shortcuts detail-shortcuts" aria-label="当前项目快捷工具">
+<button class="shortcut-btn" data-study-action="focus" type="button" title="今日聚焦"><span aria-hidden="true">◎</span><span class="shortcut-label">今日聚焦</span></button>
+<button class="shortcut-btn" data-study-action="random" type="button" title="随机复习"><span aria-hidden="true">⌁</span><span class="shortcut-label">随机复习</span></button>
+<button class="shortcut-btn" data-study-action="stats" type="button" title="进度统计"><span aria-hidden="true">▥</span><span class="shortcut-label">进度统计</span></button>
+</div>
+</div>
+<div class="detail-card">
+<div class="detail-tools">
+<div class="search-field">
+<span aria-hidden="true">⌕</span>
+<input type="search" id="nodeSearchInput" placeholder="搜索周、学习单元或任务" autocomplete="off" />
+</div>
+<select id="nodeStatusFilter" aria-label="筛选内容状态">
+<option value="all">全部内容</option>
+<option value="active">未完成</option>
+<option value="completed">已完成</option>
+</select>
+<select id="nodePriorityFilter" aria-label="按优先级筛选">
+<option value="all">全部优先级</option>
+<option value="high">高优先级</option>
+<option value="mid">中优先级</option>
+<option value="low">低优先级</option>
+<option value="none">未设优先级</option>
+</select>
+<select id="nodeDueFilter" aria-label="按截止日期筛选">
+<option value="all">全部截止</option>
+<option value="overdue">已逾期</option>
+<option value="today">今天到期</option>
+<option value="week">未来 1-7 天</option>
+<option value="none">无截止日期</option>
+<option value="soon">7 天内到期（含今天）</option>
+</select>
+<input type="search" id="nodeTagFilter" placeholder="按标签筛选" autocomplete="off" />
+</div>
+<div class="detail-input-area">
+<input type="text" id="newNodeInput" placeholder="输入新的一周主题，如：第9周：Web API 实践" />
+<button id="addWeekBtn"><span aria-hidden="true">＋</span>添加周</button>
+</div>
+<ul class="tree" id="treeRoot"></ul>
+<div class="empty-tree-tip" id="emptyTreeTip">还没有内容，添加第一周开始吧</div>
+<div class="batch-toolbar" id="batchToolbar" hidden></div>
+<div class="detail-footer">
+<span class="count" id="countDisplay">剩余 0 项未完成</span>
+<div class="footer-btns">
+<button class="expand-all-btn" id="batchToggleBtn">批量选择</button>
+<button class="expand-all-btn" id="expandAllBtn">展开全部</button>
+<button class="clear-btn" id="clearBtn">清空已完成</button>
+<button class="clear-history-btn" id="clearHistoryBtn">清理验收记录</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="view" id="reviewView">
+<div class="review-header">
+<button class="back-btn" id="reviewBackBtn" type="button" aria-label="返回">←</button>
+<div class="review-heading">
+<h2>复习队列</h2>
+<span class="review-subline" id="reviewSubline"></span>
+</div>
+</div>
+<div class="review-body" id="reviewBody"></div>
+</div>
+<div class="view" id="workbenchView">
+<div class="review-header">
+<button class="back-btn" id="workbenchBackBtn" type="button" aria-label="返回">←</button>
+<div class="review-heading">
+<h2>今日工作台</h2>
+<span class="review-subline" id="workbenchSubline"></span>
+</div>
+<div class="workbench-quick">
+<input type="text" id="quickAddInput" placeholder="快速记录一条任务，稍后再归类" autocomplete="off" />
+<button id="quickAddBtn" type="button">加入收集箱</button>
+<button id="workbenchRefreshBtn" type="button" class="utility-secondary-btn">刷新</button>
+</div>
+</div>
+<div class="review-body" id="workbenchBody"></div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite">
+<span id="toastMessage"></span>
+<button id="toastAction" type="button" hidden></button>
+</div>
+<div class="utility-modal" id="utilityModal" hidden>
+<div class="utility-backdrop" data-close-utility></div>
+<section class="utility-dialog" role="dialog" aria-modal="true" aria-labelledby="utilityTitle">
+<header class="utility-header">
+<div>
+<span class="utility-kicker" id="utilityKicker">学习工具</span>
+<h3 id="utilityTitle"></h3>
+</div>
+<button class="utility-close" id="utilityCloseBtn" type="button" aria-label="关闭">×</button>
+</header>
+<div class="utility-body" id="utilityBody"></div>
+</section>
+</div>
+<div class="assessment-modal" id="assessmentModal" hidden>
+<div class="assessment-backdrop" data-close-assessment></div>
+<section class="assessment-dialog" role="dialog" aria-modal="true" aria-labelledby="assessmentTitle">
+<header class="assessment-header">
+<div>
+<span class="assessment-kicker">AI 验收</span>
+<h3 id="assessmentTitle"></h3>
+</div>
+<button class="assessment-close" id="assessmentCloseBtn" type="button" aria-label="关闭">×</button>
+</header>
+<form id="assessmentForm">
+<div class="assessment-stage" id="assessmentStage">第一阶段：AI 三题验收</div>
+<label class="assessment-field">
+<span>验收模型</span>
+<select id="assessmentModel">
+<option value="flash">deepseek-v4-flash</option>
+<option value="pro">deepseek-v4-pro</option>
+</select>
+</label>
+<div class="assessment-questions" id="assessmentQuestions" hidden>
+<div class="assessment-question-heading">
+<span id="assessmentQuestionProgress">第 1 / 3 题</span>
+<button class="assessment-question-btn" id="extraQuestionBtn" type="button">拟题</button>
+<button class="assessment-question-btn" id="copyQuestionBtn" type="button">复制</button>
+<button class="assessment-question-btn" id="summaryQuestionBtn" type="button">核心摘要</button>
+<button class="assessment-question-btn" id="assessmentQuestionBtn" type="button">重新出三道题</button>
+<div class="extra-ask" id="extraAsk" hidden>
+<select class="extra-count" id="extraCount" title="选择加练数量">
+<option value="1">1</option>
+<option value="2">2</option>
+<option value="3">3</option>
+<option value="4">4</option>
+<option value="5">5</option>
+</select>
+<button class="assessment-question-btn" id="extraConfirmBtn" type="button">生成</button>
+<button class="assessment-question-btn" id="extraCancelBtn" type="button">取消</button>
+</div>
+</div>
+<div class="assessment-current-question rich-text" id="assessmentCurrentQuestion"></div>
+</div>
+<div class="assessment-conversation" id="assessmentConversation" hidden></div>
+<label class="assessment-field">
+<span id="assessmentAnswerLabel">当前题回答（写结论和解释）</span>
+<textarea id="assessmentAnswer" rows="9" maxlength="20000"
+class="assessment-code-editor"
+placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4 个空格。"required></textarea>
+</label>
+<div class="assessment-code-tools">
+<label class="assessment-upload-btn">
+上传代码文件
+<input type="file" id="assessmentFiles" accept=".py,.pyw,.pyi,.txt,.md,.json,.toml" multiple />
+</label>
+<div class="assessment-templates" aria-label="答案模板">
+<button type="button" class="assessment-question-btn" id="assessmentTemplateConclusionBtn">结论模板</button>
+<button type="button" class="assessment-question-btn" id="assessmentTemplateExplainBtn">解释模板</button>
+<button type="button" class="assessment-question-btn" id="assessmentTemplateCodeBtn">代码模板</button>
+<div class="assessment-templates" id="assessmentTemplateCustomBar" aria-label="自定义模板" hidden></div>
+<button type="button" class="assessment-question-btn" id="manageTemplatesBtn">自定义模板…</button>
+<button type="button" class="assessment-question-btn" id="assessmentRestoreBtn">恢复上次提交</button>
+</div>
+<span class="assessment-file-hint" id="assessmentFileHint">可上传代码文件，也可直接在回答框中写代码；只读文本，不会执行</span>
+</div>
+<div class="assessment-files" id="assessmentFilesList" hidden></div>
+<div class="assessment-consent">
+每次只回答当前题；当前题通过后自动进入下一题。三题全部通过后，第二阶段可以留空，也可以提交实现继续验收。
+</div>
+<div class="assessment-result" id="assessmentResult" hidden></div>
+<div class="assessment-live" id="assessmentLive" hidden>
+<div class="assessment-live-label">验收中 · 实时回复</div>
+<div class="assessment-live-body" id="assessmentLiveBody"></div>
+</div>
+<footer class="assessment-footer">
+<span class="assessment-service-status" id="assessmentServiceStatus">正在检查本地 AI 服务…</span>
+<button class="assessment-cancel" id="assessmentCancelBtn" type="button">取消</button>
+<button class="assessment-submit" id="assessmentSubmitBtn" type="submit">提交本题</button>
+</footer>
+</form>
+</section>
+</div>
+
+<script src="js/api-client.js?v=1"></script>
+<script src="js/study-tools.js?v=1"></script>
+<script src="js/app.js?v=42"></script>
+</body>
+</html>
