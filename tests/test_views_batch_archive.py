@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -227,6 +228,23 @@ class ArchiveTests(unittest.TestCase):
         storage.write_project(project, revision)
         self.assertTrue(storage.read_project_summaries()[0]["archived"])
         self.assertTrue(storage.read_project("p1")[0]["archived"])
+
+    def test_summary_reports_live_columns_even_if_json_is_stale(self) -> None:
+        """summary_json 是旧版本程序写的（缺 archived 等字段）时，摘要必须以列为准。"""
+        storage.replace_projects([make_project("p1", [item("p1-a", "任务A")])])
+        with storage.open_state_database() as connection:
+            connection.execute(
+                "UPDATE projects SET summary_json=?, archived=1, review_enabled=1 WHERE project_id='p1'",
+                (json.dumps({"id": "p1", "name": "旧摘要", "description": "",
+                             "createdAt": TODAY, "assessmentEnabled": False,
+                             "stats": {"total": 1, "remaining": 1,
+                                       "optionalTotal": 0, "optionalCompleted": 0}},
+                            ensure_ascii=False),),
+            )
+        summary = storage.read_project_summaries()[0]
+        self.assertTrue(summary["archived"], "摘要必须反映 live 的 archived 列")
+        self.assertTrue(summary["reviewEnabled"], "摘要必须反映 live 的 review_enabled 列")
+        self.assertIn("lastOpenedAt", summary)
 
     def test_archived_project_is_excluded_from_workbench(self) -> None:
         storage.replace_projects([

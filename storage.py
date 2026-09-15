@@ -1084,11 +1084,20 @@ def restore_trash_item(trash_id: Any) -> dict[str, Any]:
 
 def read_project_summaries() -> list[dict[str, Any]]:
     with _database_lock, open_state_database() as connection:
-        rows = connection.execute("SELECT summary_json,revision FROM projects ORDER BY position,project_id").fetchall()
+        rows = connection.execute(
+            "SELECT summary_json,revision,archived,review_enabled,last_opened_at "
+            "FROM projects ORDER BY position,project_id"
+        ).fetchall()
     result = []
     for row in rows:
         summary = _decode_object(row["summary_json"], "SQLite 中的项目摘要损坏")
         summary["_revision"] = int(row["revision"])
+        # summary_json 可能是旧版本程序写的（缺后来才加的字段），所以归档/复习状态
+        # 一律以列为准覆盖：否则 /api/projects 里 archived 会缺失，
+        # 前端"已归档"筛选和归档按钮就会失效。
+        summary["archived"] = bool(row["archived"])
+        summary["reviewEnabled"] = None if row["review_enabled"] is None else bool(row["review_enabled"])
+        summary["lastOpenedAt"] = str(row["last_opened_at"] or "")
         result.append(summary)
     return result
 
