@@ -427,6 +427,47 @@ body {
     border-radius: var(--radius);
     box-shadow: var(--shadow);
 }
+/* 今日工作台快捷添加（批次 2） */
+.workbench-quick { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.workbench-quick input {
+    min-width: 240px; padding: 7px 10px; border: 1px solid #d8e0f0;
+    border-radius: 8px; font-size: 13px; font-family: inherit;
+}
+.workbench-quick button { min-height: 32px; }
+/* 任务元数据徽标与编辑弹窗（第四阶段 1~4、6） */
+.node-meta { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; cursor: pointer; }
+.meta-badge {
+    padding: 1px 6px; border-radius: 999px; font-size: 10px; line-height: 1.6;
+    border: 1px solid #dbe2f0; background: #f4f7ff; color: #52607a; white-space: nowrap;
+}
+.priority-high { border-color: #f3b6b6; background: #fff1f1; color: #c0392b; }
+.priority-mid { border-color: #f2d79b; background: #fff8e8; color: #a9700a; }
+.priority-low { border-color: #bcd8f2; background: #f0f7ff; color: #2b6cb0; }
+.due-overdue { border-color: #f3b6b6; background: #fff1f1; color: #c0392b; font-weight: 600; }
+.due-today { border-color: #f2c78b; background: #fff6e9; color: #b45309; font-weight: 600; }
+.due-soon { border-color: #cfe0cf; background: #f2f9f2; color: #2f7a4f; }
+.tag-badge { border-color: #d9d4f2; background: #f6f4ff; color: #5b4bb8; }
+.estimate-badge { border-color: #d5e5e5; background: #f2fafa; color: #31707a; }
+.note-badge { border-color: #e4dfd0; background: #fbf9f2; color: #7a6a33; }
+.link-badge { border-color: #d6dcf0; background: #f5f7fd; color: #40507a; }
+.meta-btn { font-size: 13px; }
+.meta-form { display: grid; gap: 12px; }
+.meta-field { display: grid; gap: 4px; font-size: 12px; color: #52607a; }
+.meta-field > span { font-weight: 600; }
+.meta-field input[type="text"],
+.meta-field input[type="date"],
+.meta-field input[type="number"],
+.meta-field input[type="url"],
+.meta-field textarea,
+.meta-field select {
+    width: 100%; padding: 7px 9px; border: 1px solid #d8e0f0; border-radius: 8px;
+    font-size: 13px; font-family: inherit; background: #fff; color: #2d3748;
+}
+.meta-field textarea { resize: vertical; }
+.meta-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.meta-shortcuts button { min-height: 26px; padding: 2px 10px; font-size: 11px; }
+.meta-links { display: grid; gap: 6px; }
+.meta-link-row { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; align-items: center; }
 /* 回收站批量操作（⑩） */
 .trash-head { display: flex; align-items: center; gap: 8px; }
 .trash-head input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); }

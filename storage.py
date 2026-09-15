@@ -24,7 +24,16 @@ BACKUP_DIR = Path(
 ).expanduser()
 MAX_PROJECT_PAYLOAD_BYTES = 50 * 1024 * 1024
 TRASH_RETENTION_DAYS = 7
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+# 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
+PRIORITIES = ("", "high", "mid", "low")
+MAX_TAGS = 20
+MAX_TAG_CHARS = 40
+MAX_NOTE_CHARS = 20000
+MAX_LINKS = 20
+MAX_LINK_CHARS = 2000
+MAX_ESTIMATE_MINUTES = 60 * 24 * 30
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # 导出 JSON 的 schema 版本。必须与前端 js/app.js 的 DATA_SCHEMA_VERSION 同步：
 # 前端 extractProjects() 会拒绝比自己更新的 schemaVersion。
 EXPORT_SCHEMA_VERSION = 2
@@ -52,6 +61,62 @@ class StateConflictError(RuntimeError):
 
 class SchemaVersionError(RuntimeError):
     """数据库 schema 版本高于本程序支持的版本：必须拒绝打开，绝不降级。"""
+
+
+def clean_priority(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in PRIORITIES else ""
+
+
+def clean_due_date(value: Any) -> str:
+    text = str(value or "").strip()[:10]
+    if not ISO_DATE_RE.match(text):
+        return ""
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return ""
+    return text
+
+
+def clean_estimate_minutes(value: Any) -> int:
+    try:
+        minutes = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(MAX_ESTIMATE_MINUTES, minutes))
+
+
+def clean_tags(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    tags: list[str] = []
+    for item in value:
+        tag = str(item or "").strip()[:MAX_TAG_CHARS]
+        if tag and tag not in tags:
+            tags.append(tag)
+        if len(tags) >= MAX_TAGS:
+            break
+    return tags
+
+
+def clean_links(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    links: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()[:MAX_LINK_CHARS]
+        if not url:
+            continue
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError("链接必须以 http:// 或 https:// 开头：" + url[:60])
+        label = str(item.get("label") or "").strip()[:80] or url[:80]
+        links.append({"label": label, "url": url})
+        if len(links) >= MAX_LINKS:
+            break
+    return links
 
 
 def _json(value: Any) -> str:
@@ -189,9 +254,30 @@ def open_state_database() -> sqlite3.Connection:
         connection.execute("ALTER TABLE nodes ADD COLUMN review_learning INTEGER NOT NULL DEFAULT 0")
     if "review_log" not in node_columns:
         connection.execute("ALTER TABLE nodes ADD COLUMN review_log TEXT NOT NULL DEFAULT ''")
+    for column, ddl in (
+        ("priority", "TEXT NOT NULL DEFAULT ''"),
+        ("due_date", "TEXT NOT NULL DEFAULT ''"),
+        ("estimate_minutes", "INTEGER NOT NULL DEFAULT 0"),
+        ("tags", "TEXT NOT NULL DEFAULT ''"),
+        ("note", "TEXT NOT NULL DEFAULT ''"),
+        ("links", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if column not in node_columns:
+            connection.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")
     project_columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     if "review_enabled" not in project_columns:
         connection.execute("ALTER TABLE projects ADD COLUMN review_enabled INTEGER")
+    if "archived" not in project_columns:
+        connection.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+    if "last_opened_at" not in project_columns:
+        connection.execute("ALTER TABLE projects ADD COLUMN last_opened_at TEXT NOT NULL DEFAULT ''")
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_nodes_due ON nodes(project_id, due_date);
+        CREATE INDEX IF NOT EXISTS idx_nodes_priority ON nodes(project_id, priority);
+        CREATE INDEX IF NOT EXISTS idx_projects_archived ON projects(archived);
+        """
+    )
     # 只做幂等补列/建表；版本号由 ensure_schema() 在迁移成功后写入。
     # 这里绝不能无条件写 user_version：那会把更高版本的库"降级"成旧结构继续用。
     return connection
@@ -225,6 +311,7 @@ def project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "description": str(project.get("description", "")),
         "createdAt": str(project.get("createdAt", "")),
         "assessmentEnabled": bool(project.get("assessmentEnabled")),
+        "archived": bool(project.get("archived")),
         "stats": {
             "total": total,
             "remaining": remaining,
@@ -257,6 +344,23 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None,
             raise ValueError(f"节点 ID 重复：{' / '.join(node_path)}（ID {node_id}）")
         seen_ids.add(node_id)
         assessment = raw.get("assessment") if isinstance(raw.get("assessment"), dict) else None
+        metadata = {
+            "priority": "",
+            "due_date": "",
+            "estimate_minutes": 0,
+            "tags": "",
+            "note": "",
+            "links": "",
+        }
+        if node_type == "item":
+            metadata["priority"] = clean_priority(raw.get("priority"))
+            metadata["due_date"] = clean_due_date(raw.get("dueDate"))
+            metadata["estimate_minutes"] = clean_estimate_minutes(raw.get("estimateMinutes"))
+            tags = clean_tags(raw.get("tags"))
+            metadata["tags"] = _json(tags) if tags else ""
+            metadata["note"] = str(raw.get("note") or "")[:MAX_NOTE_CHARS]
+            links = clean_links(raw.get("links"))
+            metadata["links"] = _json(links) if links else ""
         review_due = ""
         review_learning = 0
         review_log = ""
@@ -298,6 +402,7 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None,
             "review_learning": review_learning,
             "review_log": review_log,
             "assessment": assessment,
+            **metadata,
         })
         flattened.extend(_flatten_nodes(project_id, raw.get("children"), node_id, node_path, seen_ids))
     return flattened
@@ -320,18 +425,21 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
     connection.execute(
         """INSERT INTO projects(
             project_id,id_json,position,name,description,created_at,
-            assessment_enabled,revision,updated_at,summary_json,review_enabled
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            assessment_enabled,revision,updated_at,summary_json,review_enabled,
+            archived,last_opened_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(project_id) DO UPDATE SET
             id_json=excluded.id_json, position=excluded.position, name=excluded.name,
             description=excluded.description, created_at=excluded.created_at,
             assessment_enabled=excluded.assessment_enabled,
             revision=excluded.revision, updated_at=excluded.updated_at,
-            summary_json=excluded.summary_json, review_enabled=excluded.review_enabled""",
+            summary_json=excluded.summary_json, review_enabled=excluded.review_enabled,
+            archived=excluded.archived, last_opened_at=excluded.last_opened_at""",
         (project_id, _json(project["id"]), position, str(project.get("name", "未命名项目")),
          str(project.get("description", "")), str(project.get("createdAt", "")),
          int(bool(project.get("assessmentEnabled"))), revision, updated_at, _json(summary),
-         review_enabled),
+         review_enabled, int(bool(project.get("archived"))),
+         str(project.get("lastOpenedAt") or "")),
     )
     existing_ids = {row[0] for row in connection.execute(
         "SELECT node_id FROM nodes WHERE project_id=?", (project_id,)
@@ -341,8 +449,9 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
             """INSERT INTO nodes(
                 project_id,node_id,id_json,parent_id,position,type,text,completed,
                 optional,assessment_required,assessment_history,expanded,created_at,completed_at,
-                review_due,review_learning,review_log
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                review_due,review_learning,review_log,
+                priority,due_date,estimate_minutes,tags,note,links
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(project_id,node_id) DO UPDATE SET
                 id_json=excluded.id_json,parent_id=excluded.parent_id,position=excluded.position,
                 type=excluded.type,text=excluded.text,completed=excluded.completed,
@@ -350,7 +459,10 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
                 assessment_history=excluded.assessment_history,expanded=excluded.expanded,
                 created_at=excluded.created_at,completed_at=excluded.completed_at,
                 review_due=excluded.review_due,review_learning=excluded.review_learning,
-                review_log=excluded.review_log
+                review_log=excluded.review_log,
+                priority=excluded.priority,due_date=excluded.due_date,
+                estimate_minutes=excluded.estimate_minutes,tags=excluded.tags,
+                note=excluded.note,links=excluded.links
             WHERE id_json<>excluded.id_json OR parent_id IS NOT excluded.parent_id
                 OR position<>excluded.position OR type<>excluded.type OR text<>excluded.text
                 OR completed<>excluded.completed OR optional<>excluded.optional
@@ -359,11 +471,15 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
                 OR expanded<>excluded.expanded OR created_at<>excluded.created_at
                 OR completed_at<>excluded.completed_at
                 OR review_due<>excluded.review_due OR review_learning<>excluded.review_learning
-                OR review_log<>excluded.review_log""",
+                OR review_log<>excluded.review_log
+                OR priority<>excluded.priority OR due_date<>excluded.due_date
+                OR estimate_minutes<>excluded.estimate_minutes OR tags<>excluded.tags
+                OR note<>excluded.note OR links<>excluded.links""",
             tuple(node[key] for key in (
                 "project_id", "node_id", "id_json", "parent_id", "position", "type", "text",
                 "completed", "optional", "assessment_required", "assessment_history", "expanded", "created_at",
-                "completed_at", "review_due", "review_learning", "review_log"
+                "completed_at", "review_due", "review_learning", "review_log",
+                "priority", "due_date", "estimate_minutes", "tags", "note", "links"
             )),
         )
         _write_assessment(connection, node, updated_at)
@@ -436,8 +552,11 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
         "description": row["description"],
         "createdAt": row["created_at"],
         "assessmentEnabled": bool(row["assessment_enabled"]),
+        "archived": bool(row["archived"]),
         "tree": [],
     }
+    if row["last_opened_at"]:
+        project["lastOpenedAt"] = str(row["last_opened_at"])
     if row["review_enabled"] is not None:
         project["reviewEnabled"] = bool(row["review_enabled"])
     node_rows = connection.execute(
@@ -462,6 +581,32 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
         }
         if node_row["completed_at"]:
             node["completedAt"] = node_row["completed_at"]
+        if node_type == "item":
+            node["priority"] = str(node_row["priority"] or "")
+            node["dueDate"] = str(node_row["due_date"] or "")
+            if int(node_row["estimate_minutes"] or 0) > 0:
+                node["estimateMinutes"] = int(node_row["estimate_minutes"])
+            tags_raw = str(node_row["tags"] or "")
+            if tags_raw:
+                try:
+                    parsed_tags = json.loads(tags_raw)
+                except (TypeError, json.JSONDecodeError):
+                    parsed_tags = None
+                if isinstance(parsed_tags, list) and parsed_tags:
+                    node["tags"] = [str(item)[:MAX_TAG_CHARS] for item in parsed_tags[:MAX_TAGS]]
+            if node_row["note"]:
+                node["note"] = str(node_row["note"])
+            links_raw = str(node_row["links"] or "")
+            if links_raw:
+                try:
+                    parsed_links = json.loads(links_raw)
+                except (TypeError, json.JSONDecodeError):
+                    parsed_links = None
+                if isinstance(parsed_links, list) and parsed_links:
+                    node["links"] = [
+                        {"label": str(entry.get("label") or "")[:80], "url": str(entry.get("url") or "")[:MAX_LINK_CHARS]}
+                        for entry in parsed_links[:MAX_LINKS] if isinstance(entry, dict)
+                    ]
         if node_type == "item" and (node_row["review_due"] or node_row["review_log"]
                                     or node_row["review_learning"]):
             review_due = str(node_row["review_due"] or "")
@@ -1101,6 +1246,248 @@ def delete_asset(key: str) -> None:
     with _database_lock:
         with open_state_database() as connection:
             connection.execute("DELETE FROM app_asset WHERE key=?", (key,))
+
+
+INBOX_PROJECT_ID = "inbox"
+INBOX_PROJECT_NAME = "收集箱"
+WORKBENCH_HORIZON_DAYS = 7
+
+
+def _project_position(connection: sqlite3.Connection, project_id: str) -> int:
+    row = connection.execute("SELECT position FROM projects WHERE project_id=?", (project_id,)).fetchone()
+    return int(row["position"]) if row else 0
+
+
+def ensure_inbox_project() -> tuple[dict[str, Any], int]:
+    """收集箱是一个保留项目（id 固定 inbox），按需创建。"""
+    existing = read_project(INBOX_PROJECT_ID)
+    if existing:
+        return existing
+    project = {
+        "id": INBOX_PROJECT_ID,
+        "name": INBOX_PROJECT_NAME,
+        "description": "快速记录，之后再归类到项目 / 周 / 单元",
+        "createdAt": date.today().isoformat(),
+        "assessmentEnabled": False,
+        "reviewEnabled": False,
+        "tree": [],
+    }
+    write_project(project, None)
+    created = read_project(INBOX_PROJECT_ID)
+    if not created:
+        raise RuntimeError("收集箱创建失败")
+    return created
+
+
+def add_inbox_item(node: dict[str, Any]) -> dict[str, Any]:
+    """把一个新任务快速放进收集箱，返回写入后的节点。"""
+    project, revision = ensure_inbox_project()
+    item_id = str(node.get("id") or uuid.uuid4())
+    item = {
+        "id": item_id,
+        "type": "item",
+        "text": str(node.get("text") or "").strip()[:500] or "未命名任务",
+        "completed": False,
+        "completedAt": None,
+        "optional": bool(node.get("optional")),
+        "assessmentRequired": False,
+        "assessmentHistory": 0,
+        "assessment": None,
+        "createdAt": date.today().isoformat(),
+        "children": [],
+        "priority": clean_priority(node.get("priority")),
+        "dueDate": clean_due_date(node.get("dueDate")),
+        "estimateMinutes": clean_estimate_minutes(node.get("estimateMinutes")),
+        "tags": clean_tags(node.get("tags")),
+        "note": str(node.get("note") or "")[:MAX_NOTE_CHARS],
+        "links": clean_links(node.get("links")),
+    }
+    project["tree"] = list(project.get("tree") or []) + [item]
+    revision_after, _summary = write_project(project, revision)
+    stored = read_project(INBOX_PROJECT_ID)
+    created = None
+    if stored:
+        created = next((child for child in stored[0].get("tree") or [] if str(child.get("id")) == item_id), None)
+    if created is None:
+        raise RuntimeError("收集箱写入后读不回该任务")
+    return {"node": created, "revision": revision_after}
+
+
+def _detach_node(tree: list[dict[str, Any]], node_id: str) -> dict[str, Any] | None:
+    for index, node in enumerate(list(tree)):
+        if str(node.get("id")) == str(node_id):
+            tree.pop(index)
+            return node
+        found = _detach_node(node.get("children") or [], node_id)
+        if found is not None:
+            return found
+    return None
+
+
+def move_node(node_id: str, from_project_id: str, to_project_id: str,
+              parent_id: str | None = None, position: int | None = None) -> dict[str, Any]:
+    """把任务从一个项目移到另一个项目（收集箱归类用），两个项目在同一个事务里更新。"""
+    if str(from_project_id) == str(to_project_id):
+        raise ValueError("源项目和目标项目相同")
+    with _database_lock:
+        with open_state_database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = _read_project_from_connection(connection, str(from_project_id))
+            target = _read_project_from_connection(connection, str(to_project_id))
+            if not source:
+                raise ValueError("原项目不存在")
+            if not target:
+                raise ValueError("目标项目不存在")
+            source_project, source_revision = source
+            target_project, target_revision = target
+            if str(target_project.get("id")) == INBOX_PROJECT_ID and parent_id is None:
+                parent_id = None  # 收集箱允许平铺任务
+            moved = _detach_node(source_project.get("tree") or [], node_id)
+            if moved is None:
+                raise ValueError("任务不存在或已经被移动")
+            _find_parent_and_insert(
+                target_project.setdefault("tree", []),
+                str(parent_id) if parent_id is not None else None,
+                moved,
+                int(position) if position is not None else len(target_project.get("tree") or []),
+            )
+            now = datetime.now().isoformat(timespec="seconds")
+            _upsert_project(connection, source_project,
+                            _project_position(connection, str(from_project_id)), source_revision + 1, now)
+            _upsert_project(connection, target_project,
+                            _project_position(connection, str(to_project_id)), target_revision + 1, now)
+    return {"nodeId": str(node_id), "from": str(from_project_id), "to": str(to_project_id)}
+
+
+def touch_project_opened(project_id: Any) -> None:
+    with _database_lock, open_state_database() as connection:
+        connection.execute(
+            "UPDATE projects SET last_opened_at=? WHERE project_id=?",
+            (datetime.now().isoformat(timespec="seconds"), str(project_id)),
+        )
+
+
+def _node_locations(connection: sqlite3.Connection) -> dict[tuple[str, str], dict[str, Any]]:
+    """每个节点的可读路径与祖先 id（工作台用于展示与定位）。"""
+    rows = connection.execute("SELECT project_id,node_id,parent_id,text FROM nodes").fetchall()
+    parent: dict[tuple[str, str], tuple[str | None, str]] = {}
+    for row in rows:
+        parent[(str(row["project_id"]), str(row["node_id"]))] = (row["parent_id"], str(row["text"] or ""))
+
+    locations: dict[tuple[str, str], dict[str, Any]] = {}
+    for key in parent:
+        labels: list[str] = []
+        ancestors: list[str] = []
+        entry = parent.get(key)
+        cursor: str | None = str(entry[0]) if entry and entry[0] is not None else None
+        seen: set[str] = set()
+        while cursor is not None and cursor not in seen:
+            seen.add(cursor)
+            ancestors.append(cursor)
+            parent_entry = parent.get((key[0], cursor))
+            if not parent_entry:
+                break
+            if parent_entry[1]:
+                labels.append(parent_entry[1])
+            cursor = str(parent_entry[0]) if parent_entry[0] is not None else None
+        locations[key] = {"path": " / ".join(reversed(labels)), "ancestorIds": list(reversed(ancestors))}
+    return locations
+
+
+def workbench(today: str | None = None) -> dict[str, Any]:
+    """今日工作台：逾期 / 今天 / 未来 7 天 / 今天要复习 / 收集箱。"""
+    reference = clean_due_date(today) or date.today().isoformat()
+    horizon = (date.fromisoformat(reference) + timedelta(days=WORKBENCH_HORIZON_DAYS)).isoformat()
+    groups: dict[str, list[dict[str, Any]]] = {"overdue": [], "today": [], "next7": [], "reviewToday": [], "inbox": []}
+    with _database_lock, open_state_database() as connection:
+        project_names = {
+            str(row["project_id"]): str(row["name"])
+            for row in connection.execute("SELECT project_id,name FROM projects WHERE archived=0")
+        }
+        locations = _node_locations(connection)
+        rows = connection.execute(
+            """SELECT project_id,node_id,text,completed,priority,due_date,estimate_minutes,tags,
+                      review_due,completed_at
+               FROM nodes WHERE type='item'"""
+        ).fetchall()
+    for row in rows:
+        project_id = str(row["project_id"])
+        if project_id not in project_names:
+            continue
+        item = {
+            "projectId": project_id,
+            "projectName": project_names[project_id],
+            "nodeId": str(row["node_id"]),
+            "text": str(row["text"] or ""),
+            "priority": str(row["priority"] or ""),
+            "dueDate": str(row["due_date"] or ""),
+            "estimateMinutes": int(row["estimate_minutes"] or 0),
+            "tags": json.loads(row["tags"]) if row["tags"] else [],
+            "path": (locations.get((project_id, str(row["node_id"]))) or {}).get("path", ""),
+            "ancestorIds": (locations.get((project_id, str(row["node_id"]))) or {}).get("ancestorIds", []),
+        }
+        completed = bool(row["completed"])
+        review_due = str(row["review_due"] or "")
+        if not completed:
+            due = str(row["due_date"] or "")
+            if due:
+                if due < reference:
+                    groups["overdue"].append(dict(item, daysOverdue=_days_between(due, reference)))
+                elif due == reference:
+                    groups["today"].append(item)
+                elif due <= horizon:
+                    groups["next7"].append(dict(item, daysUntil=_days_between(reference, due)))
+            if project_id == INBOX_PROJECT_ID:
+                groups["inbox"].append(item)
+        if completed and review_due and review_due <= reference:
+            groups["reviewToday"].append(dict(item, reviewDue=review_due,
+                                              daysOverdue=_days_between(review_due, reference)))
+    priority_rank = {"high": 0, "mid": 1, "low": 2, "": 3}
+    for key, items in groups.items():
+        items.sort(key=lambda entry: (priority_rank.get(entry["priority"], 3),
+                                      entry.get("dueDate") or entry.get("reviewDue") or "",
+                                      entry["text"]))
+    return {
+        "today": reference,
+        "serverToday": date.today().isoformat(),
+        "horizonDays": WORKBENCH_HORIZON_DAYS,
+        "groups": groups,
+        "totals": {key: len(items) for key, items in groups.items()},
+    }
+
+
+def _days_between(start: str, end: str) -> int:
+    try:
+        return (date.fromisoformat(end) - date.fromisoformat(start)).days
+    except ValueError:
+        return 0
+
+
+def recent_overview(limit: int = 10) -> dict[str, Any]:
+    """最近打开 / 最近修改 / 最近完成。"""
+    with _database_lock, open_state_database() as connection:
+        opened = [{
+            "id": str(row["project_id"]), "name": str(row["name"]),
+            "at": str(row["last_opened_at"] or ""), "archived": bool(row["archived"]),
+        } for row in connection.execute(
+            "SELECT project_id,name,last_opened_at,archived FROM projects "
+            "WHERE last_opened_at<>'' ORDER BY last_opened_at DESC LIMIT ?", (int(limit),))]
+        modified = [{
+            "id": str(row["project_id"]), "name": str(row["name"]),
+            "at": str(row["updated_at"] or ""), "archived": bool(row["archived"]),
+        } for row in connection.execute(
+            "SELECT project_id,name,updated_at,archived FROM projects "
+            "ORDER BY updated_at DESC, project_id LIMIT ?", (int(limit),))]
+        completed = [{
+            "projectId": str(row["project_id"]), "projectName": str(row["name"]),
+            "nodeId": str(row["node_id"]), "text": str(row["text"] or ""),
+            "at": str(row["completed_at"] or ""),
+        } for row in connection.execute(
+            "SELECT n.project_id,n.node_id,n.text,n.completed_at,p.name FROM nodes n "
+            "JOIN projects p ON p.project_id=n.project_id "
+            "WHERE n.type='item' AND n.completed=1 AND n.completed_at<>'' "
+            "ORDER BY n.completed_at DESC LIMIT ?", (int(limit),))]
+    return {"opened": opened, "modified": modified, "completed": completed}
 
 
 def storage_diagnostics() -> dict[str, Any]:

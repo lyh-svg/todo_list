@@ -837,6 +837,38 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return assessment;
     }
 
+    const NODE_PRIORITIES = ['high', 'mid', 'low'];
+    const MAX_TAGS = 20;
+    const MAX_TAG_CHARS = 40;
+    const MAX_NOTE_CHARS = 20000;
+    const MAX_LINKS = 20;
+    const MAX_LINK_CHARS = 2000;
+    const MAX_ESTIMATE_MINUTES = 60 * 24 * 30;
+
+    // 纯函数：任务元数据归一化（与服务端 storage.clean_* 规则保持一致）
+    function normalizeNodeMeta(node) {
+        const priority = NODE_PRIORITIES.includes(node.priority) ? node.priority : '';
+        const dueRaw = String(node.dueDate || '').slice(0, 10);
+        const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(dueRaw) && isValidIsoDate(dueRaw) ? dueRaw : '';
+        const estimateMinutes = Math.max(0, Math.min(MAX_ESTIMATE_MINUTES, Number(node.estimateMinutes) || 0));
+        const tags = [];
+        for (const raw of Array.isArray(node.tags) ? node.tags : []) {
+            const tag = String(raw || '').trim().slice(0, MAX_TAG_CHARS);
+            if (tag && !tags.includes(tag)) tags.push(tag);
+            if (tags.length >= MAX_TAGS) break;
+        }
+        const links = [];
+        for (const raw of Array.isArray(node.links) ? node.links : []) {
+            if (!raw || typeof raw !== 'object') continue;
+            const url = String(raw.url || '').trim().slice(0, MAX_LINK_CHARS);
+            if (!/^https?:\/\//.test(url)) continue;
+            links.push({ label: String(raw.label || '').trim().slice(0, 80) || url.slice(0, 80), url });
+            if (links.length >= MAX_LINKS) break;
+        }
+        const note = String(node.note || '').slice(0, MAX_NOTE_CHARS);
+        return { priority, dueDate, estimateMinutes, tags, links, note };
+    }
+
     function normalizeNode(node, fallbackType) {
         if (!node || typeof node !== 'object') return null;
         const type = ['week', 'day', 'item'].includes(node.type) ? node.type : fallbackType;
@@ -860,7 +892,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             expanded: type === 'item' ? false : node.expanded !== false,
             createdAt: String(node.createdAt || todayStr()),
             review: type === 'item' ? normalizeNodeReview(node.review) : undefined,
-            children
+            children,
+            ...(type === 'item' ? normalizeNodeMeta(node) : {})
         };
     }
 
@@ -4057,6 +4090,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     ? '题目通过 · 待写代码'
                     : (node.assessmentHistory > 0 ? `曾通过 ${node.assessmentHistory} 次 · 待验收` : '待验收');
         }
+        if (node.type === 'item') {
+            const metaBadges = createNodeMetaBadges(node);
+            if (metaBadges) row.appendChild(metaBadges);
+        }
         const dateSpan = document.createElement('span');
         dateSpan.className = 'node-date';
         dateSpan.textContent = node.createdAt || projectCreatedAt;
@@ -4097,6 +4134,18 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 openScheduleReview(node);
             });
             actions.appendChild(reviewBtn);
+        }
+        if (node.type === 'item') {
+            const metaBtn = document.createElement('button');
+            metaBtn.className = 'meta-btn';
+            metaBtn.textContent = '⋯';
+            metaBtn.title = '优先级 / 截止 / 标签 / 耗时 / 备注 / 链接';
+            metaBtn.setAttribute('aria-label', metaBtn.title);
+            metaBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openNodeMeta(node);
+            });
+            actions.appendChild(metaBtn);
         }
         const editBtn = document.createElement('button');
         editBtn.className = 'edit-btn';
@@ -4180,6 +4229,234 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             startEditNode(node, textSpan, row);
         });
         return li;
+    }
+
+    // ---------- 任务元数据：徽标 + 编辑弹窗（第 1~4、6 项） ----------
+
+    function formatEstimate(minutes) {
+        const value = Math.max(0, Number(minutes) || 0);
+        if (value === 0) return '';
+        if (value < 60) return `${value} 分`;
+        const hours = value / 60;
+        return Number.isInteger(hours) ? `${hours} 小时` : `${value} 分`;
+    }
+
+    function dueBadgeInfo(node) {
+        if (!node.dueDate) return null;
+        const today = todayStr();
+        const days = daysBetween(today, node.dueDate);
+        if (days === null) return null;
+        if (days < 0) return { text: `逾期 ${-days} 天`, className: 'due-overdue' };
+        if (days === 0) return { text: '今天到期', className: 'due-today' };
+        if (days === 1) return { text: '明天到期', className: 'due-soon' };
+        if (days <= 7) return { text: `${days} 天后到期`, className: 'due-soon' };
+        return { text: node.dueDate.slice(5) + ' 到期', className: '' };
+    }
+
+    function createNodeMetaBadges(node) {
+        const badges = [];
+        if (node.priority) {
+            const labels = { high: '高', mid: '中', low: '低' };
+            badges.push({ text: labels[node.priority], className: `priority-badge priority-${node.priority}` });
+        }
+        const due = dueBadgeInfo(node);
+        if (due) badges.push({ text: due.text, className: `due-badge ${due.className}` });
+        (node.tags || []).slice(0, 2).forEach(tag => badges.push({ text: `#${tag}`, className: 'tag-badge' }));
+        if ((node.tags || []).length > 2) badges.push({ text: `+${node.tags.length - 2}`, className: 'tag-badge' });
+        const estimate = formatEstimate(node.estimateMinutes);
+        if (estimate) badges.push({ text: estimate, className: 'estimate-badge' });
+        if (node.note) badges.push({ text: '备注', className: 'note-badge', title: node.note.slice(0, 200) });
+        if ((node.links || []).length > 0) badges.push({ text: `链接 ${node.links.length}`, className: 'link-badge' });
+        if (badges.length === 0) return null;
+        const wrap = document.createElement('span');
+        wrap.className = 'node-meta';
+        wrap.title = '点击编辑优先级 / 截止 / 标签 / 耗时 / 备注 / 链接';
+        badges.forEach(badge => {
+            const span = document.createElement('span');
+            span.className = `meta-badge ${badge.className}`.trim();
+            span.textContent = badge.text;
+            if (badge.title) span.title = badge.title;
+            wrap.appendChild(span);
+        });
+        wrap.addEventListener('click', (event) => {
+            event.stopPropagation();
+            openNodeMeta(node);
+        });
+        return wrap;
+    }
+
+    function applyNodeMeta(node, meta) {
+        const cleaned = normalizeNodeMeta(meta);
+        node.priority = cleaned.priority;
+        node.dueDate = cleaned.dueDate;
+        node.estimateMinutes = cleaned.estimateMinutes;
+        node.tags = cleaned.tags;
+        node.note = cleaned.note;
+        node.links = cleaned.links;
+        markProjectDirty(getCurrentProject());
+    }
+
+    function openNodeMeta(node) {
+        if (!node || node.type !== 'item') return;
+        const draft = normalizeNodeMeta(node);
+        showUtilityModal('任务详情', '优先级 · 截止 · 标签 · 耗时 · 备注 · 链接');
+        utilityBody.innerHTML = '';
+        const form = document.createElement('div');
+        form.className = 'meta-form';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = '这些信息只用于筛选、工作台和提醒，不影响任务原有的完成/验收逻辑。';
+        form.appendChild(hint);
+
+        const addField = (label, control) => {
+            const field = document.createElement('label');
+            field.className = 'meta-field';
+            const caption = document.createElement('span');
+            caption.textContent = label;
+            field.append(caption, control);
+            form.appendChild(field);
+            return field;
+        };
+
+        const prioritySelect = document.createElement('select');
+        [['', '无'], ['high', '高'], ['mid', '中'], ['low', '低']].forEach(([value, text]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = text;
+            prioritySelect.appendChild(option);
+        });
+        prioritySelect.value = draft.priority;
+        addField('优先级', prioritySelect);
+
+        const dueInput = document.createElement('input');
+        dueInput.type = 'date';
+        dueInput.value = draft.dueDate;
+        const dueField = addField('截止日期', dueInput);
+        const dueShortcuts = document.createElement('div');
+        dueShortcuts.className = 'meta-shortcuts';
+        [['今天', 0], ['明天', 1], ['3 天后', 3], ['下周', 7], ['清除', null]].forEach(([text, offset]) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'utility-secondary-btn';
+            button.textContent = text;
+            button.addEventListener('click', () => {
+                dueInput.value = offset === null ? '' : addDaysToIso(todayStr(), offset);
+            });
+            dueShortcuts.appendChild(button);
+        });
+        dueField.appendChild(dueShortcuts);
+
+        const estimateInput = document.createElement('input');
+        estimateInput.type = 'number';
+        estimateInput.min = '0';
+        estimateInput.max = String(MAX_ESTIMATE_MINUTES);
+        estimateInput.step = '5';
+        estimateInput.value = String(draft.estimateMinutes || '');
+        estimateInput.placeholder = '分钟';
+        const estimateField = addField('预计耗时（分钟）', estimateInput);
+        const estimateShortcuts = document.createElement('div');
+        estimateShortcuts.className = 'meta-shortcuts';
+        [15, 30, 60, 120].forEach(minutes => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'utility-secondary-btn';
+            button.textContent = formatEstimate(minutes);
+            button.addEventListener('click', () => { estimateInput.value = String(minutes); });
+            estimateShortcuts.appendChild(button);
+        });
+        estimateField.appendChild(estimateShortcuts);
+
+        const tagsInput = document.createElement('input');
+        tagsInput.type = 'text';
+        tagsInput.value = draft.tags.join(', ');
+        tagsInput.placeholder = '用逗号分隔，例如：Python, 复习';
+        addField('标签', tagsInput);
+
+        const noteInput = document.createElement('textarea');
+        noteInput.rows = 4;
+        noteInput.value = draft.note;
+        noteInput.placeholder = '备注、思路、命令片段…';
+        addField('备注', noteInput);
+
+        const linksBox = document.createElement('div');
+        linksBox.className = 'meta-links';
+        const renderLinks = () => {
+            linksBox.replaceChildren();
+            draft.links.forEach((link, index) => {
+                const rowBox = document.createElement('div');
+                rowBox.className = 'meta-link-row';
+                const labelInput = document.createElement('input');
+                labelInput.type = 'text';
+                labelInput.placeholder = '名称';
+                labelInput.value = link.label;
+                labelInput.addEventListener('input', () => { draft.links[index].label = labelInput.value; });
+                const urlInput = document.createElement('input');
+                urlInput.type = 'url';
+                urlInput.placeholder = 'https://…';
+                urlInput.value = link.url;
+                urlInput.addEventListener('input', () => { draft.links[index].url = urlInput.value; });
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'utility-secondary-btn';
+                remove.textContent = '移除';
+                remove.addEventListener('click', () => {
+                    draft.links.splice(index, 1);
+                    renderLinks();
+                });
+                rowBox.append(labelInput, urlInput, remove);
+                linksBox.appendChild(rowBox);
+            });
+            const add = document.createElement('button');
+            add.type = 'button';
+            add.className = 'utility-secondary-btn';
+            add.textContent = '添加链接';
+            add.addEventListener('click', () => {
+                if (draft.links.length >= MAX_LINKS) {
+                    showToast(`最多 ${MAX_LINKS} 个链接`);
+                    return;
+                }
+                draft.links.push({ label: '', url: '' });
+                renderLinks();
+            });
+            linksBox.appendChild(add);
+        };
+        renderLinks();
+        addField('资料链接', linksBox);
+
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'utility-primary-btn';
+        save.textContent = '保存';
+        save.addEventListener('click', () => {
+            const tags = tagsInput.value.split(/[,，\s]+/).map(item => item.trim()).filter(Boolean);
+            try {
+                applyNodeMeta(node, {
+                    priority: prioritySelect.value,
+                    dueDate: dueInput.value,
+                    estimateMinutes: estimateInput.value,
+                    tags,
+                    note: noteInput.value,
+                    links: draft.links.filter(link => String(link.url || '').trim()),
+                });
+            } catch (error) {
+                showToast(error.message || '链接格式不正确');
+                return;
+            }
+            saveProjects();
+            renderDetail();
+            closeUtilityModal();
+            showToast('已保存任务信息');
+        });
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'utility-secondary-btn';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', closeUtilityModal);
+        actions.append(save, cancel);
+        form.appendChild(actions);
+        utilityBody.appendChild(form);
     }
 
     function toggleNodeCompleted(node) {
@@ -4579,6 +4856,424 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         reviewQueueState = { dueItems: dueItems, futureItems: futureItems };
         renderReviewQueue();
         loadReviewCounts();
+    }
+
+    // ---------- 批次 2：今日工作台 / 收集箱 / 最近入口 ----------
+
+    const WORKBENCH_GROUP_TITLES = {
+        overdue: '逾期',
+        today: '今天到期',
+        next7: '未来 7 天',
+        reviewToday: '今天要复习',
+        inbox: '收集箱（待归类）',
+    };
+
+    async function showWorkbench() {
+        projectsView.classList.remove('active');
+        detailView.classList.remove('active');
+        reviewView.classList.remove('active');
+        workbenchView.classList.add('active');
+        workbenchSubline.textContent = '';
+        renderReviewMessageInto(workbenchBody, listStatusText('review', 'loading').replace('复习队列', '今日工作台'), false);
+        try {
+            const response = await apiFetch(`/api/workbench?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' });
+            const board = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(board.error || '读取今日工作台失败，请重试');
+            renderWorkbench(board);
+        } catch (error) {
+            renderReviewMessageInto(workbenchBody, error.message || '读取今日工作台失败，请重试', true, showWorkbench);
+        }
+    }
+
+    function renderReviewMessageInto(container, text, withRetry, retryHandler) {
+        container.replaceChildren();
+        const message = document.createElement('p');
+        message.className = 'review-empty';
+        message.textContent = text;
+        container.appendChild(message);
+        if (withRetry) container.appendChild(createRetryButton('重试', retryHandler || showWorkbench));
+    }
+
+    function renderWorkbench(board) {
+        const groups = board.groups || {};
+        const totals = board.totals || {};
+        workbenchSubline.textContent = `今天 ${totals.today || 0} · 逾期 ${totals.overdue || 0} · 未来 7 天 ${totals.next7 || 0}`
+            + ` · 待复习 ${totals.reviewToday || 0} · 收集箱 ${totals.inbox || 0}`;
+        workbenchBody.replaceChildren();
+        const order = ['overdue', 'today', 'next7', 'reviewToday', 'inbox'];
+        const fragment = document.createDocumentFragment();
+        for (const key of order) {
+            const items = groups[key] || [];
+            const group = document.createElement('div');
+            group.className = 'review-group';
+            const head = document.createElement('div');
+            head.className = 'review-group-title';
+            const label = document.createElement('span');
+            label.textContent = WORKBENCH_GROUP_TITLES[key] || key;
+            const count = document.createElement('span');
+            count.className = 'gcount';
+            count.textContent = String(items.length);
+            head.append(label, count);
+            group.appendChild(head);
+            if (items.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'review-empty';
+                empty.textContent = key === 'inbox' ? '收集箱是空的' : '没有需要处理的';
+                group.appendChild(empty);
+            } else {
+                items.forEach(item => group.appendChild(createWorkbenchRow(item, key)));
+            }
+            fragment.appendChild(group);
+        }
+        workbenchBody.appendChild(fragment);
+    }
+
+    function createWorkbenchRow(item, groupKey) {
+        const row = document.createElement('div');
+        row.className = 'review-item';
+        const main = document.createElement('div');
+        main.className = 'review-item-main';
+        const pathSpan = document.createElement('span');
+        pathSpan.className = 'review-item-path';
+        pathSpan.textContent = item.path ? `${item.projectName} · ${item.path}` : item.projectName;
+        const text = document.createElement('div');
+        text.className = 'review-item-text';
+        text.textContent = item.text || '未命名任务';
+        text.title = item.text || '';
+        main.append(pathSpan, text);
+        const metaWrap = createNodeMetaBadges(item);
+        if (metaWrap) main.appendChild(metaWrap);
+        if (groupKey === 'overdue' && item.daysOverdue) {
+            const tag = document.createElement('span');
+            tag.className = 'review-tag overdue';
+            tag.textContent = `逾期 ${item.daysOverdue} 天`;
+            main.appendChild(tag);
+        }
+        if (groupKey === 'reviewToday' && item.reviewDue) {
+            const tag = document.createElement('span');
+            tag.className = 'review-tag today';
+            tag.textContent = item.reviewDue === todayStr() ? '今天复习' : `复习逾期 ${item.daysOverdue || 1} 天`;
+            main.appendChild(tag);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'review-actions';
+        if (groupKey !== 'reviewToday') {
+            const done = document.createElement('button');
+            done.type = 'button';
+            done.className = 'review-btn easy';
+            done.textContent = '完成';
+            done.addEventListener('click', () => completeWorkbenchItem(item));
+            const tomorrow = document.createElement('button');
+            tomorrow.type = 'button';
+            tomorrow.className = 'review-btn hard';
+            tomorrow.textContent = '延期到明天';
+            tomorrow.addEventListener('click', () => postponeWorkbenchItem(item));
+            actions.append(done, tomorrow);
+        } else {
+            const goReview = document.createElement('button');
+            goReview.type = 'button';
+            goReview.className = 'review-btn easy';
+            goReview.textContent = '去复习';
+            goReview.addEventListener('click', () => showReviewQueue());
+            actions.appendChild(goReview);
+        }
+        if (groupKey === 'inbox') {
+            const fileIt = document.createElement('button');
+            fileIt.type = 'button';
+            fileIt.className = 'review-btn';
+            fileIt.textContent = '归类';
+            fileIt.addEventListener('click', () => openInboxMovePicker(item));
+            actions.appendChild(fileIt);
+        }
+        const detail = document.createElement('button');
+        detail.type = 'button';
+        detail.className = 'review-btn';
+        detail.textContent = '详情';
+        detail.addEventListener('click', () => openWorkbenchItemMeta(item));
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'review-btn';
+        open.textContent = '打开';
+        open.addEventListener('click', () => locateNodeById(item.projectId, item.nodeId));
+        actions.append(detail, open);
+        row.append(main, actions);
+        return row;
+    }
+
+    async function withWorkbenchNode(item, callback) {
+        const project = await ensureProjectLoaded(item.projectId);
+        const node = findNodeById(project.tree || [], item.nodeId);
+        if (!node) throw new Error('任务已不存在，请刷新工作台');
+        return callback(node);
+    }
+
+    async function completeWorkbenchItem(item) {
+        try {
+            await withWorkbenchNode(item, (node) => {
+                const before = node.completed;
+                toggleNodeCompleted(node);
+                if (node.completed !== before) showWorkbench();
+            });
+        } catch (error) {
+            showToast(error.message || '完成任务失败，请重试');
+        }
+    }
+
+    async function postponeWorkbenchItem(item) {
+        try {
+            await withWorkbenchNode(item, async (node) => {
+                node.dueDate = addDaysToIso(todayStr(), 1);
+                markProjectDirty(getCurrentProject());
+                await saveProjects();
+                showToast('已延期到明天');
+                showWorkbench();
+            });
+        } catch (error) {
+            showToast(error.message || '延期失败，请重试');
+        }
+    }
+
+    async function openWorkbenchItemMeta(item) {
+        try {
+            await withWorkbenchNode(item, (node) => openNodeMeta(node));
+        } catch (error) {
+            showToast(error.message || '打开任务详情失败，请重试');
+        }
+    }
+
+    async function locateNodeById(projectId, nodeId) {
+        try {
+            const project = await ensureProjectLoaded(projectId);
+            const findAncestors = (nodes, ancestors) => {
+                for (const node of nodes || []) {
+                    if (String(node.id) === String(nodeId)) return ancestors;
+                    const found = findAncestors(node.children, ancestors.concat(node.id));
+                    if (found) return found;
+                }
+                return null;
+            };
+            const ancestorIds = findAncestors(project.tree || [], []) || [];
+            await locateStudyTask(projectId, { id: nodeId, ancestorIds, path: '', text: '' });
+        } catch (error) {
+            showToast(error.message || '任务定位失败，请重试');
+        }
+    }
+
+    async function quickAddToInbox() {
+        const text = quickAddInput.value.trim();
+        if (!text) {
+            quickAddInput.focus();
+            return;
+        }
+        quickAddBtn.disabled = true;
+        try {
+            const response = await apiFetch('/api/inbox/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ node: { text } })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '加入收集箱失败，请重试');
+            quickAddInput.value = '';
+            showToast('已加入收集箱');
+            await loadProjects();
+            showWorkbench();
+        } catch (error) {
+            showToast(error.message || '加入收集箱失败，请重试');
+        } finally {
+            quickAddBtn.disabled = false;
+            quickAddInput.focus();
+        }
+    }
+
+    function flattenParentOptions(project) {
+        const options = [{ id: null, label: '（项目根目录）' }];
+        const walk = (nodes, depth) => {
+            for (const node of nodes || []) {
+                if (node.type !== 'item') {
+                    options.push({ id: node.id, label: `${'　'.repeat(depth)}${node.text || '未命名'}` });
+                    walk(node.children, depth + 1);
+                }
+            }
+        };
+        walk(project.tree || [], 0);
+        return options;
+    }
+
+    async function openInboxMovePicker(item) {
+        showUtilityModal('归类任务', '从收集箱移到项目');
+        renderUtilityMessage('正在读取项目…');
+        let summaries = [];
+        try {
+            const response = await apiFetch('/api/projects', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取项目失败，请重试');
+            summaries = (payload.projects || []).filter(entry => entry.id !== 'inbox' && !entry.archived);
+        } catch (error) {
+            renderUtilityMessage(error.message || '读取项目失败，请重试');
+            return;
+        }
+        if (summaries.length === 0) {
+            renderUtilityMessage('还没有其他项目，先新建一个项目再归类');
+            return;
+        }
+        utilityBody.innerHTML = '';
+        const form = document.createElement('div');
+        form.className = 'meta-form';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = `把“${item.text}”移到：`;
+        form.appendChild(hint);
+        const projectSelect = document.createElement('select');
+        summaries.forEach(entry => {
+            const option = document.createElement('option');
+            option.value = entry.id;
+            option.textContent = entry.name;
+            projectSelect.appendChild(option);
+        });
+        const parentSelect = document.createElement('select');
+        const projectField = document.createElement('label');
+        projectField.className = 'meta-field';
+        const projectCaption = document.createElement('span');
+        projectCaption.textContent = '目标项目';
+        projectField.append(projectCaption, projectSelect);
+        const parentField = document.createElement('label');
+        parentField.className = 'meta-field';
+        const parentCaption = document.createElement('span');
+        parentCaption.textContent = '放到哪一周 / 单元';
+        parentField.append(parentCaption, parentSelect);
+        form.append(projectField, parentField);
+
+        const loadParents = async () => {
+            parentSelect.replaceChildren();
+            const loading = document.createElement('option');
+            loading.textContent = '正在读取…';
+            parentSelect.appendChild(loading);
+            try {
+                const project = await ensureProjectLoaded(projectSelect.value);
+                parentSelect.replaceChildren();
+                flattenParentOptions(project).forEach(entry => {
+                    const option = document.createElement('option');
+                    option.value = entry.id === null ? '' : String(entry.id);
+                    option.textContent = entry.label;
+                    parentSelect.appendChild(option);
+                });
+            } catch (error) {
+                parentSelect.replaceChildren();
+                const failed = document.createElement('option');
+                failed.textContent = '读取失败，请重试';
+                parentSelect.appendChild(failed);
+            }
+        };
+        projectSelect.addEventListener('change', loadParents);
+        await loadParents();
+
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.className = 'utility-primary-btn';
+        confirm.textContent = '确认归类';
+        confirm.addEventListener('click', async () => {
+            confirm.disabled = true;
+            try {
+                const response = await apiFetch('/api/inbox/move', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        nodeId: item.nodeId,
+                        fromProjectId: item.projectId,
+                        toProjectId: projectSelect.value,
+                        parentId: parentSelect.value || null
+                    })
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(payload.error || '归类失败，请重试');
+                if (Array.isArray(payload.projects)) projects = payload.projects.map(normalizeProjectSummary);
+                savedProjectJsonById.clear();
+                closeUtilityModal();
+                showToast('已归类');
+                renderProjects();
+                showWorkbench();
+            } catch (error) {
+                showToast(error.message || '归类失败，请重试');
+                confirm.disabled = false;
+            }
+        });
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'utility-secondary-btn';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', closeUtilityModal);
+        actions.append(confirm, cancel);
+        form.appendChild(actions);
+        utilityBody.appendChild(form);
+    }
+
+    async function showRecent() {
+        showUtilityModal('最近', '打开 · 修改 · 完成');
+        renderUtilityMessage('正在读取最近记录…');
+        let recent;
+        try {
+            const response = await apiFetch('/api/recent', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取最近记录失败，请重试');
+            recent = payload;
+        } catch (error) {
+            renderUtilityMessage(error.message || '读取最近记录失败，请重试');
+            return;
+        }
+        utilityBody.innerHTML = '';
+        const wrap = document.createElement('div');
+        wrap.className = 'conflict-list';
+        const addSection = (title, entries, renderRow) => {
+            const heading = document.createElement('div');
+            heading.className = 'review-group-title';
+            heading.textContent = `${title}（${entries.length}）`;
+            wrap.appendChild(heading);
+            if (entries.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'utility-empty';
+                empty.textContent = '还没有记录';
+                wrap.appendChild(empty);
+                return;
+            }
+            entries.forEach(entry => wrap.appendChild(renderRow(entry)));
+        };
+        const projectRow = (entry) => {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'search-result';
+            const title = document.createElement('strong');
+            title.textContent = entry.name + (entry.archived ? '（已归档）' : '');
+            const detail = document.createElement('small');
+            detail.textContent = String(entry.at || '').slice(0, 16).replace('T', ' ');
+            row.append(title, detail);
+            row.addEventListener('click', async () => {
+                closeUtilityModal();
+                await openProjectDetail(entry.id);
+            });
+            return row;
+        };
+        const completedRow = (entry) => {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'search-result';
+            const title = document.createElement('strong');
+            title.textContent = entry.text || '未命名任务';
+            const detail = document.createElement('small');
+            detail.textContent = `${entry.projectName} · ${String(entry.at || '').slice(0, 16).replace('T', ' ')}`;
+            row.append(title, detail);
+            row.addEventListener('click', async () => {
+                closeUtilityModal();
+                await locateNodeById(entry.projectId, entry.nodeId);
+            });
+            return row;
+        };
+        addSection('最近打开', recent.opened || [], projectRow);
+        addSection('最近修改', recent.modified || [], projectRow);
+        addSection('最近完成', recent.completed || [], completedRow);
+        utilityBody.appendChild(wrap);
     }
 
     function renderReviewMessage(text, withRetry) {
@@ -5781,6 +6476,17 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         backBtn.addEventListener('click', showProjectsView);
         reviewQueueBtn.addEventListener('click', () => { showReviewQueue(); });
         reviewBackBtn.addEventListener('click', () => { showProjectsView(); });
+        workbenchBackBtn.addEventListener('click', () => { showProjectsView(); });
+        workbenchRefreshBtn.addEventListener('click', () => showWorkbench());
+        openWorkbenchBtn.addEventListener('click', () => showWorkbench());
+        openRecentBtn.addEventListener('click', () => showRecent());
+        quickAddBtn.addEventListener('click', () => quickAddToInbox());
+        quickAddInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                quickAddToInbox();
+            }
+        });
         if (projectReviewToggle) {
             projectReviewToggle.addEventListener('change', () => {
                 const reviewProject = getCurrentProject();

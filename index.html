@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>项目管理器 · 文件夹式清单</title>
-<link rel="stylesheet" href="css/style.css?v=28" />
+<link rel="stylesheet" href="css/style.css?v=30" />
 </head>
 <body>
 <div class="app" id="app">
@@ -13,6 +13,8 @@
 <div class="projects-header">
 <h1><span class="brand-mark" aria-hidden="true">✓</span>复习清单</h1>
 <div class="study-shortcuts" aria-label="学习快捷工具">
+<button class="shortcut-btn" id="openWorkbenchBtn" type="button"><span aria-hidden="true">☀</span>今日工作台</button>
+<button class="shortcut-btn" id="openRecentBtn" type="button"><span aria-hidden="true">⟲</span>最近</button>
 <button class="shortcut-btn" id="openSummaryBtn" type="button"><span aria-hidden="true">◫</span>摘要清单</button>
 <button class="shortcut-btn" id="globalSearchBtn" type="button"><span aria-hidden="true">⌕</span>全局搜索</button>
 <button class="shortcut-btn" id="openTrashBtn" type="button"><span aria-hidden="true">🗑</span>回收站</button>
@@ -152,6 +154,21 @@
 </div>
 <div class="review-body" id="reviewBody"></div>
 </div>
+<div class="view" id="workbenchView">
+<div class="review-header">
+<button class="back-btn" id="workbenchBackBtn" type="button" aria-label="返回">←</button>
+<div class="review-heading">
+<h2>今日工作台</h2>
+<span class="review-subline" id="workbenchSubline"></span>
+</div>
+<div class="workbench-quick">
+<input type="text" id="quickAddInput" placeholder="快速记录一条任务，稍后再归类" autocomplete="off" />
+<button id="quickAddBtn" type="button">加入收集箱</button>
+<button id="workbenchRefreshBtn" type="button" class="utility-secondary-btn">刷新</button>
+</div>
+</div>
+<div class="review-body" id="workbenchBody"></div>
+</div>
 <div class="toast" id="toast" role="status" aria-live="polite">
 <span id="toastMessage"></span>
 <button id="toastAction" type="button" hidden></button>
@@ -251,6 +268,6 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 
 <script src="js/api-client.js?v=1"></script>
 <script src="js/study-tools.js?v=1"></script>
-<script src="js/app.js?v=37"></script>
+<script src="js/app.js?v=39"></script>
 </body>
 </html>

@@ -56,6 +56,12 @@ MAX_PROJECT_PAYLOAD_BYTES = storage_service.MAX_PROJECT_PAYLOAD_BYTES
 StateConflictError = storage_service.StateConflictError
 migrate_legacy_state = storage_service.migrate_legacy_state
 ensure_schema = storage_service.ensure_schema
+ensure_inbox_project = storage_service.ensure_inbox_project
+add_inbox_item = storage_service.add_inbox_item
+move_node = storage_service.move_node
+touch_project_opened = storage_service.touch_project_opened
+workbench = storage_service.workbench
+recent_overview = storage_service.recent_overview
 SchemaVersionError = storage_service.SchemaVersionError
 read_project_summaries = storage_service.read_project_summaries
 read_project = storage_service.read_project
@@ -363,11 +369,34 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     self.send_json(404, {"error": "项目不存在"})
                 else:
                     project, revision = result
+                    if not project.get("archived"):
+                        touch_project_opened(project_id)
                     self.send_json(200, {"project": project, "revision": revision})
             except ValueError as error:
                 self.send_json(400, {"error": str(error)})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取项目失败：{error}"})
+            return
+        if path == "/api/workbench":
+            try:
+                today = optional_iso_date(query_params(self).get("today", [""])[0])
+                self.send_json(200, workbench(today or None))
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+                self.send_json(500, {"error": f"读取今日工作台失败：{error}"})
+            return
+        if path == "/api/recent":
+            try:
+                self.send_json(200, recent_overview())
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取最近记录失败：{error}"})
+            return
+        if path == "/api/inbox":
+            try:
+                project, revision = ensure_inbox_project()
+                self.send_json(200, {"ok": True, "project": project, "revision": revision,
+                                     "summary": storage_service.project_summary(project)})
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+                self.send_json(500, {"error": f"读取收集箱失败：{error}"})
             return
         if path == "/api/heartbeat":
             touch_heartbeat()
@@ -482,6 +511,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
+                        "/api/inbox/add", "/api/inbox/move",
                         "/api/background",
                         "/api/memo", "/api/memos/database-import",
                         "/api/trash",
@@ -582,6 +612,23 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 create_full_backup("before-import")
                 storage_service.replace_projects(projects, pre_backup=False)
                 self.send_json(200, {"ok": True, "projects": read_project_summaries()})
+            elif path == "/api/inbox/add":
+                node = payload.get("node")
+                if not isinstance(node, dict):
+                    raise ValueError("任务格式不正确")
+                self.send_json(200, {"ok": True, **add_inbox_item(node)})
+            elif path == "/api/inbox/move":
+                node_id = str(payload.get("nodeId") or "")
+                from_project = str(payload.get("fromProjectId") or storage_service.INBOX_PROJECT_ID)
+                to_project = str(payload.get("toProjectId") or "")
+                if not node_id or not to_project:
+                    raise ValueError("缺少 nodeId 或 toProjectId")
+                parent_id = payload.get("parentId")
+                position = payload.get("position")
+                moved = move_node(node_id, from_project, to_project,
+                                  str(parent_id) if parent_id is not None else None,
+                                  int(position) if position is not None else None)
+                self.send_json(200, {"ok": True, **moved, "projects": read_project_summaries()})
             elif path == "/api/question":
                 self.send_json(200, call_question(payload))
             elif path == "/api/memo":
