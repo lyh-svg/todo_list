@@ -18,6 +18,8 @@ MEMO_DATABASE_FILE = Path(
 ).expanduser()
 MEMO_SCHEMA_VERSION = 1
 MAX_MEMO_CONTENT_BYTES = 50 * 1024 * 1024
+# 列表只回传前这么多字符做预览，全文由 GET /api/memo?id= 按需加载。
+MEMO_PREVIEW_CHARS = 200
 _memo_lock = threading.RLock()
 
 
@@ -75,13 +77,25 @@ def initialize() -> None:
             )
 
 
-def list_memos() -> list[dict[str, Any]]:
-    with _memo_lock, open_memo_database() as connection:
-        rows = connection.execute(
-            "SELECT memo_id,title,content,pinned,created_at,updated_at,revision "
-            "FROM memos ORDER BY pinned DESC,updated_at DESC,memo_id"
-        ).fetchall()
-    return [_row_to_memo(row) for row in rows]
+def list_memo_summaries() -> list[dict[str, Any]]:
+    """列表用数据：只给预览（前 MEMO_PREVIEW_CHARS 字）与长度，绝不带全文。"""
+    return _summary_rows()
+
+
+def search_memo_summaries(query: str) -> list[dict[str, Any]]:
+    """按标题或**全文**搜索，同样只返回预览。
+
+    LIKE 的 % 和 _ 必须转义：否则搜一个 "%" 会命中所有备忘录。
+    """
+    text = str(query or "").strip()
+    if not text:
+        return _summary_rows()
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    return _summary_rows(
+        "WHERE title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'",
+        (pattern, pattern),
+    )
 
 
 def read_memo(memo_id: Any) -> dict[str, Any] | None:
@@ -103,6 +117,30 @@ def _row_to_memo(row: sqlite3.Row) -> dict[str, Any]:
         "updatedAt": row["updated_at"],
         "revision": int(row["revision"]),
     }
+
+
+def _row_to_summary(row: sqlite3.Row) -> dict[str, Any]:
+    content = row["content"] or ""
+    return {
+        "id": row["memo_id"],
+        "title": row["title"],
+        "contentPreview": content[:MEMO_PREVIEW_CHARS],
+        "contentLength": len(content),
+        "pinned": bool(row["pinned"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "revision": int(row["revision"]),
+    }
+
+
+def _summary_rows(where: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    with _memo_lock, open_memo_database() as connection:
+        rows = connection.execute(
+            "SELECT memo_id,title,content,pinned,created_at,updated_at,revision FROM memos "
+            f"{where} ORDER BY pinned DESC,updated_at DESC,memo_id",
+            params,
+        ).fetchall()
+    return [_row_to_summary(row) for row in rows]
 
 
 def write_memo(payload: dict[str, Any]) -> dict[str, Any]:

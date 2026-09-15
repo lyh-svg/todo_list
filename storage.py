@@ -22,8 +22,10 @@ BACKUP_DIR = Path(
     os.environ.get("TODO_SQLITE_BACKUP_DIR", str(DATABASE_FILE.parent / "backups"))
 ).expanduser()
 MAX_PROJECT_PAYLOAD_BYTES = 50 * 1024 * 1024
-MAX_DATABASE_BACKUPS = 30
 SCHEMA_VERSION = 5
+# 导出 JSON 的 schema 版本。必须与前端 js/app.js 的 DATA_SCHEMA_VERSION 同步：
+# 前端 extractProjects() 会拒绝比自己更新的 schemaVersion。
+EXPORT_SCHEMA_VERSION = 2
 
 _database_lock = threading.RLock()
 
@@ -730,6 +732,24 @@ def read_project(project_id: Any) -> tuple[dict[str, Any], int] | None:
         return _read_project_from_connection(connection, str(project_id))
 
 
+def export_projects_snapshot() -> dict[str, Any]:
+    """导出全部项目的完整快照，形状与前端"导入备份"（/api/import）兼容。
+
+    刻意逐个读取完整项目，而不是复用 read_project_summaries() 的摘要：
+    摘要里的 tree 是空的，直接导出会让未打开的项目变成空壳，导入后丢数据。
+    """
+    projects: list[dict[str, Any]] = []
+    for summary in read_project_summaries():
+        result = read_project(summary.get("id"))
+        if result:
+            projects.append(result[0])
+    return {
+        "schemaVersion": EXPORT_SCHEMA_VERSION,
+        "exportedAt": datetime.now().isoformat(timespec="seconds"),
+        "projects": projects,
+    }
+
+
 def write_project(project: dict[str, Any], expected_revision: int | None) -> tuple[int, dict[str, Any]]:
     stored = {key: value for key, value in project.items() if not str(key).startswith("_")}
     encoded = _json(stored).encode("utf-8")
@@ -842,36 +862,6 @@ def _validated_backup(source: Path, target: Path) -> None:
     if not result or result[0] != "ok":
         target.unlink(missing_ok=True)
         raise RuntimeError("数据库备份完整性检查失败")
-
-
-def create_database_backup() -> None:
-    if not DATABASE_FILE.exists():
-        return
-    with _database_lock:
-        try:
-            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d")
-            target = BACKUP_DIR / f"todo-{stamp}.sqlite3"
-            marker = BACKUP_DIR / f".write-backup-{stamp}"
-            if marker.exists():
-                return
-            with open_state_database() as connection:
-                has_projects = connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone()
-                has_legacy_table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_state'"
-                ).fetchone()
-                has_legacy_rows = has_legacy_table and connection.execute(
-                    "SELECT 1 FROM project_state LIMIT 1"
-                ).fetchone()
-                if not has_projects and not has_legacy_rows:
-                    return
-            _validated_backup(DATABASE_FILE, target)
-            marker.touch(mode=0o600, exist_ok=True)
-            backups = sorted(BACKUP_DIR.glob("todo-*.sqlite3"), key=lambda path: path.stat().st_mtime, reverse=True)
-            for stale in backups[MAX_DATABASE_BACKUPS:]:
-                stale.unlink(missing_ok=True)
-        except (OSError, sqlite3.Error) as error:
-            print(f"Unable to create SQLite backup: {error}", file=sys.stderr)
 
 
 def create_manual_database_backup(prefix: str = "manual") -> str:

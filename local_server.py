@@ -34,6 +34,10 @@ SESSION_TOKEN_FILE = Path(
     os.environ.get("TODO_SESSION_TOKEN_FILE", f"/tmp/todo-list-ai-{PORT}.token")
 )
 PUBLIC_PATHS = {"/", "/index.html", "/css/style.css", "/js/api-client.js", "/js/study-tools.js", "/js/app.js"}
+# 这些静态资源的 URL 带 ?v= 版本号（见 index.html），可以放心缓存；入口 HTML 与所有 /api/* 仍用 no-store。
+VERSIONED_STATIC_PATHS = {"/css/style.css", "/js/api-client.js", "/js/study-tools.js", "/js/app.js"}
+STATIC_CACHE_CONTROL = "public, max-age=86400"
+NO_STORE = "no-store"
 
 _heartbeat_lock = threading.Lock()
 _last_heartbeat = time.monotonic()
@@ -48,10 +52,10 @@ StateConflictError = storage_service.StateConflictError
 migrate_legacy_state = storage_service.migrate_legacy_state
 read_project_summaries = storage_service.read_project_summaries
 read_project = storage_service.read_project
+export_projects_snapshot = storage_service.export_projects_snapshot
 write_project = storage_service.write_project
 delete_project = storage_service.delete_project
 harden_storage_permissions = storage_service.harden_storage_permissions
-create_database_backup = storage_service.create_database_backup
 create_manual_database_backup = storage_service.create_manual_database_backup
 list_database_backups = storage_service.list_database_backups
 rename_database_backup = storage_service.rename_database_backup
@@ -115,7 +119,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", getattr(self, "_cache_control", NO_STORE))
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
@@ -135,7 +139,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             generator = ai_service.call_deepseek_stream(payload)
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             for event in generator:
                 line = json.dumps(event, ensure_ascii=False) + "\n"
@@ -182,6 +185,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+        if path in VERSIONED_STATIC_PATHS:
+            self._cache_control = STATIC_CACHE_CONTROL
         self.path = path
         super().do_HEAD()
 
@@ -205,6 +210,29 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 self.send_json(404, {"error": "备份不存在"})
                 return
             self.send_file(backup, "application/vnd.sqlite3", name)
+            return
+        if path == "/api/export":
+            # 与 /api/backup/download 同理：浏览器直接下载带不了自定义头，允许查询串 token。
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            supplied = self.headers.get("X-Todo-Session", "") or query.get("token", [""])[0]
+            if not hmac.compare_digest(supplied, SESSION_TOKEN):
+                self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
+                return
+            try:
+                snapshot = export_projects_snapshot()
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"导出项目失败：{error}"})
+                return
+            body = json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="todo-projects-{time.strftime("%Y%m%d")}.json"',
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if path.startswith("/api/") and path not in {"/api/config"} and not valid_session(self):
             self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
@@ -302,8 +330,11 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 self.send_json(500, {"error": f"读取摘要清单失败：{error}"})
             return
         if path == "/api/memos":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q", [""])[0]
             try:
-                self.send_json(200, {"memos": memo_storage.list_memos(), "databaseBytes": memo_storage.database_size()})
+                memos = (memo_storage.search_memo_summaries(query) if query.strip()
+                         else memo_storage.list_memo_summaries())
+                self.send_json(200, {"memos": memos, "databaseBytes": memo_storage.database_size()})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取备忘录失败：{error}"})
             return
@@ -322,6 +353,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
         if path not in PUBLIC_PATHS:
             self.send_json(404, {"error": "资源不存在"})
             return
+        if path in VERSIONED_STATIC_PATHS:
+            self._cache_control = STATIC_CACHE_CONTROL
         self.path = path
         super().do_GET()
 
@@ -370,7 +403,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
         if path == "/api/memos/database-import":
             try:
                 memo_storage.import_database(self.rfile.read(length))
-                self.send_json(200, {"ok": True, "memos": memo_storage.list_memos()})
+                self.send_json(200, {"ok": True, "memos": memo_storage.list_memo_summaries()})
             except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
                 self.send_json(400, {"error": f"导入备忘录数据库失败：{error}"})
             return
@@ -500,7 +533,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
         if path == "/api/memo":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             memo_storage.delete_memo(query.get("id", [""])[0], int(query.get("revision", [""])[0]))
-            self.send_json(200, {"ok": True, "memos": memo_storage.list_memos()})
+            self.send_json(200, {"ok": True, "memos": memo_storage.list_memo_summaries()})
             return
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         project_id = query.get("id", [""])[0]

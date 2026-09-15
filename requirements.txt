@@ -1,4 +1,4 @@
 # todo_list 项目依赖清单
 # 本项目仅使用 Python 标准库 (json/hmac/os/sqlite3/urllib/threading 等),
 # 无任何第三方依赖, 无需 pip install 额外包。
-# venv 已创建于 .venv/, pip 已升级至最新版。
+# 无需创建 venv: start-ai.sh 与 open-ai-list.sh 都直接调用系统 python3。

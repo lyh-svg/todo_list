@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>项目管理器 · 文件夹式清单</title>
-<link rel="stylesheet" href="css/style.css?v=23" />
+<link rel="stylesheet" href="css/style.css?v=25" />
 </head>
 <body>
 <div class="app" id="app">
@@ -56,19 +56,20 @@
 <section class="tool-group" aria-labelledby="dataToolsTitle">
 <h2 id="dataToolsTitle">数据管理</h2>
 <div class="backup-actions tool-button-row">
-<button id="exportBtn" type="button"><span aria-hidden="true">↓</span>导出备份</button>
-<label class="import-btn"><span aria-hidden="true">↑</span>导入备份
+<button id="exportBtn" type="button"><span aria-hidden="true">↓</span>导出 JSON</button>
+<label class="import-btn"><span aria-hidden="true">↑</span>导入 JSON
 <input type="file" id="importInput" accept="application/json,.json" />
 </label>
 <button id="createDatabaseBackupBtn" type="button"><span aria-hidden="true">＋</span>创建数据库备份</button>
 </div>
 <div class="backup-row">
 <div class="backup-picker" id="backupPicker">
-<button class="backup-picker-toggle" id="databaseBackupPickerButton" type="button" aria-haspopup="listbox" aria-expanded="false">暂无数据库备份</button>
+<button class="backup-picker-toggle" id="databaseBackupPickerButton" type="button" aria-haspopup="listbox" aria-expanded="false">还没有数据库备份</button>
 <div class="backup-picker-menu" id="databaseBackupMenu" role="listbox" hidden></div>
 <select id="databaseBackupSelect" aria-label="数据库备份" hidden></select>
 </div>
 <div class="backup-actions backup-row-actions">
+<button id="downloadDatabaseBackupBtn" type="button"><span aria-hidden="true">↓</span>下载</button>
 <button id="renameDatabaseBackupBtn" type="button"><span aria-hidden="true">✎</span>重命名</button>
 <button id="restoreDatabaseBackupBtn" type="button"><span aria-hidden="true">↺</span>恢复</button>
 </div>
@@ -90,7 +91,7 @@
 </div>
 </details>
 <div class="project-grid" id="projectGrid"></div>
-<div class="empty-projects" id="emptyProjects">正在加载项目...</div>
+<div class="empty-projects" id="emptyProjects">正在加载项目…</div>
 </div>
 <div class="view" id="detailView">
 <div class="detail-header">
@@ -125,10 +126,10 @@
 </div>
 <div class="detail-input-area">
 <input type="text" id="newNodeInput" placeholder="输入新的一周主题，如：第9周：Web API 实践" />
-<button id="addWeekBtn">➕ 添加周</button>
+<button id="addWeekBtn"><span aria-hidden="true">＋</span>添加周</button>
 </div>
 <ul class="tree" id="treeRoot"></ul>
-<div class="empty-tree-tip" id="emptyTreeTip">还没有内容，添加第一周开始吧 ✨</div>
+<div class="empty-tree-tip" id="emptyTreeTip">还没有内容，添加第一周开始吧</div>
 <div class="detail-footer">
 <span class="count" id="countDisplay">剩余 0 项未完成</span>
 <div class="footer-btns">
@@ -192,7 +193,7 @@
 <button class="assessment-question-btn" id="extraQuestionBtn" type="button">拟题</button>
 <button class="assessment-question-btn" id="copyQuestionBtn" type="button">复制</button>
 <button class="assessment-question-btn" id="summaryQuestionBtn" type="button">核心摘要</button>
-<button class="assessment-question-btn" id="assessmentQuestionBtn" type="button">重新开始三题</button>
+<button class="assessment-question-btn" id="assessmentQuestionBtn" type="button">重新出三道题</button>
 <div class="extra-ask" id="extraAsk" hidden>
 <select class="extra-count" id="extraCount" title="选择加练数量">
 <option value="1">1</option>
@@ -249,6 +250,6 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 
 <script src="js/api-client.js?v=1"></script>
 <script src="js/study-tools.js?v=1"></script>
-<script src="js/app.js?v=27"></script>
+<script src="js/app.js?v=33"></script>
 </body>
 </html>

@@ -427,6 +427,20 @@ body {
     border-radius: var(--radius);
     box-shadow: var(--shadow);
 }
+/* 空状态/失败状态里的重试按钮（项目网格、复习队列、全局搜索共用） */
+.inline-retry-btn {
+    display: block;
+    margin: 12px auto 0;
+    padding: 6px 16px;
+    border: 1px solid var(--border, #d8e0f0);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--primary, #4d6ff0);
+    font-size: 13px;
+    cursor: pointer;
+}
+.inline-retry-btn:hover { background: #f2f5ff; }
+.inline-retry-btn:disabled { opacity: 0.6; cursor: default; }
 .detail-header {
     display: flex;
     align-items: center;
@@ -1989,7 +2003,7 @@ body.modal-open { overflow: hidden; }
     .project-ai-toggle { min-height: 40px; }
     .create-project-area button { min-height: 40px; }
     .backup-row { grid-template-columns: 1fr; }
-    .backup-row-actions { display: grid; grid-template-columns: 1fr 1fr; }
+    .backup-row-actions { display: grid; grid-template-columns: repeat(3, 1fr); }
     .project-card { grid-template-columns: minmax(0, 1fr) 96px; min-height: 108px; padding: 12px; }
     .project-card .card-name { padding-right: 44px; }
     .detail-header .detail-shortcuts { margin-left: 0; }

@@ -41,6 +41,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const databaseBackupPickerButton = document.getElementById('databaseBackupPickerButton');
     const databaseBackupMenu = document.getElementById('databaseBackupMenu');
     const renameDatabaseBackupBtn = document.getElementById('renameDatabaseBackupBtn');
+    const downloadDatabaseBackupBtn = document.getElementById('downloadDatabaseBackupBtn');
     const createDatabaseBackupBtn = document.getElementById('createDatabaseBackupBtn');
     const restoreDatabaseBackupBtn = document.getElementById('restoreDatabaseBackupBtn');
     const toast = document.getElementById('toast');
@@ -92,7 +93,6 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const assessmentRestoreBtn = document.getElementById('assessmentRestoreBtn');
     const studyTools = window.TodoStudyTools;
     const DATA_SCHEMA_VERSION = 2;
-    const CONTENT_VERSION = 7;
     const MAX_BACKGROUND_FILE_SIZE = 25 * 1024 * 1024;
     const MAX_BACKGROUND_DIMENSION = 2560;
     const HEARTBEAT_INTERVAL_MS = 30 * 1000;
@@ -109,6 +109,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     let apiClient = null;
     let savedProjectJsonById = new Map();
     let saveConflict = false;
+    let stateLoadError = '';
+    let backupListError = '';
     let currentProjectId = null;
     let saveQueue = Promise.resolve();
     let saveTimer = null;
@@ -164,6 +166,28 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const now = new Date();
         const pad = value => String(value).padStart(2, '0');
         return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    }
+
+    const SEARCH_DEBOUNCE_MS = 180;
+
+    function debounce(fn, wait) {
+        let timer = null;
+        return function debounced(...args) {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+                timer = null;
+                fn.apply(this, args);
+            }, wait);
+        };
+    }
+
+    // 弹窗里的纯文字状态（加载中 / 失败）统一走这里，避免把错误信息拼进 innerHTML。
+    function renderUtilityMessage(text) {
+        utilityBody.replaceChildren();
+        const message = document.createElement('p');
+        message.className = 'utility-empty';
+        message.textContent = text;
+        utilityBody.appendChild(message);
     }
 
     function setNodeCompleted(node, completed) {
@@ -627,7 +651,25 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             : treeHasAssessment(node.children));
     }
 
+    function applyAssessmentRequirements(project, enabled) {
+        // 只同步"是否要求 AI 验收"这一标记，绝不改动完成态。
+        // 加载项目（normalizeProjects）时必须用这个版本：setProjectAssessmentEnabled 会把
+        // 没有 assessment.passed 的已完成任务重置为未完成，而加载时静默改数据会随后被保存回库。
+        const required = Boolean(enabled);
+        function walk(nodes) {
+            for (const node of nodes || []) {
+                if (node.type === 'item') {
+                    node.assessmentRequired = required;
+                } else {
+                    walk(node.children);
+                }
+            }
+        }
+        walk(project.tree);
+    }
+
     function setProjectAssessmentEnabled(project, enabled) {
+        // 仅供用户手动切换项目级"AI 验收"开关时调用（会重置未验收的完成态）。
         project.assessmentEnabled = Boolean(enabled);
         function walk(nodes) {
             for (const node of nodes || []) {
@@ -669,18 +711,6 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
     }
 
-    function markCurriculumAssessments(projectList) {
-        function walk(nodes) {
-            for (const node of nodes || []) {
-                if (node.type === 'item' && Number.isInteger(node.id) && node.id >= 1000 && node.id < 9000) {
-                    node.assessmentRequired = true;
-                }
-                if (node.children && node.children.length > 0) walk(node.children);
-            }
-        }
-        for (const project of projectList || []) walk(project.tree);
-    }
-
     function cloneData(value) {
         return JSON.parse(JSON.stringify(value));
     }
@@ -712,7 +742,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }).then(response => {
             return response.json().catch(() => ({})).then(payload => {
                 if (!response.ok) {
-                    const error = new Error(payload.error || 'SQLite 写入失败');
+                    const error = new Error(payload.error || 'SQLite 写入失败，请重试');
                     error.status = response.status;
                     throw error;
                 }
@@ -725,7 +755,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return apiFetch(`/api/project?id=${encodeURIComponent(projectId)}`, { cache: 'no-store' })
             .then(async response => {
                 const payload = await response.json().catch(() => ({}));
-                if (!response.ok || !payload.project) throw new Error(payload.error || '读取项目失败');
+                if (!response.ok || !payload.project) throw new Error(payload.error || '读取项目失败，请重试');
                 return payload;
             });
     }
@@ -736,7 +766,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }).then(async response => {
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-                const error = new Error(payload.error || '删除项目失败');
+                const error = new Error(payload.error || '删除项目失败，请重试');
                 error.status = response.status;
                 throw error;
             }
@@ -760,7 +790,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         );
         if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
-            throw new Error(payload.error || '保存背景图片失败');
+            throw new Error(payload.error || '保存背景图片失败，请重试');
         }
     }
 
@@ -864,7 +894,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     : undefined,
                 tree
             };
-            setProjectAssessmentEnabled(normalized, normalized.assessmentEnabled);
+            // 加载时只同步"是否需要验收"标记；重置完成态只发生在用户手动切换开关时。
+            applyAssessmentRequirements(normalized, normalized.assessmentEnabled);
             return normalized;
         }).filter(Boolean);
     }
@@ -906,9 +937,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         } catch (error) {
             console.error('SQLite 读取失败', error);
             projects = [];
-            showToast('无法连接 SQLite，请先启动本地服务');
+            // 记住失败原因：renderProjects() 用它显示"读取失败 + 重试"，而不是伪装成"还没有项目"。
+            stateLoadError = (error && error.message) || '无法连接本地服务';
+            showToast('无法连接本地服务，请先运行 open-ai-list.sh');
             return;
         }
+        stateLoadError = '';
         const storedProjects = storedPayload && Array.isArray(storedPayload.projects)
             ? storedPayload.projects : [];
         projects = storedProjects.map(normalizeProjectSummary);
@@ -968,6 +1002,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 } catch (writeError) {
                     if (!(writeError && writeError.status === 409)) throw writeError;
                     // 409：本地版本过期。取服务端最新 revision 自动重试一次（单机工具）。
+                    setSaveStatus('检测到其他页面已更新，正在重试…', 'saving');
                     try {
                         const fresh = await readStoredProject(projectId);
                         payload = await writeStoredProject(project, Number(fresh.revision));
@@ -1087,14 +1122,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (saved && saved.blob instanceof Blob) applyBackground(saved.blob);
         } catch (error) {
             console.warn('背景图片读取失败', error);
-            showToast('背景图片读取失败，可重新上传');
+            showToast('背景图片读取失败，请重试');
         }
     }
 
     async function handleBackgroundUpload(file) {
         if (!file) return;
         try {
-            showToast('正在处理背景图片...');
+            showToast('正在处理背景图片…');
             const prepared = await prepareBackgroundImage(file);
             await writeStoredBackground(prepared, file.name);
             applyBackground(prepared);
@@ -1102,7 +1137,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast(`背景已保存（${size} MB）`);
         } catch (error) {
             console.error('背景图片处理失败', error);
-            showToast(`背景设置失败：${error.message || '图片无法读取'}`);
+            showToast(`背景设置失败：${error.message || '图片读取失败，请重试'}`);
         } finally {
             backgroundInput.value = '';
         }
@@ -1115,7 +1150,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast('已恢复默认背景');
         } catch (error) {
             console.error('恢复默认背景失败', error);
-            showToast('恢复默认背景失败');
+            showToast('恢复默认背景失败，请重试');
         }
     }
 
@@ -1296,18 +1331,21 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     async function loadDatabaseBackups() {
+        backupListError = '';
+        databaseBackupPickerButton.textContent = listStatusText('backup', 'loading');
+        setBackupActionsEnabled(false);
         try {
             const response = await apiFetch('/api/backups', { cache: 'no-store' });
             const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '读取备份失败');
-            databaseBackupSelect.replaceChildren();
-            databaseBackupMenu.replaceChildren();
+            if (!response.ok) throw new Error(payload.error || '读取备份失败，请重试');
+            const optionFragment = document.createDocumentFragment();
+            const menuFragment = document.createDocumentFragment();
             for (const backup of payload.backups || []) {
                 const option = document.createElement('option');
                 option.value = backup.name;
                 option.textContent = `${backup.name} · ${formatBytes(backup.bytes)}${backup.valid ? '' : ' · 损坏'}`;
                 option.disabled = !backup.valid;
-                databaseBackupSelect.appendChild(option);
+                optionFragment.appendChild(option);
                 const row = document.createElement('div');
                 row.className = 'backup-picker-row';
                 const choose = document.createElement('button');
@@ -1332,26 +1370,43 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     deleteDatabaseBackupByName(backup.name);
                 });
                 row.append(choose, remove);
-                databaseBackupMenu.appendChild(row);
+                menuFragment.appendChild(row);
             }
+            databaseBackupSelect.replaceChildren(optionFragment);
+            databaseBackupMenu.replaceChildren(menuFragment);
             if (databaseBackupSelect.options.length === 0) {
                 const option = document.createElement('option');
-                option.textContent = '暂无数据库备份';
+                option.textContent = '还没有数据库备份';
                 option.value = '';
                 databaseBackupSelect.appendChild(option);
             }
             updateBackupPickerLabel();
         } catch (error) {
-            showToast(error.message || '读取数据库备份失败');
+            // 失败时不能继续显示"还没有数据库备份"：那会让人以为是空目录。
+            backupListError = (error && error.message) || '未知错误';
+            databaseBackupSelect.replaceChildren();
+            databaseBackupMenu.replaceChildren();
+            databaseBackupPickerButton.textContent = listStatusText('backup', 'failed', backupListError) + '（点击重试）';
+            setBackupActionsEnabled(false);
+            showToast(listStatusText('backup', 'failed', backupListError));
         }
     }
 
+    function setBackupActionsEnabled(enabled) {
+        renameDatabaseBackupBtn.disabled = !enabled;
+        downloadDatabaseBackupBtn.disabled = !enabled;
+        restoreDatabaseBackupBtn.disabled = !enabled;
+    }
+
     function updateBackupPickerLabel() {
+        if (backupListError) {
+            databaseBackupPickerButton.textContent = listStatusText('backup', 'failed', backupListError) + '（点击重试）';
+            setBackupActionsEnabled(false);
+            return;
+        }
         const selected = databaseBackupSelect.options[databaseBackupSelect.selectedIndex];
-        databaseBackupPickerButton.textContent = selected ? selected.textContent : '暂无数据库备份';
-        const hasSelection = Boolean(databaseBackupSelect.value);
-        renameDatabaseBackupBtn.disabled = !hasSelection;
-        restoreDatabaseBackupBtn.disabled = !hasSelection;
+        databaseBackupPickerButton.textContent = selected ? selected.textContent : '还没有数据库备份';
+        setBackupActionsEnabled(Boolean(databaseBackupSelect.value));
     }
 
     async function createDatabaseBackupFromUi() {
@@ -1362,13 +1417,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 body: JSON.stringify({ action: 'create' })
             });
             const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '创建备份失败');
+            if (!response.ok) throw new Error(payload.error || '创建备份失败，请重试');
             await loadDatabaseBackups();
             databaseBackupSelect.value = payload.name;
             updateBackupPickerLabel();
-            showToast(`数据库备份已创建：${payload.name}`);
+            showToast(`已创建数据库备份：${payload.name}`);
         } catch (error) {
-            showToast(error.message || '创建数据库备份失败');
+            showToast(error.message || '创建数据库备份失败，请重试');
         }
     }
 
@@ -1385,13 +1440,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 body: JSON.stringify({ action: 'rename', name, newName: newName.trim() })
             });
             const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '重命名备份失败');
+            if (!response.ok) throw new Error(payload.error || '重命名备份失败，请重试');
             await loadDatabaseBackups();
             databaseBackupSelect.value = payload.name;
             updateBackupPickerLabel();
-            showToast(`备份已重命名：${payload.name}`);
+            showToast(`已重命名备份：${payload.name}`);
         } catch (error) {
-            showToast(error.message || '重命名备份失败');
+            showToast(error.message || '重命名备份失败，请重试');
         }
     }
 
@@ -1405,11 +1460,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 body: JSON.stringify({ action: 'delete', name })
             });
             const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '删除备份失败');
+            if (!response.ok) throw new Error(payload.error || '删除备份失败，请重试');
             await loadDatabaseBackups();
             showToast(`已删除备份：${name}`);
         } catch (error) {
-            showToast(error.message || '删除备份失败');
+            showToast(error.message || '删除备份失败，请重试');
         }
     }
 
@@ -1424,10 +1479,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 body: JSON.stringify({ action: 'restore', name })
             });
             const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '恢复备份失败');
+            if (!response.ok) throw new Error(payload.error || '恢复备份失败，请重试');
             window.location.reload();
         } catch (error) {
-            showToast(error.message || '恢复数据库备份失败');
+            showToast(error.message || '恢复数据库备份失败，请重试');
         }
     }
 
@@ -1568,7 +1623,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             : '正在准备题目…';
         const currentQuestion = assessmentQuestionItems[assessmentQuestionIndex] || '';
         assessmentCurrentQuestion.innerHTML = currentQuestion ? richToHtml(currentQuestion) : '';
-        assessmentQuestionBtn.textContent = total >= 3 ? '重新开始三题' : 'AI 出三道题';
+        assessmentQuestionBtn.textContent = total >= 3 ? '重新出三道题' : 'AI 出三道题';
         renderAssessmentConversation();
     }
 
@@ -1667,7 +1722,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             await saveProjects();
             assessmentServiceStatus.textContent = '题目已生成，请回答当前题';
         } catch (error) {
-            assessmentServiceStatus.textContent = error.message || 'AI 出题失败';
+            assessmentServiceStatus.textContent = error.message || 'AI 出题失败，请重试';
         } finally {
             assessmentQuestioning = false;
             setQuickDisabled(false);
@@ -1696,7 +1751,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 assessmentServiceStatus.textContent = 'AI 服务不可用；仍可留空提交';
                 assessmentSubmitBtn.disabled = false;
             } else {
-                assessmentServiceStatus.textContent = 'AI 服务未启动或未配置 Key';
+                assessmentServiceStatus.textContent = 'AI 服务未就绪，请检查 Key 配置';
                 assessmentSubmitBtn.disabled = true;
             }
         }
@@ -1780,9 +1835,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
     function renderCustomTemplates() {
         if (!assessmentTemplateCustomBar) return;
-        assessmentTemplateCustomBar.innerHTML = '';
         const list = customTemplatesLoad();
         assessmentTemplateCustomBar.hidden = list.length === 0;
+        const templateFragment = document.createDocumentFragment();
         list.forEach(function(item) {
             const btn = document.createElement('button');
             btn.type = 'button';
@@ -1790,15 +1845,16 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             btn.textContent = item.label;
             btn.title = item.text;
             btn.addEventListener('click', function() { insertTemplateText(item.text); });
-            assessmentTemplateCustomBar.appendChild(btn);
+            templateFragment.appendChild(btn);
         });
+        assessmentTemplateCustomBar.replaceChildren(templateFragment);
     }
     function openTemplateManager() {
         showUtilityModal('答案模板', '模板管理');
         utilityBody.innerHTML = '';
         const hint = document.createElement('p');
         hint.className = 'utility-hint';
-        hint.textContent = '自定义模板保存在本浏览器；点「添加」后即可在答题框一键插入。';
+        hint.textContent = '自定义模板保存在本浏览器；点「添加」后即可在答题框一键插入';
         utilityBody.appendChild(hint);
         const listBox = document.createElement('div');
         listBox.className = 'summary-list';
@@ -2050,7 +2106,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         var contentType = String(response.headers.get('content-type') || '');
         if (contentType.indexOf('application/json') === 0) {
             var jsonBody = await response.json().catch(function() { return {}; });
-            if (!response.ok || !jsonBody.result) throw new Error(jsonBody.error || 'AI 验收失败');
+            if (!response.ok || !jsonBody.result) throw new Error(jsonBody.error || 'AI 验收失败，请重试');
             return { result: jsonBody.result, streamed: '' };
         }
         if (!response.ok) {
@@ -2086,7 +2142,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                         streamed: streamed || String((event.humanText) || '')
                     };
                 } else if (event.type === 'error') {
-                    throw new Error(event.message || 'AI 验收失败');
+                    throw new Error(event.message || 'AI 验收失败，请重试');
                 }
             }
         }
@@ -2138,8 +2194,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             } catch (error) {
                 assessmentResult.hidden = false;
                 assessmentResult.classList.add('failed');
-                assessmentResult.textContent = error.message || '提交失败';
-                assessmentServiceStatus.textContent = '提交失败';
+                assessmentResult.textContent = error.message || '提交失败，请重试';
+                assessmentServiceStatus.textContent = '提交失败，请重试';
             } finally {
                 assessmentSubmitting = false;
             setQuickDisabled(false);
@@ -2266,11 +2322,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
         } catch (error) {
             showAssessmentLive(false);
-            const message = error.name === 'AbortError' ? '请求超时，请重试' : error.message || 'AI 验收失败';
+            const message = error.name === 'AbortError' ? '请求超时，请重试' : error.message || 'AI 验收失败，请重试';
             assessmentResult.hidden = false;
             assessmentResult.classList.add('failed');
             assessmentResult.textContent = message;
-            assessmentServiceStatus.textContent = '验收请求失败';
+            assessmentServiceStatus.textContent = '验收请求失败，请重试';
         } finally {
             clearTimeout(timeout);
             assessmentSubmitting = false;
@@ -2339,7 +2395,25 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     async function exportBackup() {
-        await createDatabaseBackupFromUi();
+        // 导出的是服务端库里的完整项目，先把手上的改动落库，避免导出旧数据。
+        if (saveTimer) {
+            try {
+                await flushProjectsSave();
+            } catch (error) {
+                showToast('当前修改尚未保存，请先处理保存失败，请重试');
+                return;
+            }
+        }
+        const link = document.createElement('a');
+        link.href = `${getAssessmentApiUrl('/api/export')}?token=${encodeURIComponent(sessionToken)}`;
+        link.download = `todo-projects-${todayStr()}.json`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        showToast('正在下载项目 JSON 备份');
+    }
+
+    function downloadDatabaseBackup() {
         const name = databaseBackupSelect.value;
         if (!name) return;
         const link = document.createElement('a');
@@ -2348,7 +2422,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         document.body.appendChild(link);
         link.click();
         link.remove();
-        showToast(`正在下载完整数据库备份：${name}`);
+        showToast(`正在下载数据库备份：${name}`);
     }
 
     function clearAssessmentHistoryInDetail() {
@@ -2395,7 +2469,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     async function importBackup(file) {
         if (!file) return;
         try {
-            const payload = JSON.parse(await file.text());
+            let payload;
+            try {
+                payload = JSON.parse(await file.text());
+            } catch (parseError) {
+                throw new Error('这不是 JSON 备份文件；数据库备份（.sqlite3）请用上方备份列表的「恢复」');
+            }
             const imported = extractProjects(payload);
             if (!imported) throw new Error('备份文件格式不正确');
             const nextProjects = normalizeProjects(imported);
@@ -2411,7 +2490,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             });
             const result = await response.json().catch(() => ({}));
             if (!response.ok || !Array.isArray(result.projects)) {
-                throw new Error(result.error || 'SQLite 导入失败');
+                throw new Error(result.error || 'SQLite 导入失败，请重试');
             }
             projects = result.projects.map(normalizeProjectSummary);
             savedProjectJsonById.clear();
@@ -2421,7 +2500,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast(`已导入 ${projects.length} 个项目`);
         } catch (error) {
             console.error('导入备份失败', error);
-            showToast(`导入失败：${error.message || '文件无法读取'}`);
+            showToast(`导入失败：${error.message || '文件读取失败，请重试'}`);
         } finally {
             importInput.value = '';
         }
@@ -2457,14 +2536,37 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         document.body.classList.remove('modal-open');
     }
 
-    async function loadMemos() {
-        const response = await apiFetch('/api/memos', { cache: 'no-store' });
+    async function loadMemos(query = '') {
+        const suffix = query ? `?q=${encodeURIComponent(query)}` : '';
+        const response = await apiFetch(`/api/memos${suffix}`, { cache: 'no-store' });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !Array.isArray(payload.memos)) throw new Error(payload.error || '读取备忘录失败');
-        memoState.memos = payload.memos;
+        if (!response.ok || !Array.isArray(payload.memos)) throw new Error(payload.error || '读取备忘录失败，请重试');
+        // 列表接口只回预览；已经取过全文的备忘录要把 content 保留下来，否则编辑框会被清空。
+        const loadedContent = new Map(
+            memoState.memos.filter(memo => typeof memo.content === 'string').map(memo => [memo.id, memo.content])
+        );
+        memoState.memos = payload.memos.map(summary => (
+            loadedContent.has(summary.id)
+                ? Object.assign(summary, { content: loadedContent.get(summary.id) })
+                : summary
+        ));
         if (!memoState.memos.some(memo => memo.id === memoState.selectedId)) {
             memoState.selectedId = memoState.memos[0]?.id || null;
         }
+    }
+
+    function memoContentReady(memo) {
+        // 只有取到全文才允许写回：列表里的对象只有 contentPreview，直接保存会把备忘录截断。
+        return Boolean(memo) && typeof memo.content === 'string';
+    }
+
+    async function ensureMemoLoaded(memo) {
+        if (!memo || memoContentReady(memo)) return memo;
+        const response = await apiFetch(`/api/memo?id=${encodeURIComponent(memo.id)}`, { cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.memo) throw new Error(payload.error || '读取备忘录失败，请重试');
+        Object.assign(memo, payload.memo);
+        return memo;
     }
 
     function currentMemo() {
@@ -2473,6 +2575,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     function persistMemo(memo) {
         if (!memo) return Promise.resolve(null);
+        if (!memoContentReady(memo)) {
+            return Promise.reject(new Error('备忘录全文尚未加载，已取消保存以免覆盖原文'));
+        }
         const snapshot = { id: memo.id, title: memo.title, content: memo.content, pinned: memo.pinned };
         const operation = memoState.saveQueue.catch(() => undefined).then(async () => {
             const current = memoState.memos.find(item => item.id === snapshot.id);
@@ -2483,7 +2588,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 body: JSON.stringify({ ...snapshot, expectedRevision: current.revision })
             });
             const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.memo) throw new Error(payload.error || '保存备忘录失败');
+            if (!response.ok || !payload.memo) throw new Error(payload.error || '保存备忘录失败，请重试');
             Object.assign(current, payload.memo);
             if (memo !== current) Object.assign(memo, payload.memo);
             return payload.memo;
@@ -2519,7 +2624,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             setSaveStatus('已保存');
             return saved;
         } catch (error) {
-            setMemoSaveStatus(error.message || '保存失败', 'error');
+            setMemoSaveStatus(error.message || '保存失败，请重试', 'error');
             setSaveStatus('保存失败', 'error');
             throw error;
         } finally {
@@ -2543,23 +2648,22 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             try {
                 await saveMemoNow(memo);
             } catch (error) {
-                showToast(error.message || '备忘录保存失败');
+                showToast(error.message || '备忘录保存失败，请重试');
             }
         }, 450);
     }
 
     function renderMemoList(container, editor) {
-        container.innerHTML = '';
-        const query = memoState.query.trim().toLowerCase();
-        const visible = memoState.memos.filter(memo => !query
-            || `${memo.title} ${memo.content}`.toLowerCase().includes(query));
+        const query = memoState.query.trim();
+        const visible = memoState.memos;
         if (visible.length === 0) {
             const empty = document.createElement('p');
             empty.className = 'memo-empty';
             empty.textContent = query ? '没有匹配的备忘录' : '还没有备忘录';
-            container.appendChild(empty);
+            container.replaceChildren(empty);
             return;
         }
+        const memoFragment = document.createDocumentFragment();
         visible.forEach(memo => {
             const button = document.createElement('button');
             button.type = 'button';
@@ -2567,9 +2671,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const title = document.createElement('strong');
             title.textContent = memo.title || '未命名备忘录';
             const preview = document.createElement('small');
-            preview.textContent = memo.content.replace(/\s+/g, ' ').trim() || '暂无内容';
+            const liveText = typeof memo.content === 'string' ? memo.content : (memo.contentPreview || '');
+            preview.textContent = liveText.replace(/\s+/g, ' ').trim() || '还没有内容';
             const meta = document.createElement('span');
-            meta.textContent = memo.pinned ? '置顶 · ' + memo.updatedAt.slice(0, 10) : memo.updatedAt.slice(0, 10);
+            const stamp = memo.updatedAt ? memo.updatedAt.slice(0, 10) : '';
+            const size = Number.isFinite(memo.contentLength) ? ` · ${memo.contentLength} 字` : '';
+            meta.textContent = `${memo.pinned ? '置顶 · ' : ''}${stamp}${size}`;
             button.append(title, preview, meta);
             button.addEventListener('click', async () => {
                 const previous = currentMemo();
@@ -2584,12 +2691,23 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 memoState.selectedId = memo.id;
                 renderMemoPanel();
             });
-            container.appendChild(button);
+            memoFragment.appendChild(button);
         });
+        container.replaceChildren(memoFragment);
     }
 
-    function renderMemoPanel() {
+    async function renderMemoPanel() {
         showUtilityModal('备忘录', '个人记录');
+        const selected = currentMemo();
+        if (selected && !memoContentReady(selected)) {
+            renderUtilityMessage('正在读取备忘录…');
+            try {
+                await ensureMemoLoaded(selected);
+            } catch (error) {
+                renderUtilityMessage(error.message || '读取备忘录失败，请重试');
+                return;
+            }
+        }
         utilityBody.innerHTML = '';
         const toolbar = document.createElement('div');
         toolbar.className = 'memo-toolbar';
@@ -2598,14 +2716,21 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         search.className = 'memo-search';
         search.placeholder = '搜索备忘录';
         search.value = memoState.query;
-        search.addEventListener('input', () => {
+        search.addEventListener('input', debounce(async () => {
             memoState.query = search.value;
+            try {
+                if (memoState.saveTimer) await saveMemoNow(currentMemo());
+                await loadMemos(memoState.query.trim());
+            } catch (error) {
+                showToast(error.message || '搜索备忘录失败，请重试');
+                return;
+            }
             renderMemoList(list, editor);
-        });
+        }, SEARCH_DEBOUNCE_MS));
         const newButton = document.createElement('button');
         newButton.type = 'button';
         newButton.className = 'utility-primary-btn';
-        newButton.textContent = '＋ 新建';
+        newButton.textContent = '新建';
         newButton.addEventListener('click', async () => {
             try {
                 if (currentMemo() && memoState.saveTimer) await saveMemoNow(currentMemo());
@@ -2615,14 +2740,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     body: JSON.stringify({ title: '未命名备忘录', content: '', pinned: false })
                 });
                 const payload = await response.json().catch(() => ({}));
-                if (!response.ok || !payload.memo) throw new Error(payload.error || '新建备忘录失败');
+                if (!response.ok || !payload.memo) throw new Error(payload.error || '新建备忘录失败，请重试');
                 memoState.memos.unshift(payload.memo);
                 memoState.selectedId = payload.memo.id;
                 memoState.query = '';
-                renderMemoPanel();
+                await renderMemoPanel();
                 editorFocusTitle();
             } catch (error) {
-                showToast(error.message || '新建备忘录失败');
+                showToast(error.message || '新建备忘录失败，请重试');
             }
         });
         toolbar.append(search, newButton);
@@ -2635,6 +2760,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         editor.className = 'memo-editor';
         layout.append(list, editor);
         utilityBody.appendChild(layout);
+        // 标题/正文每敲一个字就重建整个备忘录列表太浪费，跟搜索用同一档防抖。
+        const refreshList = debounce(() => renderMemoList(list, editor), SEARCH_DEBOUNCE_MS);
         const memo = currentMemo();
         if (memo) {
             const titleInput = document.createElement('input');
@@ -2645,7 +2772,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             titleInput.addEventListener('input', () => {
                 memo.title = titleInput.value || '未命名备忘录';
                 scheduleMemoSave();
-                renderMemoList(list, editor);
+                refreshList();
             });
             const contentInput = document.createElement('textarea');
             contentInput.className = 'memo-content-input';
@@ -2654,7 +2781,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             contentInput.addEventListener('input', () => {
                 memo.content = contentInput.value;
                 scheduleMemoSave();
-                renderMemoList(list, editor);
+                refreshList();
             });
             const editorToolbar = document.createElement('div');
             editorToolbar.className = 'memo-editor-toolbar';
@@ -2664,7 +2791,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             pinButton.textContent = memo.pinned ? '★ 已置顶' : '☆ 置顶';
             pinButton.addEventListener('click', async () => {
                 if (memoState.saveTimer) {
-                    try { await saveMemoNow(memo); } catch (error) { showToast('请先解决保存失败'); return; }
+                    try { await saveMemoNow(memo); } catch (error) { showToast('当前修改尚未保存，请先处理保存失败，请重试'); return; }
                 }
                 memo.pinned = !memo.pinned;
                 pinButton.textContent = memo.pinned ? '★ 已置顶' : '☆ 置顶';
@@ -2672,7 +2799,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     await persistMemo(memo);
                     renderMemoList(list, editor);
                 } catch (error) {
-                    showToast(error.message || '保存置顶状态失败');
+                    showToast(error.message || '保存置顶状态失败，请重试');
                 }
             });
             const deleteButton = document.createElement('button');
@@ -2690,12 +2817,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     await memoState.saveQueue;
                     const response = await apiFetch(`/api/memo?id=${encodeURIComponent(memo.id)}&revision=${encodeURIComponent(memo.revision)}`, { method: 'DELETE' });
                     const payload = await response.json().catch(() => ({}));
-                    if (!response.ok) throw new Error(payload.error || '删除备忘录失败');
+                    if (!response.ok) throw new Error(payload.error || '删除备忘录失败，请重试');
                     memoState.memos = payload.memos || memoState.memos.filter(item => item.id !== memo.id);
                     memoState.selectedId = memoState.memos[0]?.id || null;
                     renderMemoPanel();
                 } catch (error) {
-                    showToast(error.message || '删除备忘录失败');
+                    showToast(error.message || '删除备忘录失败，请重试');
                 }
             });
             const saveGroup = document.createElement('div');
@@ -2712,7 +2839,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     await saveMemoNow(memo);
                     renderMemoList(list, editor);
                 } catch (error) {
-                    showToast(error.message || '备忘录保存失败');
+                    showToast(error.message || '备忘录保存失败，请重试');
                 }
             });
             saveGroup.append(saveStatus, saveButton, deleteButton);
@@ -2734,11 +2861,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const exportButton = document.createElement('button');
         exportButton.type = 'button';
         exportButton.className = 'utility-secondary-btn';
-        exportButton.textContent = '↓ 导出备忘录数据库';
+        exportButton.textContent = '导出备忘录数据库';
         exportButton.addEventListener('click', downloadMemoDatabase);
         const importLabel = document.createElement('label');
         importLabel.className = 'utility-secondary-btn memo-import-label';
-        importLabel.textContent = '↑ 导入备忘录数据库';
+        importLabel.textContent = '导入备忘录数据库';
         const importInput = document.createElement('input');
         importInput.type = 'file';
         importInput.accept = '.sqlite3,.db,application/vnd.sqlite3';
@@ -2752,12 +2879,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     async function openMemoTool() {
         showUtilityModal('备忘录', '个人记录');
-        utilityBody.innerHTML = '<p class="utility-empty">正在读取备忘录…</p>';
+        renderUtilityMessage('正在读取备忘录…');
+        memoState.query = '';
         try {
             await loadMemos();
-            renderMemoPanel();
+            await renderMemoPanel();
         } catch (error) {
-            utilityBody.innerHTML = `<p class="utility-empty">${error.message || '读取备忘录失败'}</p>`;
+            renderUtilityMessage(error.message || '读取备忘录失败，请重试');
         }
     }
 
@@ -2773,7 +2901,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             URL.revokeObjectURL(link.href);
             showToast('已导出独立备忘录数据库');
         } catch (error) {
-            showToast(error.message || '导出备忘录数据库失败');
+            showToast(error.message || '导出备忘录数据库失败，请重试');
         }
     }
 
@@ -2783,14 +2911,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         try {
             const response = await apiFetch('/api/memos/database-import', { method: 'POST', body: await file.arrayBuffer() });
             const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !Array.isArray(payload.memos)) throw new Error(payload.error || '导入备忘录数据库失败');
+            if (!response.ok || !Array.isArray(payload.memos)) throw new Error(payload.error || '导入备忘录数据库失败，请重试');
             memoState.memos = payload.memos;
             memoState.selectedId = memoState.memos[0]?.id || null;
             memoState.query = '';
             renderMemoPanel();
             showToast('已导入独立备忘录数据库');
         } catch (error) {
-            showToast(error.message || '导入备忘录数据库失败');
+            showToast(error.message || '导入备忘录数据库失败，请重试');
         }
     }
 
@@ -2856,7 +2984,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 window.setTimeout(() => row?.classList.remove('located-row'), 1800);
             }));
         } catch (error) {
-            showToast(error.message || '任务定位失败');
+            showToast(error.message || '任务定位失败，请重试');
         }
     }
 
@@ -2865,7 +2993,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         utilityBody.innerHTML = '';
         const hint = document.createElement('p');
         hint.className = 'utility-hint';
-        hint.textContent = '选择一个项目后继续，不会自动修改任何任务。';
+        hint.textContent = '选择一个项目后继续，不会自动修改任何任务';
         utilityBody.appendChild(hint);
         const list = document.createElement('div');
         list.className = 'project-choice-list';
@@ -2879,7 +3007,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const name = document.createElement('strong');
             name.textContent = project.name;
             const progress = document.createElement('small');
-            progress.textContent = total > 0 ? `主线 ${completed}/${total}` : '暂无主线任务';
+            progress.textContent = total > 0 ? `主线 ${completed}/${total}` : '还没有主线任务';
             text.append(name, progress);
             const arrow = document.createElement('span');
             arrow.textContent = '→';
@@ -2890,13 +3018,25 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     const loaded = await ensureProjectLoaded(project.id);
                     renderStudyTool(action, loaded);
                 } catch (error) {
-                    showToast(error.message || '项目加载失败');
+                    showToast(error.message || '项目加载失败，请重试');
                     button.disabled = false;
                 }
             });
             list.appendChild(button);
         }
         if (projects.length === 0) {
+            if (stateLoadError) {
+                // 读失败时不能显示"还没有可选择的项目"，否则用户会以为库里真的没项目。
+                const failed = document.createElement('p');
+                failed.className = 'utility-empty';
+                failed.textContent = '读取项目失败：' + stateLoadError;
+                utilityBody.appendChild(failed);
+                utilityBody.appendChild(createRetryButton('重新加载项目', async () => {
+                    await retryLoadProjects();
+                    renderProjectPicker(action);
+                }));
+                return;
+            }
             const empty = document.createElement('p');
             empty.className = 'utility-empty';
             empty.textContent = '还没有可选择的项目';
@@ -2932,7 +3072,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
             const list = document.createElement('div');
             list.className = 'utility-task-list';
-            entries.slice(0, visibleCount).forEach(entry => list.appendChild(createTaskButton(entry, project.id)));
+            list.replaceChildren(...entries.slice(0, visibleCount).map(entry => createTaskButton(entry, project.id)));
             utilityBody.appendChild(list);
             if (visibleCount < entries.length) {
                 const more = document.createElement('button');
@@ -3009,12 +3149,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const again = document.createElement('button');
             again.type = 'button';
             again.className = 'utility-secondary-btn';
-            again.textContent = '⌁ 再抽一个';
+            again.textContent = '再抽一个';
             again.addEventListener('click', () => draw(true));
             const go = document.createElement('button');
             go.type = 'button';
             go.className = 'utility-primary-btn';
-            go.textContent = '去复习 →';
+            go.textContent = '去复习';
             go.addEventListener('click', () => locateStudyTask(project.id, currentEntry));
             actions.append(again, go);
             utilityBody.appendChild(actions);
@@ -3046,11 +3186,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             ['选做任务', `${stats.optionalCompleted}/${stats.optionalTotal}`],
             ['完成最多的一周', stats.busiestWeek
                 ? `${stats.busiestWeek.year} 年第 ${stats.busiestWeek.week} 周 · ${stats.busiestWeek.count} 项`
-                : '暂无时间记录'],
+                : '还没有完成记录'],
             ['最近完成', stats.latestCompletion
                 ? `${new Date(stats.latestCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })} · ${stats.latestCompletion.text}`
-                : '暂无时间记录']
+                : '还没有完成记录']
         ];
+        const factFragment = document.createDocumentFragment();
         facts.forEach(([name, value]) => {
             const item = document.createElement('div');
             item.className = 'stats-item';
@@ -3059,8 +3200,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const itemValue = document.createElement('strong');
             itemValue.textContent = value;
             item.append(itemLabel, itemValue);
-            grid.appendChild(item);
+            factFragment.appendChild(item);
         });
+        grid.replaceChildren(factFragment);
         utilityBody.appendChild(grid);
         const reviewStats = collectReviewStats(project.tree || []);
         if (reviewStats.count > 0) {
@@ -3092,7 +3234,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     function renderStudyTool(action, project) {
         if (!studyTools) {
-            showToast('学习工具加载失败，请刷新页面');
+            showToast('学习工具加载失败，请刷新页面重试');
             return;
         }
         if (action === 'focus') renderFocusTool(project);
@@ -3106,25 +3248,66 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         else renderProjectPicker(action);
     }
 
+    // 纯函数：项目网格空状态该显示什么（便于单测；DOM 组装在 renderProjects 里）。
+    function projectsEmptyStateView(loadError, totalCount, visibleCount) {
+        if (loadError) return { text: '读取项目失败：' + loadError, retry: true };
+        if (totalCount === 0) return { text: '还没有项目，创建一个开始学习吧', retry: false };
+        if (visibleCount === 0) return { text: '没有符合筛选条件的项目', retry: false };
+        return null;
+    }
+
+    // 纯函数：列表加载状态文案，供复习队列 / 全局搜索 / 备份列表共用（措辞统一）。
+    function listStatusText(kind, state, detail) {
+        const name = kind === 'review' ? '复习队列' : kind === 'search' ? '项目列表' : '数据库备份';
+        if (state === 'loading') return '正在读取' + name + '…';
+        if (state === 'failed') return '读取' + name + '失败：' + (detail || '未知错误');
+        return '';
+    }
+
+    function renderProjectsMessage(state) {
+        // 空/失败状态必须同时清空网格，否则筛选无结果时会留着上一次渲染的卡片。
+        projectGrid.replaceChildren();
+        emptyProjects.style.display = 'block';
+        emptyProjects.replaceChildren();
+        const text = document.createElement('span');
+        text.textContent = state.text;
+        emptyProjects.appendChild(text);
+        if (state.retry) {
+            emptyProjects.appendChild(createRetryButton('重新加载项目', retryLoadProjects));
+        }
+    }
+
+    function createRetryButton(label, handler) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'inline-retry-btn';
+        button.textContent = label;
+        button.addEventListener('click', handler);
+        return button;
+    }
+
+    async function retryLoadProjects() {
+        renderProjectsMessage({ text: '正在重新加载项目…', retry: false });
+        await loadProjects();
+        renderProjects();
+        loadReviewCounts();
+        if (!stateLoadError) showToast('已重新连接本地服务');
+    }
+
     function renderProjects() {
-        projectGrid.innerHTML = '';
         const reviewTotal = reviewCounts.today + reviewCounts.overdue;
         if (reviewQueueCount) {
             reviewQueueCount.textContent = String(reviewTotal);
             reviewQueueBtn.classList.toggle('empty', reviewTotal === 0);
         }
         const visibleProjects = getVisibleProjects();
-        if (projects.length === 0) {
-            emptyProjects.style.display = 'block';
-            emptyProjects.textContent = '还没有项目，创建一个开始学习吧 ✨';
-            return;
-        }
-        if (visibleProjects.length === 0) {
-            emptyProjects.style.display = 'block';
-            emptyProjects.textContent = '没有符合筛选条件的项目';
+        const emptyState = projectsEmptyStateView(stateLoadError, projects.length, visibleProjects.length);
+        if (emptyState) {
+            renderProjectsMessage(emptyState);
             return;
         }
         emptyProjects.style.display = 'none';
+        const cardFragment = document.createDocumentFragment();
         visibleProjects.forEach(project => {
             ensureProjectCaches(project);
             const card = document.createElement('div');
@@ -3169,7 +3352,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const actions = document.createElement('div');
             actions.className = 'card-actions';
             const editBtn = document.createElement('button');
-            editBtn.innerHTML = '✎';
+            editBtn.textContent = '✎';
             editBtn.title = '编辑项目名称';
             editBtn.setAttribute('aria-label', '编辑项目名称');
             editBtn.addEventListener('click', async (e) => {
@@ -3178,11 +3361,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     const loadedProject = await ensureProjectLoaded(project.id);
                     startEditProjectName(loadedProject, nameDiv, card);
                 } catch (error) {
-                    showToast(error.message || '项目加载失败');
+                    showToast(error.message || '项目加载失败，请重试');
                 }
             });
             const delBtn = document.createElement('button');
-            delBtn.innerHTML = '✕';
+            delBtn.textContent = '✕';
             delBtn.title = '删除项目';
             delBtn.setAttribute('aria-label', '删除项目');
             delBtn.classList.add('delete-proj-btn');
@@ -3216,7 +3399,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 try {
                     await openProjectDetail(project.id);
                 } catch (error) {
-                    showToast(error.message || '项目加载失败');
+                    showToast(error.message || '项目加载失败，请重试');
                 }
             });
             nameDiv.addEventListener('dblclick', async (e) => {
@@ -3225,11 +3408,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     const loadedProject = await ensureProjectLoaded(project.id);
                     startEditProjectName(loadedProject, nameDiv, card);
                 } catch (error) {
-                    showToast(error.message || '项目加载失败');
+                    showToast(error.message || '项目加载失败，请重试');
                 }
             });
-            projectGrid.appendChild(card);
+            cardFragment.appendChild(card);
         });
+        projectGrid.replaceChildren(cardFragment);
     }
 
     function startEditProjectName(project, nameDiv, card) {
@@ -3276,7 +3460,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             await deleteStoredProject(projectId, removedProject._revision);
         } catch (error) {
             setSaveStatus(error.status === 409 ? '版本冲突' : '保存失败', 'error');
-            showToast(error.message || '删除项目失败');
+            showToast(error.message || '删除项目失败，请重试');
             return;
         }
         card.style.transition = 'all 0.35s ease';
@@ -3317,9 +3501,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const remaining = getProjectRemaining(project);
         const optional = getProjectOptionalStats(project);
         countDisplay.textContent = `主线剩余 ${remaining} 项 · 选做 ${optional.completed}/${optional.total}`;
-        treeRoot.innerHTML = '';
+        treeRoot.replaceChildren();
         if (!project.tree || project.tree.length === 0) {
-            emptyTreeTip.textContent = '还没有内容，添加第一周开始吧 ✨';
+            emptyTreeTip.textContent = '还没有内容，添加第一周开始吧';
             emptyTreeTip.classList.remove('hidden');
             return;
         }
@@ -3330,12 +3514,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             emptyTreeTip.classList.remove('hidden');
             return;
         }
-        emptyTreeTip.textContent = '还没有内容，添加第一周开始吧 ✨';
+        emptyTreeTip.textContent = '还没有内容，添加第一周开始吧';
         emptyTreeTip.classList.add('hidden');
         const projectCreatedAt = project.createdAt || '';
+        const treeFragment = document.createDocumentFragment();
         visibleTree.forEach(week => {
-            treeRoot.appendChild(renderNode(week, projectCreatedAt, filtering));
+            treeFragment.appendChild(renderNode(week, projectCreatedAt, filtering));
         });
+        treeRoot.replaceChildren(treeFragment);
         const allExpanded = (project.tree || []).every(w => w.expanded);
         expandAllBtn.textContent = allExpanded ? '收起全部' : '展开全部';
     }
@@ -3398,7 +3584,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (node.type === 'week' || node.type === 'day') {
             const addBtn = document.createElement('button');
             addBtn.className = 'add-btn';
-            addBtn.innerHTML = '+';
+            addBtn.textContent = '+';
             addBtn.title = node.type === 'week' ? '添加学习单元' : '添加任务';
             addBtn.setAttribute('aria-label', '添加子项');
             addBtn.addEventListener('click', (e) => {
@@ -3422,7 +3608,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (node.type === 'item') {
             const reviewBtn = document.createElement('button');
             reviewBtn.className = 'review-node-btn';
-            reviewBtn.innerHTML = '&#9675;';
+            reviewBtn.textContent = '○';
             reviewBtn.title = '安排复习';
             reviewBtn.setAttribute('aria-label', '安排复习');
             reviewBtn.addEventListener('click', (e) => {
@@ -3433,7 +3619,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
         const editBtn = document.createElement('button');
         editBtn.className = 'edit-btn';
-        editBtn.innerHTML = '✎';
+        editBtn.textContent = '✎';
         editBtn.title = '编辑';
         editBtn.setAttribute('aria-label', '编辑');
         editBtn.addEventListener('click', (e) => {
@@ -3443,7 +3629,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         actions.appendChild(editBtn);
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'delete-btn';
-        deleteBtn.innerHTML = '✕';
+        deleteBtn.textContent = '✕';
         deleteBtn.title = '删除';
         deleteBtn.setAttribute('aria-label', '删除');
         deleteBtn.addEventListener('click', (e) => {
@@ -3460,7 +3646,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (node.review.learning) {
                 const learningBadge = document.createElement('span');
                 learningBadge.className = 'node-learning-badge';
-                learningBadge.textContent = '⚠ 需重学';
+                learningBadge.textContent = '需重学';
                 row.appendChild(learningBadge);
             } else {
                 const dueBadge = document.createElement('span');
@@ -3480,9 +3666,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 ? (node.children || []).filter(nodeHasVisibleMatch)
                 : (node.children || []);
             if ((node.expanded || filtering) && visibleChildren.length > 0) {
+                const childFragment = document.createDocumentFragment();
                 visibleChildren.forEach(child => {
-                    childrenUl.appendChild(renderNode(child, projectCreatedAt, filtering));
+                    childFragment.appendChild(renderNode(child, projectCreatedAt, filtering));
                 });
+                childrenUl.appendChild(childFragment);
             }
             li.appendChild(childrenUl);
             row.addEventListener('click', (e) => {
@@ -3584,7 +3772,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'edit-input';
-        input.placeholder = parentNode.type === 'week' ? '输入学习单元名称...' : '输入验收任务...';
+        input.placeholder = parentNode.type === 'week' ? '输入学习单元名称…' : '输入验收任务…';
         input.style.width = 'calc(100% - 10px)';
         input.style.padding = '6px 10px';
         input.style.fontSize = '13px';
@@ -3726,7 +3914,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             try {
                 await flushProjectsSave();
             } catch (error) {
-                showToast('当前修改尚未保存，请处理保存错误后再返回');
+                showToast('当前修改尚未保存，请先处理保存失败，请重试');
                 return;
             }
         }
@@ -3866,14 +4054,22 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     async function showReviewQueue() {
         if (saveTimer) {
             try { await flushProjectsSave(); } catch (error) {
-                showToast('当前修改尚未保存，请处理保存错误后再返回');
+                showToast('当前修改尚未保存，请先处理保存失败，请重试');
                 return;
             }
         }
+        // 先切到队列页并给出加载状态：加载要读完全部项目，项目多时不是瞬间完成。
+        projectsView.classList.remove('active');
+        detailView.classList.remove('active');
+        reviewView.classList.add('active');
+        reviewSubline.textContent = '';
+        renderReviewMessage(listStatusText('review', 'loading'), false);
         try {
             await Promise.all(projects.map(project => ensureProjectLoaded(project.id)));
         } catch (error) {
-            showToast(error.message || '复习队列加载失败');
+            const message = listStatusText('review', 'failed', error && error.message);
+            renderReviewMessage(message, true);
+            showToast(message);
             return;
         }
         const today = todayStr();
@@ -3900,11 +4096,19 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         dueItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
         futureItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
         reviewQueueState = { dueItems: dueItems, futureItems: futureItems };
-        projectsView.classList.remove('active');
-        detailView.classList.remove('active');
-        reviewView.classList.add('active');
         renderReviewQueue();
         loadReviewCounts();
+    }
+
+    function renderReviewMessage(text, withRetry) {
+        reviewBody.innerHTML = '';
+        const message = document.createElement('p');
+        message.className = 'review-empty';
+        message.textContent = text;
+        reviewBody.appendChild(message);
+        if (withRetry) {
+            reviewBody.appendChild(createRetryButton('重试', showReviewQueue));
+        }
     }
 
     function renderReviewQueue() {
@@ -3915,11 +4119,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const total = due.length + future.length;
         reviewSubline.textContent = total > 0
             ? '待复习 ' + due.length + ' 项 · 已安排 ' + future.length + ' 项'
-            : '暂无到期复习';
+            : '还没有到期的复习';
         if (total === 0) {
             const empty = document.createElement('p');
             empty.className = 'review-empty';
-            empty.textContent = '还没有排入复习的内容。✓ 完成任务后会自动排到明天；也可在项目里点任务旁的 ◷ 手动安排。';
+            empty.textContent = '还没有排入复习的内容；完成任务后会自动排到明天，也可在项目里点任务旁的 ◷ 手动安排';
             body.appendChild(empty);
             return;
         }
@@ -3948,18 +4152,17 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (!byProject.has(item.projectId)) byProject.set(item.projectId, []);
             byProject.get(item.projectId).push(item);
         }
+        const blockFragment = document.createDocumentFragment();
         for (const entry of byProject.entries()) {
             const projectBlock = document.createElement('div');
             projectBlock.className = 'review-project-block';
             const nameRow = document.createElement('div');
             nameRow.className = 'review-project-name';
             nameRow.textContent = entry[1][0].projectName;
-            projectBlock.appendChild(nameRow);
-            for (const item of entry[1]) {
-                projectBlock.appendChild(createReviewItemElement(item));
-            }
-            group.appendChild(projectBlock);
+            projectBlock.append(nameRow, ...entry[1].map(item => createReviewItemElement(item)));
+            blockFragment.appendChild(projectBlock);
         }
+        group.appendChild(blockFragment);
         return group;
     }
 
@@ -4020,7 +4223,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         more.setAttribute('aria-label', '更多复习操作');
         const placeholder = document.createElement('option');
         placeholder.value = '';
-        placeholder.textContent = '⋯ 更多';
+        placeholder.textContent = '更多';
         more.appendChild(placeholder);
         const choices = [
             ['d1', '顺延到明天'],
@@ -4121,10 +4324,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 })
             });
             const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败');
+            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败，请重试');
             showToast('已保存到摘要清单（同题去重）');
         } catch (error) {
-            showToast(error.message || '生成摘要失败');
+            showToast(error.message || '生成摘要失败，请重试');
         }
     }
 
@@ -4137,7 +4340,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showDetailView(project.id);
             openAssessment(node);
         } catch (error) {
-            showToast(error.message || '打开验收失败');
+            showToast(error.message || '打开验收失败，请重试');
         }
     }
 
@@ -4145,7 +4348,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         try {
             await saveProjects();
         } catch (error) {
-            showToast(error.message || '保存失败');
+            showToast(error.message || '保存失败，请重试');
             return;
         }
         loadReviewCounts();
@@ -4294,10 +4497,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 })
             });
             const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败');
+            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败，请重试');
             showToast('已保存到摘要清单（同题去重）');
         } catch (error) {
-            showToast(error.message || '生成摘要失败');
+            showToast(error.message || '生成摘要失败，请重试');
         } finally {
             summaryQuestionBtn.disabled = false;
             summaryQuestionBtn.textContent = label;
@@ -4306,14 +4509,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     async function openSummaryList() {
         showUtilityModal('核心摘要', '摘要清单');
-        utilityBody.innerHTML = '<p class="utility-empty">正在读取摘要…</p>';
+        renderUtilityMessage('正在读取摘要…');
         try {
             const response = await apiFetch('/api/summaries', { cache: 'no-store' });
             const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '读取摘要清单失败');
+            if (!response.ok) throw new Error(payload.error || '读取摘要清单失败，请重试');
             renderSummaryList(payload.summaries || []);
         } catch (error) {
-            utilityBody.innerHTML = '<p class="utility-empty">' + (error.message || '读取摘要清单失败') + '</p>';
+            renderUtilityMessage(error.message || '读取摘要清单失败，请重试');
         }
     }
 
@@ -4335,11 +4538,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 try {
                     const res = await apiFetch('/api/summaries', { method: 'DELETE' });
                     const body = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(body.error || '清空失败');
+                    if (!res.ok) throw new Error(body.error || '清空失败，请重试');
                     renderSummaryList(body.summaries || []);
                     showToast('已清空摘要清单');
                 } catch (error) {
-                    showToast(error.message || '清空失败');
+                    showToast(error.message || '清空失败，请重试');
                 }
             });
             toolbar.appendChild(clearBtn);
@@ -4348,12 +4551,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (summaries.length === 0) {
             const empty = document.createElement('p');
             empty.className = 'utility-empty';
-            empty.textContent = '还没有摘要。在 AI 验收题目区点「核心摘要」即可生成并收藏。';
+            empty.textContent = '还没有摘要；在 AI 验收题目区点「核心摘要」即可生成并收藏';
             utilityBody.appendChild(empty);
             return;
         }
         const grid = document.createElement('div');
         grid.className = 'summary-grid';
+        const summaryFragment = document.createDocumentFragment();
         for (const item of summaries) {
             const card = document.createElement('div');
             card.className = 'summary-item';
@@ -4378,11 +4582,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 try {
                     const res = await apiFetch('/api/summary?id=' + encodeURIComponent(item.id), { method: 'DELETE' });
                     const body = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(body.error || '删除失败');
+                    if (!res.ok) throw new Error(body.error || '删除失败，请重试');
                     renderSummaryList(body.summaries || []);
                     showToast('已删除');
                 } catch (error) {
-                    showToast(error.message || '删除失败');
+                    showToast(error.message || '删除失败，请重试');
                 }
             });
             footer.appendChild(date);
@@ -4391,15 +4595,16 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             card.appendChild(content);
             card.appendChild(footer);
             card.addEventListener('click', () => card.classList.toggle('expanded'));
-            grid.appendChild(card);
+            summaryFragment.appendChild(card);
         }
+        grid.replaceChildren(summaryFragment);
         utilityBody.appendChild(grid);
     }
 
     async function loadTrashItems() {
         const response = await apiFetch('/api/trash', { cache: 'no-store' });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !Array.isArray(payload.items)) throw new Error(payload.error || '读取回收站失败');
+        if (!response.ok || !Array.isArray(payload.items)) throw new Error(payload.error || '读取回收站失败，请重试');
         trashItems = payload.items;
         return trashItems;
     }
@@ -4411,7 +4616,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             body: JSON.stringify({ action: 'store', item })
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.item) throw new Error(payload.error || '写入回收站失败');
+        if (!response.ok || !payload.item) throw new Error(payload.error || '写入回收站失败，请重试');
         trashItems = payload.items || trashItems;
         return payload.item;
     }
@@ -4423,7 +4628,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             body: JSON.stringify({ action: 'restore', id })
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '恢复失败');
+        if (!response.ok) throw new Error(payload.error || '恢复失败，请重试');
         trashItems = payload.items || trashItems;
         if (Array.isArray(payload.projects)) {
             projects = payload.projects.map(normalizeProjectSummary);
@@ -4442,7 +4647,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             body: JSON.stringify({ action: 'delete', id })
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '删除回收站条目失败');
+        if (!response.ok) throw new Error(payload.error || '删除回收站条目失败，请重试');
         trashItems = payload.items || trashItems;
     }
 
@@ -4466,7 +4671,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     }
                     renderTrashItems(trashItems);
                 } catch (error) {
-                    showToast(error.message || '清空回收站失败');
+                    showToast(error.message || '清空回收站失败，请重试');
                 }
             });
             toolbar.appendChild(clearBtn);
@@ -4475,12 +4680,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (items.length === 0) {
             const empty = document.createElement('p');
             empty.className = 'utility-empty';
-            empty.textContent = '最近删除的项目会出现在这里。';
+            empty.textContent = '最近删除的项目会出现在这里';
             utilityBody.appendChild(empty);
             return;
         }
         const list = document.createElement('div');
         list.className = 'trash-list';
+        const trashFragment = document.createDocumentFragment();
         items.forEach(item => {
             const card = document.createElement('div');
             card.className = 'trash-item';
@@ -4503,7 +4709,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     renderTrashItems(trashItems);
                     showToast('已恢复');
                 } catch (error) {
-                    showToast(error.message || '恢复失败');
+                    showToast(error.message || '恢复失败，请重试');
                 }
             });
             const deleteBtn = document.createElement('button');
@@ -4516,24 +4722,25 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     await deleteTrashItemById(item.id);
                     renderTrashItems(trashItems);
                 } catch (error) {
-                    showToast(error.message || '删除失败');
+                    showToast(error.message || '删除失败，请重试');
                 }
             });
             actions.append(restoreBtn, deleteBtn);
             card.append(title, meta, context, actions);
-            list.appendChild(card);
+            trashFragment.appendChild(card);
         });
+        list.replaceChildren(trashFragment);
         utilityBody.appendChild(list);
     }
 
     async function openTrashBin() {
         showUtilityModal('回收站', '最近删除');
-        utilityBody.innerHTML = '<p class="utility-empty">正在读取回收站…</p>';
+        renderUtilityMessage('正在读取回收站…');
         try {
             const items = await loadTrashItems();
             renderTrashItems(items);
         } catch (error) {
-            utilityBody.innerHTML = `<p class="utility-empty">${error.message || '读取回收站失败'}</p>`;
+            renderUtilityMessage(error.message || '读取回收站失败，请重试');
         }
     }
 
@@ -4582,12 +4789,20 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         results.className = 'search-results';
         utilityBody.appendChild(results);
         const allProjects = [];
+        meta.textContent = listStatusText('search', 'loading');
         try {
             await Promise.all(projects.map(project => ensureProjectLoaded(project.id)));
             allProjects.push(...projects.filter(project => Array.isArray(project.tree)));
             meta.textContent = `已加载 ${allProjects.length} 个项目`;
         } catch (error) {
-            meta.textContent = error.message || '加载项目失败';
+            const message = listStatusText('search', 'failed', error && error.message);
+            meta.textContent = message;
+            results.replaceChildren();
+            const failed = document.createElement('p');
+            failed.className = 'utility-empty';
+            failed.textContent = message;
+            results.appendChild(failed);
+            results.appendChild(createRetryButton('重试', () => openGlobalSearch()));
             return;
         }
         const render = () => {
@@ -4596,7 +4811,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (!query) {
                 const empty = document.createElement('p');
                 empty.className = 'utility-empty';
-                empty.textContent = '输入关键词后可跨项目搜索。';
+                empty.textContent = '输入关键词后可跨项目搜索';
                 results.appendChild(empty);
                 return;
             }
@@ -4640,7 +4855,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 results.appendChild(row);
             });
         };
-        search.addEventListener('input', render);
+        search.addEventListener('input', debounce(render, SEARCH_DEBOUNCE_MS));
         render();
         search.focus();
     }
@@ -4691,7 +4906,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             closeExtraAsk();
             showToast('已追加 ' + extra.length + ' 道拟题（当前共 ' + assessmentQuestionItems.length + ' 题）');
         } catch (error) {
-            showToast(error.message || '生成拟题失败');
+            showToast(error.message || '生成拟题失败，请重试');
         } finally {
             extraConfirmBtn.disabled = false;
             extraConfirmBtn.textContent = label;
@@ -4736,9 +4951,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (ul.childElementCount === 0) {
                 const project = getCurrentProject();
                 const projectCreatedAt = project ? (project.createdAt || '') : '';
+                const branchFragment = document.createDocumentFragment();
                 (node.children || []).forEach(child => {
-                    ul.appendChild(renderNode(child, projectCreatedAt, false));
+                    branchFragment.appendChild(renderNode(child, projectCreatedAt, false));
                 });
+                ul.appendChild(branchFragment);
             }
         } else {
             ul.classList.remove('expanded');
@@ -4779,7 +4996,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (!oldLearning) {
                 const badge = document.createElement('span');
                 badge.className = 'node-learning-badge';
-                badge.textContent = '⚠ 需重学';
+                badge.textContent = '需重学';
                 row.insertBefore(badge, anchor);
             }
         } else if (oldLearning) {
@@ -4835,6 +5052,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
     }
 
+    const debouncedRenderProjects = debounce(renderProjects, SEARCH_DEBOUNCE_MS);
+    const debouncedRenderDetail = debounce(renderDetail, SEARCH_DEBOUNCE_MS);
+
     function initEvents() {
         assessmentForm.addEventListener('submit', submitAssessment);
         assessmentAnswer.addEventListener('keydown', handleAssessmentEditorTab);
@@ -4879,7 +5099,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         });
         projectSearchInput.addEventListener('input', () => {
             projectFilters.query = projectSearchInput.value;
-            renderProjects();
+            debouncedRenderProjects();
         });
         projectStatusFilter.addEventListener('change', () => {
             projectFilters.status = projectStatusFilter.value;
@@ -4887,13 +5107,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         });
         nodeSearchInput.addEventListener('input', () => {
             nodeFilters.query = nodeSearchInput.value;
-            renderDetail();
+            debouncedRenderDetail();
         });
         nodeStatusFilter.addEventListener('change', () => {
             nodeFilters.status = nodeStatusFilter.value;
             renderDetail();
         });
         exportBtn.addEventListener('click', exportBackup);
+        downloadDatabaseBackupBtn.addEventListener('click', downloadDatabaseBackup);
         importInput.addEventListener('change', () => {
             importBackup(importInput.files && importInput.files[0]);
         });
@@ -4904,6 +5125,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         createDatabaseBackupBtn.addEventListener('click', createDatabaseBackupFromUi);
         renameDatabaseBackupBtn.addEventListener('click', renameDatabaseBackupFromUi);
         databaseBackupPickerButton.addEventListener('click', () => {
+            if (backupListError) {
+                loadDatabaseBackups();
+                return;
+            }
             databaseBackupMenu.hidden = !databaseBackupMenu.hidden;
             databaseBackupPickerButton.setAttribute('aria-expanded', String(!databaseBackupMenu.hidden));
         });
@@ -4952,7 +5177,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     body: JSON.stringify({ topic: name, model: 'flash' })
                 });
                 const payload = await response.json().catch(() => ({}));
-                if (!response.ok || !payload.plan) throw new Error(payload.error || 'AI 规划失败');
+                if (!response.ok || !payload.plan) throw new Error(payload.error || 'AI 规划失败，请重试');
                 const project = {
                     id: generateId(),
                     name: name,
