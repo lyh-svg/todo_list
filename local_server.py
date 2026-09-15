@@ -1000,8 +1000,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
             if read_project(project_id) is None:
                 self.send_json(404, {"error": "项目不存在"})
                 return
-            delete_project(project_id, expected_revision)
-            self.send_json(200, {"ok": True})
+            removed = delete_project(project_id, expected_revision)
+            self.send_json(200, {"ok": True, "trashId": (removed or {}).get("trashId", ""),
+                                 "projects": read_project_summaries()})
         except StateConflictError as error:
             self.send_json(409, {"error": str(error)})
         except memo_storage.MemoConflictError as error:

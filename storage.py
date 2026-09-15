@@ -1953,7 +1953,7 @@ def write_project(project: dict[str, Any], expected_revision: int | None) -> tup
         return next_revision, summary
 
 
-def delete_project(project_id: Any, expected_revision: int) -> None:
+def delete_project(project_id: Any, expected_revision: int) -> dict[str, Any]:
     with _database_lock:
         with open_state_database() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1966,14 +1966,16 @@ def delete_project(project_id: Any, expected_revision: int) -> None:
             if int(row["revision"]) != expected_revision:
                 raise StateConflictError(f"项目已被其他页面更新（当前版本 {int(row['revision'])}）")
             project = _read_project_from_connection(connection, str(project_id))
+            trash_id = ""
             if project:
                 stored_project, project_revision = project
+                trash_id = _new_trash_id()
                 connection.execute(
                     """INSERT INTO trash_items(
                         trash_id,kind,project_id,parent_id,position,title,context,payload,deleted_at,revision
                     ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        _new_trash_id(),
+                        trash_id,
                         "project",
                         str(project_id),
                         None,
@@ -1990,6 +1992,7 @@ def delete_project(project_id: Any, expected_revision: int) -> None:
                 log_activity("delete-project", f"删除项目「{_project_title(stored_project)}」（可在回收站恢复）",
                              project_id=str(project_id), project_name=_project_title(stored_project),
                              detail={"title": _project_title(stored_project)}, connection=connection)
+    return {"trashId": trash_id, "projectId": str(project_id)}
 
 
 def replace_projects(projects: list[dict[str, Any]], *, pre_backup: bool = True) -> None:

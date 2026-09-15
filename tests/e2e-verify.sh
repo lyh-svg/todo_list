@@ -154,8 +154,10 @@ before_p1, before_p2 = json.loads(before_p1), json.loads(before_p2)
 _, _, listing = call("/api/projects")
 revisions = {s["id"]: s["_revision"] for s in json.loads(listing)["projects"]}
 for pid in ("p1", "p2"):
-    status, _, _ = call(f"/api/project?id={pid}&revision={revisions[pid]}", method="DELETE")
-    check(f"② 删除 {pid} → 200", status == 200, f"status={status}")
+    status, _, body = call(f"/api/project?id={pid}&revision={revisions[pid]}", method="DELETE")
+    payload = json.loads(body) if status == 200 else {}
+    check(f"② 删除 {pid} → 200 且带回回收站条目 id", status == 200 and payload.get("trashId"),
+          f"status={status} body={body[:120]}")
 _, _, listing = call("/api/projects")
 check("② 删除后项目数为 0", len(json.loads(listing)["projects"]) == 0)
 

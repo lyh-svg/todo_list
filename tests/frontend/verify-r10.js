@@ -122,6 +122,14 @@ check('删除：先查影响面再确认', /async function verifyDeleteImpact[\s
 check('删除：影响面包含子节点/任务数/已完成/耗时', /function describeImpact[\s\S]{0,600}descendantCount[\s\S]{0,200}itemCount[\s\S]{0,200}completedCount[\s\S]{0,200}estimateMinutes/.test(src));
 check('删除：进回收站后可撤销', /kind: 'node-delete'/.test(src) && /pushUndoStep\(\{[\s\S]{0,200}trashId/.test(src));
 
+// 删除项目也要可撤销，且文案不能撒谎（以前写"删除前会保留数据库备份"，实际只是进回收站）
+check('删除项目：确认文案说明是进回收站且可撤销',
+    /确认删除项目[\s\S]{0,200}会放进回收站，之后可以恢复/.test(src)
+    && !src.includes('删除前会保留数据库备份'));
+check('删除项目：成功后写入撤销栈（project-delete → 可从回收站恢复）',
+    /kind: 'project-delete'/.test(src) && /step\.trashId = payload\.trashId/.test(src)
+    && /trashId: \(removed && removed\.trashId\)/.test(src));
+
 // 版本号与样式
 check('资源版本号已更新', /app\.js\?v=\d+/.test(html) && /style\.css\?v=\d+/.test(html));
 check('新面板样式已加', css.includes('.template-row') && css.includes('.activity-row')

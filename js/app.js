@@ -838,6 +838,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 error.status = response.status;
                 throw error;
             }
+            return payload;
         });
     }
 
@@ -4265,10 +4266,15 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const projectIndex = projects.findIndex(project => project.id === projectId);
         if (projectIndex < 0) return;
         const removedProject = projects[projectIndex];
-        if (!window.confirm(`确认删除项目“${removedProject.name}”？删除前会保留数据库备份。`)) return;
+        if (!window.confirm(`确认删除项目“${removedProject.name}”？\n会放进回收站，之后可以恢复（也能用 Ctrl+Z 撤销）。`)) return;
         try {
             setSaveStatus('保存中…', 'saving');
-            await deleteStoredProject(projectId, removedProject._revision);
+            const removed = await deleteStoredProject(projectId, removedProject._revision);
+            pushUndoStep({
+                label: `删除项目「${removedProject.name}」`,
+                ops: [{ kind: 'project-delete', projectId }],
+                trashId: (removed && removed.trashId) || '',
+            });
         } catch (error) {
             setSaveStatus(error.status === 409 ? '版本冲突' : '保存失败', 'error');
             showToast(error.message || '删除项目失败，请重试');
@@ -4292,7 +4298,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (currentProjectId === projectId) currentProjectId = null;
             renderProjects();
             setSaveStatus('已保存');
-            showToast(`已删除项目：${removedProject.name}`);
+            showToast(`已删除项目：${removedProject.name}`, undoAction());
         }, 400);
     }
 
@@ -4465,6 +4471,17 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 } else {
                     const saved = await deleteNodeToTrash(op.projectId, op.nodeId);
                     step.trashId = saved && saved.id;
+                }
+            } else if (op.kind === 'project-delete') {
+                if (direction === 'undo') {
+                    await restoreTrashItemById(step.trashId);
+                } else {
+                    const entry = projects.find(item => String(item.id) === String(op.projectId));
+                    const revision = entry ? Number(entry._revision) || 0 : 0;
+                    const payload = await callApi(
+                        `/api/project?id=${encodeURIComponent(op.projectId)}&revision=${encodeURIComponent(revision)}`,
+                        'DELETE');
+                    step.trashId = payload.trashId || '';
                 }
             } else if (op.kind === 'node-duplicate') {
                 if (direction === 'undo') {
