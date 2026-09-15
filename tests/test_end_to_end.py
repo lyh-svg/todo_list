@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("TODO_SQLITE_FILE=", text, "脚本必须在临时库里跑，不能碰 data/")
 
     def test_e2e_script_passes(self) -> None:
+        if os.environ.get("TODO_SKIP_E2E"):
+            self.skipTest("TODO_SKIP_E2E 已设置，跳过端到端脚本")
         if not shutil.which("bash"):
             self.skipTest("未安装 bash，跳过端到端脚本")
         if not sys.executable:

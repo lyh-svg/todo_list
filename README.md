@@ -140,15 +140,45 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com            # 官方地址，通常不
 
 ## 7. 跑测试 / 自检
 
-改完代码想确认没弄坏东西：
+一条命令跑完全部检查（语法 + 静态检查 + 全量测试 + 端到端 + 行尾约定）：
 
 ```bash
-python3 -m unittest discover -s tests          # 全部 130 项（含后端单测、HTTP 层、前端脚本、E2E）
-node tests/frontend/dom-smoke.js               # 只跑前端"真实加载页面并点击"的 35 条运行时断言（可选）
-bash tests/e2e-verify.sh                       # 只跑隔离服务端到端 140 项（随机端口 + 临时库，不动 data/）
+./scripts/check.sh            # 全部；./scripts/check.sh quick 跳过端到端与浏览器
+```
+
+也可以单独跑某一层：
+
+```bash
+python3 -m unittest discover -s tests   # 全部用例（后端单测 / HTTP 层 / AI 层 / 前端脚本 / 端到端 / 浏览器）
+python3 -m pytest -q                    # 同一批用例，pytest 也能发现（可选 runner）
+node tests/frontend/dom-smoke.js        # 前端"真实加载页面并点击"的 53 条运行时断言（含新建/导入/恢复/AI 流程）
+bash tests/e2e-verify.sh                # 隔离服务端到端 142 项（随机端口 + 临时库）
+ruff check . && npx eslint .            # 静态检查
 ```
 
 测试全部使用临时目录里的数据库，**不会碰 `data/` 下的真实数据**；没装 node 时前端脚本会自动跳过。
+
+### 真浏览器测试（可选）
+
+`tests/test_browser_flows.py` 用 Playwright 驱动真 Chromium 跑"新建项目 → 添加任务 → 刷新 → 导入 JSON → 恢复备份 → AI 规划"。
+需要一次性准备：
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+sudo python3 -m playwright install-deps chromium   # 缺系统库时执行（WSL/Ubuntu 需要）
+python3 -m playwright install chromium
+python3 -m unittest tests.test_browser_flows -v
+```
+
+没装或浏览器不可用时这些用例会**自动跳过**（`TODO_SKIP_BROWSER=1` 可强制跳过），不影响其它测试；
+CI 里有独立的浏览器任务会真正执行它们。
+
+### 持续集成
+
+`.github/workflows/ci.yml`：每次 push / PR 自动跑
+
+1. `checks`：Python/Node 语法检查 → Ruff → ESLint → 全量 unittest（含 HTTP 层与端到端）；
+2. `browser`：安装 Playwright + Chromium（含系统依赖）后跑真浏览器流程。
 
 ---
 

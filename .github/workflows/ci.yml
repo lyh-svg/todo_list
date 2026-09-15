@@ -1,0 +1,80 @@
+name: CI
+
+# 每次提交/PR 都跑：语法检查 + 静态检查 + 全量测试（含端到端 HTTP 与前端冒烟）+
+# 真浏览器流程（Playwright）。目标：提交就能发现数据损坏、API 空回复、JSON 解析失败、
+# 前端关键流程回归与迁移不兼容。
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: 语法 / 静态检查 / 全量测试 (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 开发环境是 3.14；顺带在 3.13 上跑一遍，防止"只在新版本能跑"。
+          # （README 声称 3.10+，但本机没有 3.10 可验证；ruff 的 target-version=py310
+          #   会拦住 3.10 不支持的语法，API 层面的兼容没在 CI 里覆盖。）
+          python-version: ${{ matrix.python }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装开发依赖
+        run: |
+          python -m pip install --upgrade pip
+          # 这个任务只跑静态检查与全量测试（浏览器用例会自动跳过），
+          # 所以不装体积大的 playwright；它由下面的 browser 任务单独安装。
+          python -m pip install pytest ruff
+          npm ci
+
+      - name: Python 语法检查
+        run: |
+          python -m compileall -q storage.py local_server.py backup_service.py ai_service.py \
+            memo_storage.py summary_storage.py tests
+
+      - name: Node 语法检查
+        run: |
+          for file in js/*.js tests/frontend/*.js; do node --check "$file"; done
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: ESLint
+        run: npx eslint .
+
+      - name: 全量测试（单测 + HTTP 层 + 前端脚本 + 端到端）
+        run: python -m unittest discover -s tests -v
+
+  browser:
+    name: Playwright 浏览器流程
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: 安装 playwright 与浏览器（含系统依赖）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: 浏览器流程测试（新建项目 / 添加任务 / 刷新 / 导入 / 恢复 / AI mock）
+        run: python -m unittest tests.test_browser_flows -v

@@ -946,7 +946,7 @@ def purge_trash_items(days: int = TRASH_RETENTION_DAYS) -> int:
 
 def list_trash_items() -> list[dict[str, Any]]:
     purge_trash_items()
-    
+
     with _database_lock, open_state_database() as connection:
         rows = connection.execute(
             "SELECT trash_id,kind,project_id,parent_id,position,title,context,deleted_at,revision "
@@ -1904,7 +1904,7 @@ def workbench(today: str | None = None) -> dict[str, Any]:
             groups["reviewToday"].append(dict(item, reviewDue=review_due,
                                               daysOverdue=_days_between(review_due, reference)))
     priority_rank = {"high": 0, "mid": 1, "low": 2, "": 3}
-    for key, items in groups.items():
+    for items in groups.values():
         items.sort(key=lambda entry: (priority_rank.get(entry["priority"], 3),
                                       entry.get("dueDate") or entry.get("reviewDue") or "",
                                       entry["text"]))

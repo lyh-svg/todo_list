@@ -1,0 +1,9 @@
+# 开发期工具（运行时零依赖，只用 Python 标准库）
+#
+#   python3 -m pip install -r requirements-dev.txt
+#   sudo python3 -m playwright install-deps chromium   # 浏览器缺系统库时执行一次
+#   python3 -m playwright install chromium             # 下载浏览器（CI 里必做）
+#
+pytest>=8.0        # 可选 runner：pytest tests -q（与 unittest 共用同一批用例）
+ruff>=0.6          # 静态检查：ruff check .
+playwright>=1.40   # 真浏览器冒烟：python3 -m unittest tests.test_browser_flows -v

@@ -1,0 +1,20 @@
+# 只放开发期工具的配置（应用本身不打包、运行时不依赖第三方库）。
+# 安装开发依赖：python3 -m pip install -r requirements-dev.txt
+
+[tool.pytest.ini_options]
+# tests/ 下的用例是 unittest 风格，pytest 直接就能发现并运行；
+# 两者共用同一套测试，选哪个 runner 都可以。
+testpaths = ["tests"]
+addopts = "-q"
+# 浏览器测试默认会跑（装了 playwright 且浏览器可用时）；想跳过用 TODO_SKIP_BROWSER=1
+filterwarnings = ["ignore::ResourceWarning"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [".git", ".venv", "todo_venv", "node_modules", "data", "__pycache__"]
+
+[tool.ruff.lint]
+# 只选"能抓到真 bug"的规则：语法/未定义名/未用导入（E9 F）、imports（E4）、
+# 语句级问题（E7）、警告（W）、常见 bug 模式（B）。风格类规则留给以后逐步引入。
+select = ["E4", "E7", "E9", "F", "W", "B"]

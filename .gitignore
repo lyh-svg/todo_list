@@ -8,6 +8,12 @@ env/
 build/
 dist/
 .eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ===== Node（只用于开发期 ESLint 与前端断言脚本）=====
+node_modules/
 
 # ===== 个人数据与数据库(勿提交) =====
 data/

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 import unittest
 from pathlib import Path
 
@@ -20,6 +19,7 @@ FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 
 # 顺序只是报告顺序；每个脚本自己负责读取 js/app.js、index.html、css/style.css。
 SCRIPTS = [
+    "verify-study-tools.js",
     "verify-round1.js",
     "verify-round2.js",
     "verify-round4.js",

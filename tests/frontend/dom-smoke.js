@@ -18,7 +18,7 @@ const today = (() => {
 let uuidCounter = 0;
 function makeEl(tag = 'div', id = '') {
     const el = {
-        _tag: tag, id, _children: [], _listeners: {}, parentElement: null,
+        _tag: tag, id, _children: [], _listeners: {},
         // className 必须和 classList 同步：运行时创建的行是直接赋 className 的，
         // 不同步的话 findAll(..., classList.contains('node-row')) 永远找不到它们。
         get className() { return [...this.classList._s].join(' '); },
@@ -195,7 +195,21 @@ async function fetchStub(url, options = {}) {
     if (path === '/api/background') return reply(404, {});
     if (path === '/api/config') return reply(200, { ready: true, models: { flash: 'f', pro: 'p' }, error: '' });
     if (path === '/api/storage') return reply(200, { projectLimitBytes: 1000, largestProjectBytes: 10, projectCount: 1 });
-    if (path === '/api/backups') return reply(200, { backups: [] });
+    if (path === '/api/backups') return reply(200, {
+        backups: [{ name: 'manual-20260915T000000000000.zip', kind: 'full', bytes: 2048,
+                    modifiedAt: '2026-09-15T00:00:00', valid: true }]
+    });
+    if (path === '/api/import') return reply(200, {
+        ok: true,
+        projects: [{ id: 'imp-1', name: '导入的项目', description: '', createdAt: today,
+                     assessmentEnabled: false, archived: false, reviewEnabled: false,
+                     stats: { total: 1, remaining: 1, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 }]
+    });
+    if (path === '/api/project/plan') return reply(200, {
+        ok: true,
+        plan: { description: '冒烟用 AI 计划', tree: [{ type: 'week', text: '第1周：AI 规划', children: [
+            { type: 'day', text: '单元1：入门', children: [{ type: 'item', text: 'AI 生成的任务' }] }] }] }
+    });
     if (path === '/api/views') return reply(200, { views: [] });
     if (path === '/api/workbench') return reply(200, workbenchFixture);
     if (path === '/api/recent') return reply(200, { opened: [], modified: [], completed: [] });
@@ -209,8 +223,9 @@ async function fetchStub(url, options = {}) {
 
 // ---------------- 组装全局环境 ----------------
 const timers = [];
+let reloadCount = 0;
 const windowStub = {
-    document: documentStub, location: { protocol: 'http:', search: '', pathname: '/', hash: '', href: 'http://127.0.0.1:8765/', reload() {} },
+    document: documentStub, location: { protocol: 'http:', search: '', pathname: '/', hash: '', href: 'http://127.0.0.1:8765/', reload() { reloadCount += 1; } },
     history: { replaceState() {} },
     sessionStorage: storageStub(), localStorage: storageStub(),
     crypto: { randomUUID: () => `uuid-${++uuidCounter}` },
@@ -377,6 +392,66 @@ function step(name, fn) {
 
     // ⑦ 保存状态条：冲突时点击打开冲突面板（无冲突时应是安全的 no-op）
     step('点击保存状态条不抛异常', () => elementsById.get('saveStatus').dispatch('click'));
+
+    // ⑧ 新建项目（普通）
+    elementsById.get('newProjectInput').value = '冒烟新建项目';
+    elementsById.get('newProjectAiToggle').checked = false;
+    elementsById.get('newProjectPlanToggle').checked = false;
+    step('点「新建项目」不抛异常', () => elementsById.get('createProjectBtn').dispatch('click'));
+    await sleep(60);
+    check('新建的项目出现在列表里', textOf(elementsById.get('projectGrid')).includes('冒烟新建项目'),
+        textOf(elementsById.get('projectGrid')).slice(0, 160));
+    check('新建项目触发了落库', fetchLog.some(line => line.startsWith('POST /api/project')), JSON.stringify(fetchLog.slice(-3)));
+
+    // ⑨ AI 规划项目（走 /api/project/plan + 进入详情）
+    elementsById.get('newProjectInput').value = '冒烟 AI 项目';
+    elementsById.get('newProjectPlanToggle').checked = true;
+    step('勾选 AI 规划后新建不抛异常', () => elementsById.get('createProjectBtn').dispatch('click'));
+    await sleep(100);
+    check('AI 规划调用了 /api/project/plan', fetchLog.includes('POST /api/project/plan'), JSON.stringify(fetchLog.slice(-4)));
+    check('AI 规划后进入新项目详情页', activeViews().includes('detailView'), JSON.stringify(activeViews()));
+    check('AI 生成的计划周渲染到了详情树', textOf(elementsById.get('treeRoot')).includes('第1周：AI 规划'),
+        textOf(elementsById.get('treeRoot')).slice(0, 160));
+    elementsById.get('newProjectPlanToggle').checked = false;
+
+    // ⑩ 导入 JSON（文件选择框 → 确认 → POST /api/import）
+    const importPayload = {
+        schemaVersion: 2,
+        projects: [{
+            id: 'imp-1', name: '导入的项目', description: '', createdAt: today,
+            assessmentEnabled: false, reviewEnabled: false,
+            tree: [{ id: 'imp-w', type: 'week', text: '第1周：导入', completed: false, expanded: false,
+                     createdAt: today, children: [{ id: 'imp-d', type: 'day', text: '单元1',
+                     completed: false, expanded: false, createdAt: today, children: [{ id: 'imp-i',
+                     type: 'item', text: '导入进来的任务', completed: false, completedAt: null,
+                     optional: false, assessmentRequired: false, assessmentHistory: 0, assessment: null,
+                     createdAt: today, children: [] }] }] }]
+        }]
+    };
+    elementsById.get('importInput').files = [{ name: 'backup.json', text: async () => JSON.stringify(importPayload) }];
+    step('选择要导入的 JSON 文件不抛异常', () => elementsById.get('importInput').dispatch('change'));
+    await sleep(120);
+    check('导入调用了 /api/import', fetchLog.includes('POST /api/import'), JSON.stringify(fetchLog.slice(-4)));
+    check('导入后列表显示导入的项目', textOf(elementsById.get('projectGrid')).includes('导入的项目'),
+        textOf(elementsById.get('projectGrid')).slice(0, 160));
+
+    // ⑪ 恢复备份（下拉选择 → 恢复 → 刷新页面）
+    step('打开备份下拉不抛异常', () => elementsById.get('databaseBackupPickerButton').dispatch('click'));
+    await sleep(20);
+    const backupOptions = findAll(elementsById.get('databaseBackupMenu'),
+        el => el.classList.contains('backup-picker-option'));
+    check('备份下拉里有可恢复的备份', backupOptions.length > 0,
+        textOf(elementsById.get('databaseBackupMenu')).slice(0, 120));
+    if (backupOptions[0]) {
+        step('选中备份不抛异常', () => backupOptions[0].dispatch('click'));
+        check('选中后写出了备份名', String(elementsById.get('databaseBackupSelect').value).endsWith('.zip'),
+            String(elementsById.get('databaseBackupSelect').value));
+    }
+    const beforeReload = reloadCount;
+    step('点「恢复」不抛异常', () => elementsById.get('restoreDatabaseBackupBtn').dispatch('click'));
+    await sleep(80);
+    check('恢复调用了 /api/backup', fetchLog.includes('POST /api/backup'), JSON.stringify(fetchLog.slice(-4)));
+    check('恢复成功后请求刷新页面', reloadCount > beforeReload, `reloadCount=${reloadCount}`);
 
     await sleep(80);
     check('事件处理器里没有未处理的异步异常', asyncErrors.length === 0, asyncErrors.slice(0, 3).join(' || '));

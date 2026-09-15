@@ -257,6 +257,12 @@ class ReplyScanner:
                                 self.esc_hex = ""
                                 break
                             self.value += self._simple.get(nxt, nxt)
+                        else:
+                            # 分块边界正好落在反斜杠之后：不能把这个反斜杠吃掉，
+                            # 否则下一块的 "n"/"\"" 会被当成普通字符，直播文本缺一个换行/引号。
+                            # 注意要 break（不是 continue），否则 while 会一直重读同一个字符。
+                            self.i -= 1
+                            break
                         continue
                     if ch == '"':
                         self.state = "done"
@@ -364,6 +370,9 @@ def call_deepseek_stream(payload: dict[str, Any]) -> Any:
         raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
     except urllib.error.URLError as error:
         raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    except (TimeoutError, OSError) as error:
+        # 连接建立之后的读超时/连接中断不是 URLError，原样冒出去会变成"未预期错误"。
+        raise RuntimeError("DeepSeek API 连接中断或超时: %s" % error) from None
     full_text = scanner.text
     json_part = full_text
     if "REPLY_JSON_MARKER" in full_text:
@@ -460,6 +469,9 @@ def call_deepseek(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"DeepSeek API 返回 {error.code}: {detail}") from None
     except urllib.error.URLError as error:
         raise RuntimeError(f"无法连接 DeepSeek API: {error.reason}") from None
+    except (TimeoutError, OSError) as error:
+        # 连接建立之后的读超时/连接中断不是 URLError，原样冒出去会变成"未预期错误"。
+        raise RuntimeError(f"DeepSeek API 连接中断或超时: {error}") from None
 
     try:
         content = upstream["choices"][0]["message"]["content"]
@@ -572,6 +584,9 @@ def plan_project(topic: str, model_alias: str = "flash") -> dict[str, Any]:
         raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
     except urllib.error.URLError as error:
         raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    except (TimeoutError, OSError) as error:
+        # 连接建立之后的读超时/连接中断不是 URLError，原样冒出去会变成"未预期错误"。
+        raise RuntimeError("DeepSeek API 连接中断或超时: %s" % error) from None
     try:
         content = upstream["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
@@ -630,6 +645,9 @@ def summarize_knowledge(question: str, context: dict[str, Any] | None = None,
         raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
     except urllib.error.URLError as error:
         raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    except (TimeoutError, OSError) as error:
+        # 连接建立之后的读超时/连接中断不是 URLError，原样冒出去会变成"未预期错误"。
+        raise RuntimeError("DeepSeek API 连接中断或超时: %s" % error) from None
     try:
         content = upstream["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
@@ -707,6 +725,9 @@ def call_question(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"DeepSeek API 返回 {error.code}: {detail}") from None
     except urllib.error.URLError as error:
         raise RuntimeError(f"无法连接 DeepSeek API: {error.reason}") from None
+    except (TimeoutError, OSError) as error:
+        # 连接建立之后的读超时/连接中断不是 URLError，原样冒出去会变成"未预期错误"。
+        raise RuntimeError(f"DeepSeek API 连接中断或超时: {error}") from None
     try:
         content = upstream["choices"][0]["message"]["content"]
         parsed = parse_json_object(str(content))

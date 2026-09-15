@@ -114,7 +114,6 @@ class SchemaVersionTests(unittest.TestCase):
         self.assertEqual(len(snapshots), 1, "迁移前必须留一份快照")
 
     def test_failed_migration_rolls_back_to_snapshot(self) -> None:
-        project = make_project("legacy-2", "会被回滚的项目")
         with sqlite3.connect(DB) as connection:
             connection.execute(
                 "CREATE TABLE project_state (project_id TEXT PRIMARY KEY, position INTEGER, "
@@ -127,7 +126,7 @@ class SchemaVersionTests(unittest.TestCase):
             )
             connection.execute("PRAGMA user_version=0")
 
-        with self.assertRaises(Exception):
+        with self.assertRaises((ValueError, RuntimeError, sqlite3.Error)):
             storage.ensure_schema()
 
         # 回滚后：版本没被改成 5，legacy 表和坏数据原样保留（可人工修复）

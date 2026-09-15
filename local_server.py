@@ -911,4 +911,4 @@ if __name__ == "__main__":
         main()
     except (OSError, RuntimeError) as error:
         print(f"Unable to start local server: {error}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from error

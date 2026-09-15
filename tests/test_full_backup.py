@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -57,8 +58,7 @@ class FullBackupTests(unittest.TestCase):
         self.assertNotEqual(Path(backup_service.DATABASE_FILES["todo.sqlite3"]), APP_DIR / "data" / "todo.sqlite3",
                             "测试必须使用临时数据库")
         shutil.rmtree(BACKUP_DIR, ignore_errors=True)
-        for module, filename in ((storage, "todo.sqlite3"), (memo_storage, "memo.sqlite3"),
-                                 (summary_storage, "summary.sqlite3")):
+        for filename in ("todo.sqlite3", "memo.sqlite3", "summary.sqlite3"):
             path = Path(_TEMP_DIR.name) / filename
             for suffix in ("", "-wal", "-shm"):
                 Path(f"{path}{suffix}").unlink(missing_ok=True)
@@ -133,7 +133,6 @@ class FullBackupTests(unittest.TestCase):
     def test_restore_failure_rolls_back(self) -> None:
         good = backup_service.create_full_backup("manual")
         # 改掉当前数据，随后用"校验和正确但内部损坏"的备份来恢复
-        revision = storage.read_project_summaries()[0]["_revision"]
         storage.replace_projects([make_project("p1", "改过的项目"), make_project("p2", "第二个")])
         good_bytes = {}
         with zipfile.ZipFile(BACKUP_DIR / good) as archive:
@@ -150,7 +149,7 @@ class FullBackupTests(unittest.TestCase):
             for file_name, data in good_bytes.items():
                 archive.writestr(file_name, data)
 
-        with self.assertRaises(Exception):
+        with self.assertRaises((RuntimeError, ValueError, OSError, sqlite3.DatabaseError)):
             backup_service.restore_full_backup(broken_path.name)
 
         # 回滚后：恢复前的数据必须还在（两个项目，不是备份里的一个）

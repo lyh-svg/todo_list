@@ -64,15 +64,46 @@ def make_project(project_id: str, name: str, *, completed_item: bool = False) ->
                                 "completed": completed_item,
                                 "completedAt": "2026-09-15T10:00:00" if completed_item else None,
                                 "optional": False,
-                                "assessmentRequired": False,
-                                "assessmentHistory": 0,
-                                "assessment": None,
+                                "assessmentRequired": True,
+                                "assessmentHistory": 2,
+                                "assessment": {
+                                    "passed": True,
+                                    "score": 91,
+                                    "summary": "讲清了机制",
+                                    "stage": "implementation",
+                                    "questionIndex": 2,
+                                    "questionPassed": True,
+                                    "questionSet": ["闭包捕获什么？", "什么时候会泄漏？", "如何验证？"],
+                                    "questionAnswers": ["变量引用", "循环引用", "打个日志"],
+                                    "questionConversations": [
+                                        [{"role": "user", "content": "变量引用"},
+                                         {"role": "assistant", "content": "对，是变量本身"}],
+                                        [{"role": "user", "content": "循环引用"}],
+                                    ],
+                                    "questionResults": [
+                                        {"passed": True, "score": 90, "summary": "第一题通过"},
+                                        {"passed": True, "score": 88, "summary": "第二题通过"},
+                                    ],
+                                    "uploadedFiles": [{"name": "demo.py", "content": "x = 1\n"}],
+                                    "model": "flash",
+                                    "implementationDraft": "实现草稿",
+                                    "answer": "最终回答",
+                                },
                                 "createdAt": "2026-09-15",
                                 "review": {
                                     "due": "2026-09-16",
                                     "learning": False,
-                                    "log": [{"at": "2026-09-15", "result": "good"}],
+                                    "log": [{"at": "2026-09-15", "result": "good"},
+                                            {"at": "2026-09-17", "result": "hard"}],
                                 },
+                                # 元数据（第六列）也必须在往返里保住
+                                "priority": "high",
+                                "dueDate": "2026-09-16",
+                                "estimateMinutes": 45,
+                                "tags": ["Python", "复习"],
+                                "note": "先讲结论再讲原因",
+                                "links": [{"label": "文档", "url": "https://example.com/doc"}],
+                                "repeat": {"freq": "weekly", "weekday": 3, "until": "2026-12-31"},
                                 "children": [],
                             }
                         ],
@@ -161,6 +192,39 @@ class ExportSnapshotTests(unittest.TestCase):
         names = [summary["name"] for summary in storage.read_project_summaries()]
         self.assertEqual(sorted(names), ["项目一", "项目二"])
         self.assertIsNone(storage.read_project("p3"))
+
+    def test_roundtrip_keeps_review_assessment_history_and_metadata(self) -> None:
+        """逐字段钉住：复习、验收（含逐题对话/结果/附件）、历史次数与六类元数据都不能丢。"""
+        storage.write_project(make_project("p1", "项目一", completed_item=True), None)
+        before = storage.read_project("p1")[0]
+
+        snapshot = storage.export_projects_snapshot()
+        text = json.dumps(snapshot, ensure_ascii=False)
+        for needle in ('"review"', '"assessment"', '"questionConversations"', '"questionResults"',
+                       '"uploadedFiles"', '"assessmentHistory"', '"repeat"', '"priority"',
+                       '"dueDate"', '"estimateMinutes"', '"tags"', '"note"', '"links"'):
+            self.assertIn(needle, text, f"导出内容里缺少 {needle}（字段被摘要化丢掉了）")
+
+        storage.replace_projects(snapshot["projects"])
+        after = storage.read_project("p1")[0]
+        self.assertEqual(after, before, "导出 → 导入必须逐字节一致")
+
+        node = after["tree"][0]["children"][0]["children"][0]
+        self.assertEqual(node["assessment"]["questionConversations"][1][0]["content"], "循环引用")
+        self.assertEqual(node["assessment"]["questionResults"][1]["score"], 88)
+        self.assertEqual(node["assessment"]["uploadedFiles"][0]["name"], "demo.py")
+        self.assertEqual(node["assessment"]["implementationDraft"], "实现草稿")
+        self.assertTrue(node["assessment"]["passed"])
+        self.assertEqual(node["assessmentHistory"], 2)
+        self.assertEqual(node["assessmentRequired"], True)
+        self.assertEqual(node["review"]["log"][1], {"at": "2026-09-17", "result": "hard"})
+        self.assertEqual(node["repeat"], {"freq": "weekly", "weekday": 3, "until": "2026-12-31"})
+        self.assertEqual(node["priority"], "high")
+        self.assertEqual(node["dueDate"], "2026-09-16")
+        self.assertEqual(node["estimateMinutes"], 45)
+        self.assertEqual(node["tags"], ["Python", "复习"])
+        self.assertEqual(node["note"], "先讲结论再讲原因")
+        self.assertEqual(node["links"], [{"label": "文档", "url": "https://example.com/doc"}])
 
 
 if __name__ == "__main__":
