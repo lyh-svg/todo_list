@@ -30,7 +30,7 @@ check('R5 ⑩ 有全选/批量恢复/批量删除/立即清空',
     && src.includes("deleteMany.textContent = '批量删除'") && src.includes("purgeAll.textContent = '立即清空回收站'"));
 check('R5 ⑩ 每条带勾选框', src.includes("box.type = 'checkbox'") && src.includes('trash-head'));
 check('R5 ⑩ 显示自动清理日期与保留说明',
-    src.includes('自动清理') && src.includes('保留 7 天'));
+    src.includes('自动清理') && src.includes('按设置里的保留天数自动清理'));
 check('R5 ⑩ 批量删除/清空先确认并快照',
     src.includes('此操作不可撤销') && src.includes('确认立即清空回收站？') && src.includes("await createSnapshot('before-trash-purge');"));
 check('R5 ⑩ 单条恢复也确认', src.includes('确认恢复“'));

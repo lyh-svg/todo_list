@@ -32,7 +32,12 @@ check('R2 ④ 跨项目的同名节点 ID 不算重复（与服务端一致）',
     findImportDuplicateIds([project('p1', '项目一', [item('same', '任务1')]), project('p2', '项目二', [item('same', '任务2')])]).length === 0);
 check('R2 ④ 缺失 ID 不报问题（交给自动生成）', findImportDuplicateIds([{ id: null, name: '无 ID', tree: [{ type: 'week', text: '第1周', children: [item(undefined, 'x')] }] }]).length === 0);
 check('R2 ④ 空/异常输入不抛异常', findImportDuplicateIds([]).length === 0 && findImportDuplicateIds(null).length === 0);
-check('R2 ④ 导入流程会先校验再规范化', src.indexOf('findImportDuplicateIds(imported)') > 0 && src.indexOf('导入被拒绝') > 0);
+// 第五批之后：导入改成"先预览再确认"，重复 ID 由后端 /api/import/preview 报告并在界面上禁用确认
+check('R2 ④ 导入流程会先预览（含重复 ID 检查）再让用户确认',
+    src.indexOf('openImportPreview(imported)') > 0
+    && src.indexOf('/api/import/preview') > 0
+    && src.indexOf('导入会被拒绝') > 0
+    && src.indexOf('confirm.disabled = true;') > 0);
 const failed = results.filter(r => !r).length;
 console.log(`\n   通过 ${results.length - failed} 项，失败 ${failed} 项`);
 process.exit(failed ? 1 : 0);

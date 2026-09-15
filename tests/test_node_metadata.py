@@ -55,7 +55,7 @@ def read_item(project_id: str = "p1") -> dict:
 
 class SchemaMigrationTests(unittest.TestCase):
     def test_schema_version_is_six(self) -> None:
-        self.assertEqual(storage.SCHEMA_VERSION, 6)
+        self.assertGreaterEqual(storage.SCHEMA_VERSION, 6, "元数据列是在 v6 引入的")
 
     def test_v5_database_gains_metadata_columns_without_losing_data(self) -> None:
         for suffix in ("", "-wal", "-shm"):
@@ -71,7 +71,7 @@ class SchemaMigrationTests(unittest.TestCase):
 
         storage.ensure_schema()
 
-        self.assertEqual(storage.database_user_version(), 6)
+        self.assertEqual(storage.database_user_version(), storage.SCHEMA_VERSION)
         with sqlite3.connect(DB) as connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
         for column in ("priority", "due_date", "estimate_minutes", "tags", "note", "links"):

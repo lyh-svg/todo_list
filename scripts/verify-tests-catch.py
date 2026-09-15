@@ -67,7 +67,9 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "周期任务的克隆不能带上 children（否则节点 ID 重复）",
         "storage.py",
-        crlf('        clone["children"] = []\n'),
+        crlf('        # 不能连 children 一起深拷贝：子节点 id 会重复，_flatten_nodes 会抛\n'
+             '        # "节点 ID 重复" 让整批事务回滚。周期任务的下一次只复制任务本身。\n'
+             '        clone["children"] = []\n'),
         "",
         [sys.executable, "-m", "unittest",
          "tests.test_repeat_tasks.RepeatStorageTests.test_spawn_drops_children_to_avoid_duplicate_ids"],

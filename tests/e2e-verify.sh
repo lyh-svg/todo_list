@@ -470,7 +470,8 @@ check("R5 ⑩ 立即清空回收站", status == 200 and payload["purged"] >= 1 a
 
 # --- 批次 1：任务元数据（优先级/截止/标签/耗时/备注/链接）---
 _, _, body = call("/api/storage")
-check("批次1 schema 版本升到 6", json.loads(body)["schemaVersion"] == 6, body[:120])
+check("批次1 schema 版本已 >= 6（元数据列）",
+      isinstance(json.loads(body)["schemaVersion"], int) and json.loads(body)["schemaVersion"] >= 6, body[:120])
 
 meta_project = {
     "id": "meta-e2e", "name": "元数据项目", "description": "", "createdAt": "2026-09-15",
@@ -726,6 +727,206 @@ check("批次4 下一次的日期正确且保留周期与标签",
 _, _, body = call("/api/workbench?today=" + TODAY_STR)
 next7 = json.loads(body)["groups"]["next7"]
 check("批次4 下一次出现在工作台的未来 7 天分组", any(entry["nodeId"] == spawned["id"] for entry in next7), str(next7)[:200])
+
+# --- 第五批：中等难度任务管理（拖拽排序 / 复制 / 删除影响面 / 回收站 / 模板 / 导入 / 导出 / 活动 / 设置）---
+_, _, body = call("/api/project", method="POST", body={
+    "project": {
+        "id": "b5", "name": "批次5项目", "description": "", "createdAt": TODAY_STR,
+        "assessmentEnabled": False, "reviewEnabled": False, "archived": False,
+        "tree": [{"id": "b5-w1", "type": "week", "text": "第1周", "completed": False, "expanded": False,
+                  "createdAt": TODAY_STR, "children": [
+                      {"id": "b5-d1", "type": "day", "text": "单元1", "completed": False, "expanded": False,
+                       "createdAt": TODAY_STR, "children": [
+                           {"id": "b5-i1", "type": "item", "text": "任务1", "completed": False,
+                            "completedAt": None, "optional": False, "assessmentRequired": False,
+                            "assessmentHistory": 0, "assessment": None, "createdAt": TODAY_STR,
+                            "children": [], "priority": "high", "tags": ["批次5"],
+                            "note": "备注", "links": [{"label": "文档", "url": "https://example.com"}],
+                            "estimateMinutes": 20},
+                           {"id": "b5-i2", "type": "item", "text": "任务2", "completed": True,
+                            "completedAt": TODAY_STR + "T08:00:00", "optional": False,
+                            "assessmentRequired": False, "assessmentHistory": 1,
+                            "assessment": {"passed": True, "score": 90}, "createdAt": TODAY_STR,
+                            "children": [], "review": {"due": TODAY_STR, "learning": False,
+                                                        "log": [{"at": TODAY_STR, "result": "good"}]}},
+                       ]},
+                      {"id": "b5-d2", "type": "day", "text": "单元2", "completed": False, "expanded": False,
+                       "createdAt": TODAY_STR, "children": []}]}],
+    }})
+check("批次5 建好管理目标项目", status == 200, body[:160])
+
+status, headers, data = call("/api/node/delete-impact?projectId=b5&nodeId=b5-d1")
+impact = json.loads(data).get("impact") if status == 200 else {}
+check("批次5 删除前能看到受影响的任务数",
+      status == 200 and impact.get("itemCount") == 2 and impact.get("completedCount") == 1, data[:200])
+
+status, headers, data = call("/api/node/reorder", method="POST",
+                             body={"projectId": "b5", "nodeId": "b5-i1", "parentId": "b5-d2", "position": 0})
+moved = json.loads(data).get("move") if status == 200 else {}
+check("批次5 拖拽排序：跨单元移动任务",
+      status == 200 and moved.get("parentId") == "b5-d2"
+      and moved.get("previous") == {"parentId": "b5-d1", "position": 0}, data[:220])
+_, _, body = call("/api/project?id=b5")
+tree = json.loads(body)["project"]["tree"]
+check("批次5 移动后两边的任务列表都对",
+      [node["text"] for node in tree[0]["children"][0]["children"]] == ["任务2"]
+      and [node["text"] for node in tree[0]["children"][1]["children"]] == ["任务1"], body[:200])
+
+status, headers, data = call("/api/node/reorder", method="POST",
+                             body={"projectId": "b5", "nodeId": "b5-w1", "parentId": "b5-d1", "position": 0})
+check_json_error("批次5 不允许把父节点拖进自己的子节点 → 400 JSON",
+                 status, headers.get("Content-Type", ""), data, 400)
+
+status, headers, data = call("/api/node/duplicate", method="POST",
+                             body={"projectId": "b5", "nodeId": "b5-d1", "includeChildren": True,
+                                   "keepCompletion": True, "keepAssessment": True, "keepReview": True})
+dup = json.loads(data) if status == 200 else {}
+check("批次5 复制任务分支（新 ID + 保留状态可选）",
+      status == 200 and dup.get("node", {}).get("text") == "单元1（副本）"
+      and dup["node"]["id"] != "b5-d1", data[:200])
+
+status, headers, data = call("/api/project/duplicate", method="POST",
+                             body={"projectId": "b5", "name": "批次5项目（副本）",
+                                   "keepCompletion": False, "keepAssessment": False, "keepReview": False})
+clone = json.loads(data).get("project") if status == 200 else {}
+check("批次5 复制项目（可清空完成/AI 历史/复习）", status == 200 and clone.get("id") != "b5", data[:200])
+_, _, body = call("/api/project?id=" + clone["id"])
+clone_item = json.loads(body)["project"]["tree"][0]["children"][0]["children"][0]
+check("批次5 副本按要求清空了进度", clone_item["completed"] is False and clone_item.get("assessment") is None
+      and "review" not in clone_item, json.dumps(clone_item, ensure_ascii=False)[:200])
+
+status, headers, data = call("/api/templates")
+templates = json.loads(data).get("templates") if status == 200 else []
+check("批次5 内置项目模板可用", status == 200 and len(templates) >= 2, data[:160])
+status, headers, data = call("/api/project/from-template", method="POST",
+                             body={"templateId": "builtin-debug-drill", "name": "排错训练"})
+check("批次5 用模板创建项目", status == 200 and json.loads(data)["project"]["name"] == "排错训练", data[:160])
+status, headers, data = call("/api/templates", method="POST",
+                             body={"projectId": "b5", "name": "批次5模板", "description": "说明"})
+check("批次5 把项目存成模板", status == 200 and json.loads(data)["template"]["name"] == "批次5模板", data[:160])
+
+# 导出三种格式
+status, headers, data = call("/api/export?token=" + TOKEN + "&format=md")
+text = data.decode("utf-8") if status == 200 else ""
+check("批次5 导出 Markdown", status == 200 and "# 学习计划导出" in text and "- [x]" in text, text[:120])
+status, headers, data = call("/api/export?token=" + TOKEN + "&format=csv")
+csv_text = data.decode("utf-8") if status == 200 else ""
+check("批次5 导出 CSV（带 BOM 与表头）",
+      status == 200 and csv_text.startswith("\ufeff") and "项目,周,单元,任务" in csv_text, csv_text[:120])
+status, headers, data = call("/api/export?token=" + TOKEN + "&format=json")
+check("批次5 JSON 导出仍可用", status == 200 and json.loads(data)["schemaVersion"] == 2, data[:120])
+status, headers, data = call("/api/export?token=" + TOKEN + "&format=docx")
+check_json_error("批次5 不支持的导出格式 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
+
+# 导入预览与三种模式
+INCOMING = [{
+    "id": "b5", "name": "批次5项目（改）", "description": "改过", "createdAt": TODAY_STR,
+    "assessmentEnabled": False, "reviewEnabled": False,
+    "tree": [{"id": "b5-w1", "type": "week", "text": "第1周（改）", "completed": False, "expanded": False,
+              "createdAt": TODAY_STR, "children": [
+                  {"id": "b5-d1", "type": "day", "text": "单元1", "completed": False, "expanded": False,
+                   "createdAt": TODAY_STR, "children": [
+                       {"id": "b5-i1", "type": "item", "text": "任务1（改）", "completed": False,
+                        "completedAt": None, "optional": False, "assessmentRequired": False,
+                        "assessmentHistory": 0, "assessment": None, "createdAt": TODAY_STR, "children": []},
+                       {"id": "b5-i9", "type": "item", "text": "新增任务", "completed": False,
+                        "completedAt": None, "optional": False, "assessmentRequired": False,
+                        "assessmentHistory": 0, "assessment": None, "createdAt": TODAY_STR, "children": []}]}]}],
+}]
+status, headers, data = call("/api/import/preview", method="POST",
+                             body={"projects": INCOMING, "mode": "merge", "keepAiHistory": False})
+preview = json.loads(data).get("preview") if status == 200 else {}
+check("批次5 导入预览：新增/更新/重复/AI 历史处理方式",
+      status == 200 and preview["totals"]["addedNodes"] == 1 and preview["totals"]["updatedNodes"] >= 3
+      and "清空" in preview["aiHistory"]["policy"] and preview["removedProjects"] == []
+      and preview["duplicates"] == [],
+      json.dumps(preview, ensure_ascii=False)[:260])
+status, headers, data = call("/api/import/preview", method="POST",
+                             body={"projects": INCOMING + INCOMING, "mode": "merge"})
+check("批次5 导入预览报出重复 ID", status == 200 and json.loads(data)["preview"]["duplicates"], data[:200])
+status, headers, data = call("/api/import", method="POST",
+                             body={"projects": INCOMING + INCOMING, "mode": "merge"})
+check_json_error("批次5 有重复 ID 时拒绝导入 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
+status, headers, data = call("/api/import", method="POST",
+                             body={"projects": INCOMING, "mode": "merge", "keepAiHistory": False})
+check("批次5 合并导入成功", status == 200 and json.loads(data)["mode"] == "merge", data[:160])
+_, _, body = call("/api/project?id=b5")
+merged_project = json.loads(body)["project"]
+merged_texts = set()
+def _collect(nodes):
+    for node in nodes or []:
+        if node["type"] == "item":
+            merged_texts.add(node["text"])
+        _collect(node.get("children"))
+_collect(merged_project["tree"])
+check("批次5 合并结果：同 ID 覆盖 + 新任务追加 + 本地独有的保留",
+      {"任务1（改）", "新增任务", "任务2"} <= merged_texts,
+      json.dumps(sorted(merged_texts), ensure_ascii=False)[:220])
+status, headers, data = call("/api/import", method="POST",
+                             body={"projects": [INCOMING[0] | {"id": "b5-new"}], "mode": "new"})
+check("批次5 导入为新项目（新项目 ID）", status == 200 and json.loads(data)["mode"] == "new", data[:160])
+
+# 回收站：恢复到原位置 / 孤立任务箱
+TRASH_NODE = {"id": "b5-i2", "type": "item", "text": "任务2", "completed": True,
+              "completedAt": TODAY_STR + "T08:00:00", "optional": False, "assessmentRequired": False,
+              "assessmentHistory": 0, "assessment": None, "createdAt": TODAY_STR, "children": []}
+# 真实流程：先从项目里删掉这个节点，再把它放进回收站，然后恢复回原位
+_, _, body = call("/api/project?id=b5")
+project_now = json.loads(body)["project"]
+project_now["tree"][0]["children"][0]["children"] = [
+    node for node in project_now["tree"][0]["children"][0]["children"] if node["id"] != "b5-i2"]
+_, _, body = call("/api/project?id=b5")
+call("/api/project", method="POST", body={"project": project_now,
+                                          "expectedRevision": json.loads(body)["revision"]})
+status, headers, data = call("/api/trash", method="POST", body={
+    "action": "store", "item": {"kind": "node", "projectId": "b5", "title": "任务2",
+                                "payload": TRASH_NODE, "parentId": "b5-d2", "position": 0}})
+trash_id = json.loads(data)["item"]["id"] if status == 200 else ""
+check("批次5 删到回收站", status == 200 and trash_id, data[:160])
+status, headers, data = call("/api/trash")
+items = json.loads(data)["items"] if status == 200 else []
+entry = next((item for item in items if item["id"] == trash_id), {})
+check("批次5 回收站标记恢复目标（原位置/孤立箱）", entry.get("restoreTarget") == "original", str(entry)[:200])
+status, headers, data = call("/api/trash", method="POST", body={"action": "restore", "id": trash_id})
+restored = json.loads(data) if status == 200 else {}
+_, _, body = call("/api/project?id=b5")
+restored_texts = [node["text"] for node in json.loads(body)["project"]["tree"][0]["children"][1]["children"]]
+check("批次5 恢复到原位置（回到原来的单元）",
+      status == 200 and restored.get("item", {}).get("restoredTo") == "original"
+      and "任务2" in restored_texts, data[:200].decode("utf-8", "replace") + str(restored_texts)[:120])
+
+status, headers, data = call("/api/trash", method="POST", body={
+    "action": "store", "item": {"kind": "node", "projectId": "b5", "title": "孤儿任务",
+                                "payload": TRASH_NODE | {"id": "b5-orphan", "text": "孤儿任务"},
+                                "parentId": "不存在的父节点", "position": 0}})
+orphan_id = json.loads(data)["item"]["id"] if status == 200 else ""
+status, headers, data = call("/api/trash")
+entry = next((item for item in json.loads(data)["items"] if item["id"] == orphan_id), {})
+check("批次5 父节点不存在时标记为孤立箱恢复", entry.get("restoreTarget") == "orphan", str(entry)[:200])
+status, headers, data = call("/api/trash", method="POST", body={"action": "restore", "id": orphan_id})
+check("批次5 恢复到孤立任务箱",
+      status == 200 and json.loads(data)["item"]["restoredTo"] == "orphan", data[:200])
+_, _, body = call("/api/project?id=b5")
+box = next((node for node in json.loads(body)["project"]["tree"] if node["text"] == "孤立任务箱"), None)
+check("批次5 项目里出现孤立任务箱并放进了任务",
+      box is not None and [node["text"] for node in box["children"]] == ["孤儿任务"], str(box)[:200])
+
+# 活动历史与设置
+status, headers, data = call("/api/activity?limit=50")
+entries = json.loads(data)["entries"] if status == 200 else []
+kinds = {entry["kind"] for entry in entries}
+check("批次5 活动历史覆盖排序/复制/删除/导入",
+      status == 200 and {"reorder", "duplicate", "import", "delete-project", "restore"} <= kinds,
+      str(sorted(kinds))[:200])
+status, headers, data = call("/api/settings")
+check("批次5 读取设置（回收站保留天数/自动归档）",
+      status == 200 and json.loads(data)["settings"]["trashRetentionDays"] == 7, data[:160])
+status, headers, data = call("/api/settings", method="POST", body={"settings": {"trashRetentionDays": 30}})
+check("批次5 修改设置", status == 200 and json.loads(data)["settings"]["trashRetentionDays"] == 30, data[:160])
+status, headers, data = call("/api/settings", method="POST", body={"settings": {"trashRetentionDays": 0}})
+check_json_error("批次5 非法设置 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
+status, headers, data = call("/api/archive/auto", method="POST", body={"days": 0})
+check_json_error("批次5 自动归档天数非法 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
 
 print(f"\n   通过 {len(passed)} 项，失败 {len(failed)} 项")
 if failed:

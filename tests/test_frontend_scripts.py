@@ -31,6 +31,7 @@ SCRIPTS = [
     "verify-r7.js",
     "verify-r8.js",
     "verify-r9.js",
+    "verify-r10.js",
     "dom-smoke.js",
 ]
 

@@ -191,7 +191,12 @@ async function fetchStub(url, options = {}) {
         json: async () => payload, text: async () => JSON.stringify(payload), blob: async () => ({}),
     });
     if (path === '/api/projects') return reply(200, { projects: [{ id: 'p1', name: '测试项目', description: '', createdAt: today, assessmentEnabled: false, archived: false, stats: { total: 1, remaining: 1, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 }], reviewTotals: { today: 0, overdue: 0 }, serverToday: today, usedToday: today });
-    if (path === '/api/project') return reply(200, { project: projectFixture, revision: 1 });
+    if (path === '/api/project') {
+        // 真实服务按请求的 id 返回对应项目；桩也要保持一致，
+        // 否则前端会发现"返回的 id 和当前项目 id 不一致"而退回列表页
+        const requested = new URLSearchParamsStub(String(url).split('?')[1] || '').get('id') || 'p1';
+        return reply(200, { project: { ...projectFixture, id: requested }, revision: 1 });
+    }
     if (path === '/api/background') return reply(404, {});
     if (path === '/api/config') return reply(200, { ready: true, models: { flash: 'f', pro: 'p' }, error: '' });
     if (path === '/api/storage') return reply(200, { projectLimitBytes: 1000, largestProjectBytes: 10, projectCount: 1 });
@@ -199,7 +204,18 @@ async function fetchStub(url, options = {}) {
         backups: [{ name: 'manual-20260915T000000000000.zip', kind: 'full', bytes: 2048,
                     modifiedAt: '2026-09-15T00:00:00', valid: true }]
     });
-    if (path === '/api/import') return reply(200, {
+    if (path === '/api/import/preview') return reply(200, {
+        ok: true,
+        preview: {
+            mode: 'replace', keepAiHistory: true, duplicates: [],
+            newProjects: [{ id: 'imp-1', name: '导入的项目', itemCount: 1, completedCount: 0 }],
+            updatedProjects: [], unchangedProjects: [],
+            removedProjects: [{ id: 'old-1', name: '会被移除的项目' }],
+            totals: { addedNodes: 1, updatedNodes: 0, keptLocalOnlyNodes: 0, deletedNodes: 2 },
+            aiHistory: { nodesWithAssessment: 0, nodesWithReview: 0, policy: '保留' }
+        }
+    });
+    if (path === '/api/import') return reply(200, { backup: 'before-import-smoke.zip',
         ok: true,
         projects: [{ id: 'imp-1', name: '导入的项目', description: '', createdAt: today,
                      assessmentEnabled: false, archived: false, reviewEnabled: false,
@@ -431,7 +447,20 @@ function step(name, fn) {
     elementsById.get('importInput').files = [{ name: 'backup.json', text: async () => JSON.stringify(importPayload) }];
     step('选择要导入的 JSON 文件不抛异常', () => elementsById.get('importInput').dispatch('change'));
     await sleep(120);
-    check('导入调用了 /api/import', fetchLog.includes('POST /api/import'), JSON.stringify(fetchLog.slice(-4)));
+    check('导入先出预览（不直接覆盖数据）',
+        elementsById.get('utilityModal').hidden === false && fetchLog.includes('POST /api/import/preview'),
+        JSON.stringify(fetchLog.slice(-4)));
+    const previewText = textOf(elementsById.get('utilityBody'));
+    check('预览里显示新增/更新/移除/AI 历史处理方式',
+        previewText.includes('新增项目') && previewText.includes('将被移除')
+        && previewText.includes('AI 历史') && previewText.includes('导入方式'),
+        previewText.slice(0, 200));
+    step('点「确认导入」不抛异常', () => {
+        const buttons = findAll(elementsById.get('utilityBody'), el => el.textContent === '确认导入');
+        if (buttons[0]) buttons[0].dispatch('click');
+    });
+    await sleep(150);
+    check('确认后才真正调用 /api/import', fetchLog.includes('POST /api/import'), JSON.stringify(fetchLog.slice(-4)));
     check('导入后列表显示导入的项目', textOf(elementsById.get('projectGrid')).includes('导入的项目'),
         textOf(elementsById.get('projectGrid')).slice(0, 160));
 
@@ -452,6 +481,58 @@ function step(name, fn) {
     await sleep(80);
     check('恢复调用了 /api/backup', fetchLog.includes('POST /api/backup'), JSON.stringify(fetchLog.slice(-4)));
     check('恢复成功后请求刷新页面', reloadCount > beforeReload, `reloadCount=${reloadCount}`);
+
+    // ⑫ 删除 → 影响面确认 → 回收站 → Ctrl+Z 撤销
+    // 注意：前面的导入/恢复把项目换掉了，这里要重新打开详情页并展开，才能拿到真实的行
+    elementsById.get('projectGrid').children[0].dispatch('click');
+    await sleep(80);
+    for (let round = 0; round < 4; round += 1) {
+        if (findAll(tree, el => el.classList.contains('delete-btn')).length > 0) break;
+        const expandable = findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes('▶'));
+        if (expandable.length === 0) break;
+        expandable.forEach(row => row.dispatch('click'));
+        await sleep(25);
+    }
+    check('重新打开详情页后有可操作的任务行',
+        findAll(tree, el => el.classList.contains('node-row')).length > 0 && activeViews().includes('detailView'),
+        JSON.stringify(activeViews()) + textOf(tree).slice(0, 120));
+    const deleteButtons = findAll(tree, el => el.classList.contains('delete-btn'));
+    check('任务行有删除按钮', deleteButtons.length > 0, textOf(tree).slice(0, 120));
+    if (deleteButtons[0]) {
+        const trashBefore = fetchLog.filter(line => line === 'POST /api/trash').length;
+        step('点删除不抛异常', () => deleteButtons[0].dispatch('click'));
+        await sleep(120);
+        check('删除前查询了影响面', fetchLog.some(line => line.startsWith('GET /api/node/delete-impact')),
+            JSON.stringify(fetchLog.slice(-4)));
+        check('删除写进了回收站', fetchLog.filter(line => line === 'POST /api/trash').length > trashBefore);
+        check('撤销按钮变为可用', elementsById.get('undoBtn').disabled === false);
+        step('Ctrl+Z 撤销不抛异常', () => documentStub.dispatch('keydown',
+            { key: 'z', ctrlKey: true, shiftKey: false, target: null, preventDefault() {} }));
+        await sleep(150);
+        const trashAfter = fetchLog.filter(line => line === 'POST /api/trash').length;
+        check('撤销真的做了恢复（又一次回收站调用）', trashAfter > trashBefore,
+            JSON.stringify(fetchLog.slice(-3)));
+    }
+
+    // ⑬ 复制对话框（选项 → 调 /api/node/duplicate）
+    const copyButtons = findAll(tree, el => el.classList.contains('copy-btn'));
+    if (copyButtons[0]) {
+        step('点复制打开选项对话框', () => copyButtons[0].dispatch('click'));
+        await sleep(40);
+        check('复制对话框说明了可选项（含子任务/完成状态/AI 历史/复习）',
+            textOf(elementsById.get('utilityBody')).includes('包含子任务')
+            && textOf(elementsById.get('utilityBody')).includes('保留 AI 验收历史'),
+            textOf(elementsById.get('utilityBody')).slice(0, 160));
+        const confirmCopy = findAll(elementsById.get('utilityBody'), el => el.textContent === '复制');
+        if (confirmCopy[0]) {
+            step('确认复制不抛异常', () => confirmCopy[0].dispatch('click'));
+            await sleep(120);
+            check('复制调用了 /api/node/duplicate', fetchLog.includes('POST /api/node/duplicate'),
+                JSON.stringify(fetchLog.slice(-4)));
+        }
+    } else {
+        check('任务行有复制按钮', false, '详情树里没找到 ⧉');
+    }
 
     await sleep(80);
     check('事件处理器里没有未处理的异步异常', asyncErrors.length === 0, asyncErrors.slice(0, 3).join(' || '));

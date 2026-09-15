@@ -41,6 +41,25 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const nodeTagFilter = document.getElementById('nodeTagFilter');
     const batchToggleBtn = document.getElementById('batchToggleBtn');
     const projectArchiveBtn = document.getElementById('projectArchiveBtn');
+    // 第五批：撤销重做 / 复制 / 模板 / 设置 / 活动历史 / 多格式导出
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
+    const duplicateProjectBtn = document.getElementById('duplicateProjectBtn');
+    const saveTemplateBtn = document.getElementById('saveTemplateBtn');
+    const templateSelect = document.getElementById('templateSelect');
+    const createFromTemplateBtn = document.getElementById('createFromTemplateBtn');
+    const exportMarkdownBtn = document.getElementById('exportMarkdownBtn');
+    const exportCsvBtn = document.getElementById('exportCsvBtn');
+    const runAutoArchiveBtn = document.getElementById('runAutoArchiveBtn');
+    const trashRetentionInput = document.getElementById('trashRetentionInput');
+    const autoArchiveDaysInput = document.getElementById('autoArchiveDaysInput');
+    const autoArchiveToggle = document.getElementById('autoArchiveToggle');
+    const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    const settingsStatus = document.getElementById('settingsStatus');
+    const templateList = document.getElementById('templateList');
+    const activityList = document.getElementById('activityList');
+    const refreshActivityBtn = document.getElementById('refreshActivityBtn');
+    const clearActivityBtn = document.getElementById('clearActivityBtn');
     const batchToolbar = document.getElementById('batchToolbar');
     const workbenchView = document.getElementById('workbenchView');
     const workbenchBody = document.getElementById('workbenchBody');
@@ -3025,7 +3044,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return projects.filter(projectMatchesFilter);
     }
 
-    async function exportBackup() {
+    async function exportBackup(format = 'json') {
         // 导出的是服务端库里的完整项目，先把手上的改动落库，避免导出旧数据。
         try {
             await settleSaves();
@@ -3033,13 +3052,19 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast('当前修改尚未保存，请先解决保存失败');
             return;
         }
+        const meta = {
+            json: { ext: 'json', label: 'JSON 备份' },
+            markdown: { ext: 'md', label: 'Markdown 文档' },
+            csv: { ext: 'csv', label: 'CSV 表格' },
+        }[format] || { ext: 'json', label: 'JSON 备份' };
         const link = document.createElement('a');
-        link.href = `${getAssessmentApiUrl('/api/export')}?token=${encodeURIComponent(sessionToken)}`;
-        link.download = `todo-projects-${todayStr()}.json`;
+        link.href = `${getAssessmentApiUrl('/api/export')}?token=${encodeURIComponent(sessionToken)}`
+            + `&format=${encodeURIComponent(format)}`;
+        link.download = `todo-projects-${todayStr()}.${meta.ext}`;
         document.body.appendChild(link);
         link.click();
         link.remove();
-        showToast('正在下载项目 JSON 备份');
+        showToast(`正在下载${meta.label}`);
     }
 
     function downloadDatabaseBackup() {
@@ -3107,40 +3132,175 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
             const imported = extractProjects(payload);
             if (!imported) throw new Error('备份文件格式不正确');
-            const duplicateProblems = findImportDuplicateIds(imported);
-            if (duplicateProblems.length > 0) {
-                const shown = duplicateProblems.slice(0, 20).join(String.fromCharCode(10));
-                const more = duplicateProblems.length > 20 ? `${String.fromCharCode(10)}…共 ${duplicateProblems.length} 处` : '';
-                window.alert(`导入被拒绝：发现重复 ID${String.fromCharCode(10, 10)}${shown}${more}`);
-                showToast(`导入被拒绝：发现 ${duplicateProblems.length} 处重复 ID`);
-                return;
-            }
-            const nextProjects = normalizeProjects(imported);
-            if (!window.confirm(`确认导入 ${nextProjects.length} 个项目？当前数据将被替换。`)) return;
-            ensureRemedialQueueAtBottom(nextProjects);
-            nextProjects.forEach(project => expandAllNodes(project.tree || [], false));
-            await settleSaves();
-            const response = await apiFetch('/api/import', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projects: nextProjects.map(serializeProject) })
-            });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok || !Array.isArray(result.projects)) {
-                throw new Error(result.error || 'SQLite 导入失败，请重试');
-            }
-            projects = result.projects.map(normalizeProjectSummary);
-            savedProjectJsonById.clear();
-            saveConflict = false;
-            currentProjectId = null;
-            renderProjects();
-            showToast(`已导入 ${projects.length} 个项目`);
+            await openImportPreview(imported);
         } catch (error) {
             console.error('导入备份失败', error);
             showToast(`导入失败：${error.message || '文件读取失败，请重试'}`);
         } finally {
             importInput.value = '';
         }
+    }
+
+    // 导入预览：先看差异（新增/修改/重复/覆盖/AI 历史），再选替换 / 合并 / 新建
+    async function openImportPreview(imported) {
+        const nextProjects = normalizeProjects(imported);
+        ensureRemedialQueueAtBottom(nextProjects);
+        nextProjects.forEach(project => expandAllNodes(project.tree || [], false));
+        const state = { mode: 'replace', keepAiHistory: true, preview: null };
+        showUtilityModal('导入预览', '替换全部 · 合并到现有项目 · 导入为新项目');
+        utilityBody.innerHTML = '';
+        const form = document.createElement('div');
+        form.className = 'meta-form';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = `文件里有 ${nextProjects.length} 个项目。三种模式都不会丢数据：执行前会自动留一份完整快照。`;
+        form.appendChild(hint);
+        const modeSelect = document.createElement('select');
+        [
+            ['replace', '替换全部（当前数据被文件覆盖）'],
+            ['merge', '合并到现有项目（同 ID 覆盖，新节点追加，本地独有的保留）'],
+            ['new', '导入为新项目（生成新项目 ID，不动现有项目）'],
+        ].forEach(([value, text]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = text;
+            modeSelect.appendChild(option);
+        });
+        modeSelect.value = state.mode;
+        addMetaField(form, '导入方式', modeSelect);
+        const keepLabel = document.createElement('label');
+        keepLabel.className = 'option-row';
+        const keepInput = document.createElement('input');
+        keepInput.type = 'checkbox';
+        keepInput.checked = true;
+        const keepText = document.createElement('span');
+        keepText.textContent = '保留文件里的 AI 验收历史与复习安排';
+        keepLabel.append(keepInput, keepText);
+        form.appendChild(keepLabel);
+        const report = document.createElement('div');
+        report.className = 'import-report';
+        form.appendChild(report);
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.className = 'utility-primary-btn';
+        confirm.textContent = '确认导入';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'utility-secondary-btn';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', closeUtilityModal);
+        actions.append(confirm, cancel);
+        form.appendChild(actions);
+        utilityBody.appendChild(form);
+
+        const renderReport = (preview) => {
+            report.replaceChildren();
+            const lines = [];
+            if (preview.duplicates && preview.duplicates.length > 0) {
+                lines.push(`✘ 发现 ${preview.duplicates.length} 处重复 ID，导入会被拒绝：`);
+                preview.duplicates.slice(0, 5).forEach(problem => lines.push('　· ' + problem));
+                if (preview.duplicates.length > 5) lines.push(`　· ……共 ${preview.duplicates.length} 处`);
+                confirm.disabled = true;
+            } else {
+                confirm.disabled = false;
+            }
+            const totals = preview.totals || {};
+            lines.push(`新增项目：${preview.newProjects.length} 个`
+                + (preview.newProjects.length ? '（' + preview.newProjects.slice(0, 3).map(entry => entry.name).join('、')
+                    + (preview.newProjects.length > 3 ? '…' : '') + '）' : ''));
+            lines.push(`更新项目：${preview.updatedProjects.length} 个`
+                + (preview.updatedProjects.length
+                    ? `（新增 ${totals.addedNodes || 0} 个任务、修改 ${totals.updatedNodes || 0} 个）` : ''));
+            if (preview.removedProjects.length > 0) {
+                lines.push(`将被移除：${preview.removedProjects.length} 个项目`
+                    + `（${preview.removedProjects.slice(0, 3).map(entry => entry.name).join('、')}`
+                    + `${preview.removedProjects.length > 3 ? '…' : ''}，删除 ${totals.deletedNodes || 0} 个节点）`);
+            }
+            if (totals.keptLocalOnlyNodes) {
+                lines.push(`本地独有、不会被删除的节点：${totals.keptLocalOnlyNodes} 个`);
+            }
+            const ai = preview.aiHistory || {};
+            lines.push(`AI 历史：文件里有 ${ai.nodesWithAssessment || 0} 个验收记录、`
+                + `${ai.nodesWithReview || 0} 个复习安排 —— ${ai.policy || ''}`);
+            lines.forEach(text => {
+                const line = document.createElement('p');
+                line.className = 'import-report-line';
+                line.textContent = text;
+                report.appendChild(line);
+            });
+        };
+
+        const refresh = async () => {
+            report.replaceChildren();
+            const loading = document.createElement('p');
+            loading.className = 'utility-empty';
+            loading.textContent = '正在对比…';
+            report.appendChild(loading);
+            try {
+                const response = await apiFetch('/api/import/preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        projects: nextProjects.map(serializeProject),
+                        mode: state.mode,
+                        keepAiHistory: state.keepAiHistory,
+                    }),
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(payload.error || '预览失败');
+                state.preview = payload.preview;
+                renderReport(payload.preview);
+            } catch (error) {
+                report.replaceChildren();
+                const failed = document.createElement('p');
+                failed.className = 'utility-empty';
+                failed.textContent = `预览失败：${error.message || ''}`;
+                report.appendChild(failed);
+                confirm.disabled = true;
+            }
+        };
+        modeSelect.addEventListener('change', () => { state.mode = modeSelect.value; refresh(); });
+        keepInput.addEventListener('change', () => { state.keepAiHistory = keepInput.checked; refresh(); });
+        confirm.addEventListener('click', async () => {
+            if (confirm.disabled) return;
+            confirm.disabled = true;
+            try {
+                await settleSaves();
+                const response = await apiFetch('/api/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        projects: nextProjects.map(serializeProject),
+                        mode: state.mode,
+                        keepAiHistory: state.keepAiHistory,
+                    }),
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || !Array.isArray(result.projects)) {
+                    throw new Error(result.error || '导入失败，请重试');
+                }
+                projects = result.projects.map(normalizeProjectSummary);
+                savedProjectJsonById.clear();
+                saveConflict = false;
+                currentProjectId = null;
+                renderProjects();
+                closeUtilityModal();
+                if (result.backup) {
+                    pushUndoStep({
+                        label: '导入项目',
+                        ops: [{ kind: 'restore-backup', name: result.backup }],
+                    });
+                }
+                showToast(`已导入（${state.mode === 'replace' ? '替换全部' : state.mode === 'merge' ? '合并' : '新项目'}）`,
+                    undoAction());
+            } catch (error) {
+                confirm.disabled = false;
+                showToast(`导入失败：${error.message || ''}`);
+            }
+        });
+        await refresh();
     }
 
     const studyActionNames = {
@@ -4136,6 +4296,807 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }, 400);
     }
 
+    // ===================== 第五批：历史（撤销/重做）与结构操作 =====================
+
+    const UNDO_STORAGE_KEY = 'todo_list_undo_v1';
+    const MAX_UNDO_STEPS = 20;
+    const MAX_UNDO_BYTES = 200 * 1024;   // localStorage 单步太大就不持久化，避免写爆
+    let undoStack = [];
+    let redoStack = [];
+    let historyBusy = false;
+    let dragState = null;
+
+    // 通用"勾选项"对话框：返回 {key: bool} 或 null（取消）
+    function openOptionDialog(title, hint, options, confirmLabel) {
+        return new Promise(resolve => {
+            showUtilityModal(title, '可逆操作，之后还能撤销');
+            utilityBody.innerHTML = '';
+            const form = document.createElement('div');
+            form.className = 'meta-form';
+            const description = document.createElement('p');
+            description.className = 'utility-hint';
+            description.textContent = hint;
+            form.appendChild(description);
+            const boxes = {};
+            options.forEach(entry => {
+                const label = document.createElement('label');
+                label.className = 'option-row';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.checked = Boolean(entry.checked);
+                const span = document.createElement('span');
+                span.textContent = entry.label;
+                label.append(input, span);
+                form.appendChild(label);
+                boxes[entry.key] = input;
+            });
+            const actions = document.createElement('div');
+            actions.className = 'utility-actions';
+            const confirm = document.createElement('button');
+            confirm.type = 'button';
+            confirm.className = 'utility-primary-btn';
+            confirm.textContent = confirmLabel || '确定';
+            confirm.addEventListener('click', () => {
+                const result = {};
+                Object.entries(boxes).forEach(([key, input]) => { result[key] = input.checked; });
+                closeUtilityModal();
+                resolve(result);
+            });
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.className = 'utility-secondary-btn';
+            cancel.textContent = '取消';
+            cancel.addEventListener('click', () => { closeUtilityModal(); resolve(null); });
+            actions.append(confirm, cancel);
+            form.appendChild(actions);
+            utilityBody.appendChild(form);
+        });
+    }
+
+    function addMetaField(form, labelText, control) {
+        const label = document.createElement('label');
+        label.className = 'meta-field';
+        const caption = document.createElement('span');
+        caption.textContent = labelText;
+        label.append(caption, control);
+        form.appendChild(label);
+        return label;
+    }
+
+    function loadUndoStack() {
+        try {
+            const raw = JSON.parse(localStorage.getItem(UNDO_STORAGE_KEY) || 'null');
+            if (raw && Array.isArray(raw.undo) && Array.isArray(raw.redo)) {
+                undoStack = raw.undo.slice(-MAX_UNDO_STEPS);
+                redoStack = raw.redo.slice(-MAX_UNDO_STEPS);
+            }
+        } catch (error) {
+            undoStack = [];
+            redoStack = [];
+        }
+        renderUndoButtons();
+    }
+
+    function persistUndoStack() {
+        try {
+            const payload = JSON.stringify({ undo: undoStack, redo: redoStack });
+            if (payload.length > MAX_UNDO_BYTES) {
+                // 太大（例如整棵子树的克隆）就只保留最近几步
+                localStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify({
+                    undo: undoStack.slice(-3), redo: redoStack.slice(-3)
+                }));
+            } else {
+                localStorage.setItem(UNDO_STORAGE_KEY, payload);
+            }
+        } catch (error) {
+            console.warn('撤销记录无法持久化', error);
+        }
+    }
+
+    function renderUndoButtons() {
+        if (undoBtn) {
+            undoBtn.disabled = undoStack.length === 0;
+            undoBtn.title = undoStack.length
+                ? `撤销：${undoStack[undoStack.length - 1].label}（Ctrl+Z）` : '没有可撤销的操作';
+        }
+        if (redoBtn) {
+            redoBtn.disabled = redoStack.length === 0;
+            redoBtn.title = redoStack.length
+                ? `重做：${redoStack[redoStack.length - 1].label}（Ctrl+Shift+Z）` : '没有可重做的操作';
+        }
+    }
+
+    function undoAction() {
+        return undoStack.length ? { label: '撤销', onClick: () => performUndo() } : null;
+    }
+
+    function pushUndoStep(step) {
+        if (!step || !Array.isArray(step.ops) || step.ops.length === 0) return;
+        undoStack.push(step);
+        while (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
+        redoStack = [];
+        persistUndoStack();
+        renderUndoButtons();
+    }
+
+    async function callApi(path, method, body) {
+        const options = { method: method || 'POST' };
+        if (body !== undefined && body !== null) {
+            options.headers = { 'Content-Type': 'application/json' };
+            options.body = JSON.stringify(body);
+        }
+        const response = await apiFetch(path, options);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '操作失败');
+        return payload;
+    }
+
+    async function restoreTrashItemById(trashId) {
+        if (!trashId) throw new Error('这条记录没有可恢复的回收站条目');
+        await callApi('/api/trash', 'POST', { action: 'restore', id: trashId });
+    }
+
+    async function duplicateNodeRemote(projectId, nodeId, options = {}) {
+        const payload = await callApi('/api/node/duplicate', 'POST', {
+            projectId, nodeId,
+            includeChildren: options.includeChildren !== false,
+            keepCompletion: Boolean(options.keepCompletion),
+            keepAssessment: Boolean(options.keepAssessment),
+            keepReview: Boolean(options.keepReview),
+        });
+        return payload.node;
+    }
+
+    async function runStepOps(step, direction) {
+        for (const op of step.ops) {
+            if (op.kind === 'http') {
+                if (direction === 'undo' && op.undoBody) {
+                    await callApi(op.path, op.method || 'POST', op.undoBody);
+                } else if (direction === 'redo' && op.redoBody) {
+                    await callApi(op.path, op.method || 'POST', op.redoBody);
+                } else if (direction === 'undo' && op.undoOnly) {
+                    await callApi(op.undoOnly.path, op.undoOnly.method || 'POST', op.undoOnly.body);
+                } else {
+                    await callApi(op.path, op.method || 'POST', op.body);
+                }
+            } else if (op.kind === 'node-delete') {
+                if (direction === 'undo') {
+                    await restoreTrashItemById(step.trashId);
+                } else {
+                    const saved = await deleteNodeToTrash(op.projectId, op.nodeId);
+                    step.trashId = saved && saved.id;
+                }
+            } else if (op.kind === 'node-duplicate') {
+                if (direction === 'undo') {
+                    if (step.createdNodeId) await deleteNodeToTrash(op.projectId, step.createdNodeId);
+                } else {
+                    const created = await duplicateNodeRemote(op.projectId, op.nodeId, op.options || {});
+                    step.createdNodeId = created && created.id;
+                }
+            } else if (op.kind === 'restore-backup') {
+                if (direction === 'undo') {
+                    await callApi('/api/backup', 'POST', { action: 'restore', name: op.name });
+                }
+            } else if (op.kind === 'node-fields') {
+                // 批量修改的逆操作：把记录下来的节点内容写回去（纯前端内存 + 保存）
+                await restoreNodeFields(op.projectId, direction === 'undo' ? op.before : op.after);
+            }
+        }
+    }
+
+    async function restoreNodeFields(projectId, entries) {
+        const project = await ensureProjectLoaded(projectId);
+        for (const entry of entries || []) {
+            const node = findNodeById(project.tree || [], entry.id);
+            if (!node) continue;
+            for (const [key, value] of Object.entries(entry.fields)) {
+                if (value === null) delete node[key];
+                else node[key] = cloneData(value);
+            }
+        }
+        markProjectDirty(project);
+        await saveProjects();
+    }
+
+    async function refreshAfterHistoryChange(step) {
+        try {
+            await saveProjects();
+        } catch (error) {
+            console.warn('撤销后保存失败', error);
+        }
+        const projectId = (step.ops.find(op => op.projectId) || {}).projectId;
+        if (projectId && projects.some(entry => String(entry.id) === String(projectId))) {
+            try {
+                await reloadProjectFromServer(projectId);
+            } catch (error) {
+                console.warn('撤销后重载项目失败', error);
+            }
+        }
+        renderProjects();
+        if (currentProjectId) renderDetail();
+        if (workbenchView.classList.contains('active')) showWorkbench();
+        loadReviewCounts();
+    }
+
+    async function performUndo() {
+        if (historyBusy) return;
+        const step = undoStack.pop();
+        if (!step) {
+            showToast('没有可撤销的操作');
+            return;
+        }
+        historyBusy = true;
+        try {
+            await runStepOps(step, 'undo');
+        } catch (error) {
+            undoStack.push(step);
+            renderUndoButtons();
+            showToast(`撤销失败：${error.message || '未知错误'}`);
+            historyBusy = false;
+            return;
+        }
+        redoStack.push(step);
+        persistUndoStack();
+        renderUndoButtons();
+        await refreshAfterHistoryChange(step);
+        historyBusy = false;
+        showToast(`已撤销：${step.label}`, redoStack.length ? { label: '重做', onClick: () => performRedo() } : null);
+    }
+
+    async function performRedo() {
+        if (historyBusy) return;
+        const step = redoStack.pop();
+        if (!step) {
+            showToast('没有可重做的操作');
+            return;
+        }
+        historyBusy = true;
+        try {
+            await runStepOps(step, 'redo');
+        } catch (error) {
+            redoStack.push(step);
+            renderUndoButtons();
+            showToast(`重做失败：${error.message || '未知错误'}`);
+            historyBusy = false;
+            return;
+        }
+        undoStack.push(step);
+        persistUndoStack();
+        renderUndoButtons();
+        await refreshAfterHistoryChange(step);
+        historyBusy = false;
+        showToast(`已重做：${step.label}`, undoAction());
+    }
+
+    // ---------- 项目模板 / 设置 / 活动历史 ----------
+
+    let templatesCache = [];
+
+    function countTemplateItems(tree) {
+        let count = 0;
+        const walk = (nodes) => {
+            (nodes || []).forEach(node => {
+                if (node.type === 'item') count += 1;
+                walk(node.children);
+            });
+        };
+        walk(tree);
+        return count;
+    }
+
+    async function loadTemplates() {
+        try {
+            const response = await apiFetch('/api/templates', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取模板失败');
+            templatesCache = payload.templates || [];
+        } catch (error) {
+            templatesCache = [];
+            console.warn('读取模板失败', error);
+        }
+        renderTemplateOptions();
+        renderTemplateList();
+    }
+
+    function renderTemplateOptions() {
+        if (!templateSelect) return;
+        const previous = templateSelect.value;
+        templateSelect.replaceChildren();
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = '从模板创建…';
+        templateSelect.appendChild(blank);
+        templatesCache.forEach(entry => {
+            const option = document.createElement('option');
+            option.value = entry.id;
+            option.textContent = entry.name + (entry.builtin ? '（内置）' : '');
+            templateSelect.appendChild(option);
+        });
+        templateSelect.value = templatesCache.some(entry => entry.id === previous) ? previous : '';
+    }
+
+    function renderTemplateList() {
+        if (!templateList) return;
+        templateList.replaceChildren();
+        if (templatesCache.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'utility-empty';
+            empty.textContent = '还没有模板：可以在项目详情页点「存为模板」。';
+            templateList.appendChild(empty);
+            return;
+        }
+        templatesCache.forEach(entry => {
+            const row = document.createElement('div');
+            row.className = 'template-row';
+            const info = document.createElement('div');
+            info.className = 'template-info';
+            const name = document.createElement('strong');
+            name.textContent = entry.name + (entry.builtin ? '（内置）' : '');
+            const desc = document.createElement('small');
+            desc.textContent = (entry.description || '没有说明') + ` · ${countTemplateItems(entry.tree)} 个任务`;
+            info.append(name, desc);
+            const use = document.createElement('button');
+            use.type = 'button';
+            use.className = 'utility-secondary-btn';
+            use.textContent = '用它建项目';
+            use.addEventListener('click', () => createProjectFromTemplate(entry.id));
+            row.append(info, use);
+            if (!entry.builtin) {
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'utility-secondary-btn template-delete';
+                remove.textContent = '删除';
+                remove.addEventListener('click', async () => {
+                    if (!window.confirm(`删除模板「${entry.name}」？`)) return;
+                    try {
+                        await callApi(`/api/templates?id=${encodeURIComponent(entry.id)}`, 'DELETE');
+                        await loadTemplates();
+                        showToast('已删除模板');
+                    } catch (error) {
+                        showToast(error.message || '删除模板失败');
+                    }
+                });
+                row.appendChild(remove);
+            }
+            templateList.appendChild(row);
+        });
+    }
+
+    async function createProjectFromTemplate(templateId, name) {
+        try {
+            const response = await apiFetch('/api/project/from-template', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ templateId, name }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '用模板创建项目失败');
+            await loadProjects();
+            renderProjects();
+            await openProjectDetail(payload.project.id);
+            showToast(`已用模板创建项目：${payload.project.name}`);
+        } catch (error) {
+            showToast(error.message || '用模板创建项目失败');
+        }
+    }
+
+    async function saveCurrentProjectAsTemplate() {
+        const project = getCurrentProject();
+        if (!project) return;
+        const name = window.prompt('模板名称（只保存结构，不带完成状态与 AI 历史）：',
+            `${project.name} 模板`);
+        if (name === null) return;
+        try {
+            await callApi('/api/templates', 'POST',
+                { projectId: project.id, name: name.slice(0, 60), description: project.description || '' });
+            await loadTemplates();
+            showToast('已存为模板（可在“更多工具 → 项目模板”里使用）');
+        } catch (error) {
+            showToast(error.message || '存为模板失败');
+        }
+    }
+
+    async function duplicateCurrentProject() {
+        const project = getCurrentProject();
+        if (!project) return;
+        const options = await openOptionDialog(`复制项目：${project.name}`,
+            '复制出来的是一个新项目（ID 全新），原项目不受影响。',
+            [
+                { key: 'keepCompletion', label: '保留完成状态', checked: true },
+                { key: 'keepAssessment', label: '保留 AI 验收历史', checked: true },
+                { key: 'keepReview', label: '保留复习安排', checked: true },
+            ], '复制项目');
+        if (!options) return;
+        try {
+            const response = await apiFetch('/api/project/duplicate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: project.id, name: `${project.name}（副本）`, ...options }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '复制项目失败');
+            await loadProjects();
+            renderProjects();
+            showToast(`已复制项目：${payload.project.name}`);
+        } catch (error) {
+            showToast(error.message || '复制项目失败');
+        }
+    }
+
+    async function loadSettings() {
+        try {
+            const response = await apiFetch('/api/settings', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取设置失败');
+            const settings = payload.settings || {};
+            trashRetentionInput.value = String(settings.trashRetentionDays || 7);
+            autoArchiveDaysInput.value = String(settings.autoArchiveDays || 30);
+            autoArchiveToggle.checked = Boolean(settings.autoArchiveEnabled);
+            settingsStatus.textContent = `回收站保留 ${settings.trashRetentionDays} 天；`
+                + `自动归档${settings.autoArchiveEnabled ? '已开启' : '未开启'}`
+                + `（超过 ${settings.autoArchiveDays} 天没动且全部完成的项目会被归档；收集箱永不归档）。`;
+        } catch (error) {
+            settingsStatus.textContent = `读取设置失败：${error.message || ''}`;
+        }
+    }
+
+    async function saveSettingsFromUi() {
+        try {
+            await callApi('/api/settings', 'POST', {
+                settings: {
+                    trashRetentionDays: Number(trashRetentionInput.value),
+                    autoArchiveDays: Number(autoArchiveDaysInput.value),
+                    autoArchiveEnabled: autoArchiveToggle.checked,
+                },
+            });
+            await loadSettings();
+            showToast('设置已保存');
+        } catch (error) {
+            showToast(error.message || '保存设置失败');
+        }
+    }
+
+    async function runAutoArchiveFromUi() {
+        try {
+            const response = await apiFetch('/api/archive/auto', { method: 'POST' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '自动归档失败');
+            await loadProjects();
+            renderProjects();
+            const count = (payload.archived || []).length;
+            showToast(count ? `已归档 ${count} 个已完成项目` : '没有需要归档的项目');
+        } catch (error) {
+            showToast(error.message || '自动归档失败');
+        }
+    }
+
+    async function loadActivity() {
+        if (!activityList) return;
+        try {
+            const response = await apiFetch('/api/activity?limit=50', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取活动历史失败');
+            renderActivity(payload.entries || []);
+        } catch (error) {
+            activityList.replaceChildren();
+            const failed = document.createElement('p');
+            failed.className = 'utility-empty';
+            failed.textContent = `读取活动历史失败：${error.message || ''}`;
+            activityList.appendChild(failed);
+        }
+    }
+
+    function renderActivity(entries) {
+        activityList.replaceChildren();
+        if (entries.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'utility-empty';
+            empty.textContent = '还没有活动记录。';
+            activityList.appendChild(empty);
+            return;
+        }
+        entries.forEach(entry => {
+            const row = document.createElement('div');
+            row.className = 'activity-row';
+            const time = document.createElement('span');
+            time.className = 'activity-time';
+            time.textContent = String(entry.at || '').replace('T', ' ').slice(5, 16);
+            const text = document.createElement('span');
+            text.className = 'activity-text';
+            text.textContent = `${entry.summary}${entry.projectName ? ' · ' + entry.projectName : ''}`;
+            row.append(time, text);
+            if (entry.undoable) {
+                const tag = document.createElement('span');
+                tag.className = 'activity-tag';
+                tag.textContent = '可撤销';
+                row.appendChild(tag);
+            }
+            activityList.appendChild(row);
+        });
+    }
+
+    async function clearActivityFromUi() {
+        if (!window.confirm('清空活动历史？（只清记录，不影响项目数据）')) return;
+        try {
+            await callApi('/api/activity', 'DELETE');
+            await loadActivity();
+            showToast('已清空活动历史');
+        } catch (error) {
+            showToast(error.message || '清空失败');
+        }
+    }
+
+    function handleHistoryShortcut(event) {
+        const target = event.target;
+        const tag = target && target.tagName ? String(target.tagName).toLowerCase() : '';
+        if (target && (target.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select')) return;
+        if (!event.ctrlKey && !event.metaKey) return;
+        const key = String(event.key || '').toLowerCase();
+        if (key === 'z' && event.shiftKey) {
+            event.preventDefault();
+            performRedo();
+        } else if (key === 'z') {
+            event.preventDefault();
+            performUndo();
+        } else if (key === 'y') {
+            event.preventDefault();
+            performRedo();
+        }
+    }
+
+    // ---------- 拖拽排序 / 跨周跨单元移动 ----------
+
+    function clearDropHints() {
+        document.querySelectorAll('#detailView .drop-before, #detailView .drop-after, #detailView .drop-inside')
+            .forEach(el => el.classList.remove('drop-before', 'drop-after', 'drop-inside'));
+    }
+
+    function dropTargetFor(row, event, node) {
+        const box = row.getBoundingClientRect();
+        const offset = (event.clientY - box.top) / Math.max(1, box.height);
+        const isContainer = node.type !== 'item';
+        if (isContainer && offset > 0.3 && offset < 0.7) return { mode: 'inside', node };
+        return { mode: offset < 0.5 ? 'before' : 'after', node };
+    }
+
+    async function reorderNodeRemote(projectId, nodeId, parentId, position) {
+        const payload = await callApi('/api/node/reorder', 'POST', { projectId, nodeId, parentId, position });
+        return payload.move;
+    }
+
+
+    function findNodeParentId(nodes, targetId, parentId = null) {
+        for (const node of nodes || []) {
+            if (String(node.id) === String(targetId)) return parentId;
+            const found = findNodeParentId(node.children || [], targetId, node.id);
+            if (found !== null) return found;
+        }
+        return null;
+    }
+
+    function attachDragHandlers(li, row, node) {
+        row.draggable = true;
+        row.addEventListener('dragstart', (event) => {
+            const project = getCurrentProject();
+            if (!project) return;
+            dragState = { nodeId: node.id, projectId: project.id };
+            event.dataTransfer.effectAllowed = 'move';
+            try { event.dataTransfer.setData('text/plain', String(node.id)); } catch (error) { /* 老浏览器忽略 */ }
+            li.classList.add('dragging');
+        });
+        row.addEventListener('dragend', () => {
+            dragState = null;
+            li.classList.remove('dragging');
+            clearDropHints();
+        });
+        row.addEventListener('dragover', (event) => {
+            if (!dragState || String(dragState.nodeId) === String(node.id)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            clearDropHints();
+            const target = dropTargetFor(row, event, node);
+            row.classList.add(target.mode === 'inside' ? 'drop-inside'
+                : target.mode === 'before' ? 'drop-before' : 'drop-after');
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after', 'drop-inside'));
+        row.addEventListener('drop', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const target = dropTargetFor(row, event, node);
+            clearDropHints();
+            await applyDrop(target);
+        });
+    }
+
+    async function applyDrop(target) {
+        const project = getCurrentProject();
+        if (!project || !dragState || !target) return;
+        const tree = project.tree || [];
+        const sourceParent = findNodeParentId(tree, dragState.nodeId);
+        const sourceList = findParentList(tree, dragState.nodeId) || [];
+        const sourcePosition = sourceList.findIndex(entry => String(entry.id) === String(dragState.nodeId));
+        let parentId = null;
+        let position = 0;
+        if (target.mode === 'inside') {
+            parentId = target.node.id;
+            position = (target.node.children || []).length;
+        } else {
+            parentId = findNodeParentId(tree, target.node.id);
+            const siblings = findParentList(tree, target.node.id) || [];
+            const index = siblings.findIndex(entry => String(entry.id) === String(target.node.id));
+            position = target.mode === 'before' ? index : index + 1;
+            // 同一个父节点内往下挪时，摘掉自己之后下标会前移一位
+            if (String(parentId) === String(sourceParent) && sourcePosition >= 0 && sourcePosition < position) {
+                position -= 1;
+            }
+        }
+        if (String(parentId) === String(sourceParent) && sourcePosition === position) return;
+        try {
+            const move = await reorderNodeRemote(project.id, dragState.nodeId, parentId, position);
+            pushUndoStep({
+                label: '移动任务',
+                ops: [{ kind: 'http', path: '/api/node/reorder', method: 'POST',
+                        body: { projectId: project.id, nodeId: dragState.nodeId, parentId, position },
+                        undoBody: { projectId: project.id, nodeId: dragState.nodeId,
+                                    parentId: move.previous.parentId, position: move.previous.position } }],
+            });
+            await refreshAfterHistoryChange({ ops: [{ projectId: project.id }] });
+            showToast('已移动', undoAction());
+        } catch (error) {
+            showToast(error.message || '移动失败，请重试');
+        }
+    }
+
+    // ---------- 复制 / 移动 对话框 ----------
+
+    async function duplicateNodeWithOptions(node) {
+        const project = getCurrentProject();
+        if (!project) return;
+        const result = await openOptionDialog('复制：' + (node.text || ''),
+            '复制出来的是独立副本（ID 全新），默认不带走完成状态、AI 历史与复习安排。',
+            [
+                { key: 'includeChildren', label: '包含子任务 / 整枝', checked: node.type !== 'item' },
+                { key: 'keepCompletion', label: '保留完成状态', checked: false },
+                { key: 'keepAssessment', label: '保留 AI 验收历史', checked: false },
+                { key: 'keepReview', label: '保留复习安排', checked: false },
+            ], '复制');
+        if (!result) return;
+        try {
+            await verifyDeleteImpact(project.id, node.id);   // 提前把当前项目加载进内存
+            const created = await duplicateNodeRemote(project.id, node.id, result);
+            pushUndoStep({ label: `复制「${node.text || '未命名'}」`,
+                           ops: [{ kind: 'node-duplicate', projectId: project.id, nodeId: node.id, options: result }],
+                           createdNodeId: created.id });
+            await refreshAfterHistoryChange({ ops: [{ projectId: project.id }] });
+            showToast(`已复制：${created.text || node.text}`, undoAction());
+        } catch (error) {
+            showToast(error.message || '复制失败，请重试');
+        }
+    }
+
+    async function openMoveNodeDialog(node) {
+        const project = getCurrentProject();
+        if (!project) return;
+        showUtilityModal('移动到…', '可以移动到其他周 / 学习单元，也可以换项目');
+        utilityBody.innerHTML = '';
+        const form = document.createElement('div');
+        form.className = 'meta-form';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = '任务：' + (node.text || '未命名');
+        form.appendChild(hint);
+        const projectSelect = document.createElement('select');
+        summariesCache().forEach(entry => {
+            const option = document.createElement('option');
+            option.value = entry.id;
+            option.textContent = entry.name;
+            projectSelect.appendChild(option);
+        });
+        projectSelect.value = project.id;
+        addMetaField(form, '目标项目', projectSelect);
+        const parentSelect = document.createElement('select');
+        addMetaField(form, '放到哪一周 / 单元', parentSelect);
+        const positionInput = document.createElement('input');
+        positionInput.type = 'number';
+        positionInput.min = '0';
+        positionInput.placeholder = '留空=放到最后';
+        addMetaField(form, '位置（从 0 开始，可留空）', positionInput);
+        const loadParents = async () => {
+            parentSelect.replaceChildren();
+            const rootOption = document.createElement('option');
+            rootOption.value = '';
+            rootOption.textContent = '（项目顶层）';
+            parentSelect.appendChild(rootOption);
+            try {
+                const target = await ensureProjectLoaded(projectSelect.value);
+                flattenParentOptions(target).forEach(entry => {
+                    if (entry.id === null || String(entry.id) === String(node.id)) return;
+                    const option = document.createElement('option');
+                    option.value = String(entry.id);
+                    option.textContent = entry.label;
+                    parentSelect.appendChild(option);
+                });
+            } catch (error) {
+                showToast(error.message || '读取目标项目失败');
+            }
+        };
+        projectSelect.addEventListener('change', loadParents);
+        await loadParents();
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.className = 'utility-primary-btn';
+        confirm.textContent = '移动';
+        confirm.addEventListener('click', async () => {
+            const toProjectId = projectSelect.value;
+            const parentId = parentSelect.value || null;
+            const position = positionInput.value === '' ? null : Number(positionInput.value);
+            const sameProject = String(toProjectId) === String(project.id);
+            try {
+                if (sameProject) {
+                    const move = await reorderNodeRemote(project.id, node.id, parentId,
+                        position === null ? (findParentList(project.tree || [], parentId) || []).length : position);
+                    pushUndoStep({ label: `移动「${node.text || '未命名'}」`,
+                                   ops: [{ kind: 'http', path: '/api/node/reorder', method: 'POST',
+                                           body: { projectId: project.id, nodeId: node.id, parentId, position: move.position },
+                                           undoBody: { projectId: project.id, nodeId: node.id,
+                                                       parentId: move.previous.parentId, position: move.previous.position } }] });
+                } else {
+                    const originalParent = findParentList(project.tree || [], node.id) ? null : null;
+                    await callApi('/api/inbox/move', 'POST',
+                        { nodeId: node.id, fromProjectId: project.id, toProjectId, parentId, position });
+                    pushUndoStep({ label: `移动到其他项目`,
+                                   ops: [{ kind: 'http', path: '/api/inbox/move', method: 'POST',
+                                           body: { nodeId: node.id, fromProjectId: project.id, toProjectId, parentId, position },
+                                           undoOnly: { path: '/api/inbox/move', method: 'POST',
+                                                       body: { nodeId: node.id, fromProjectId: toProjectId,
+                                                               toProjectId: project.id, parentId: originalParent, position: null } } }] });
+                }
+                closeUtilityModal();
+                await loadProjects();
+                if (currentProjectId) renderDetail();
+                showToast('已移动', undoAction());
+            } catch (error) {
+                showToast(error.message || '移动失败，请重试');
+            }
+        });
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'utility-secondary-btn';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', closeUtilityModal);
+        actions.append(confirm, cancel);
+        form.appendChild(actions);
+        utilityBody.appendChild(form);
+    }
+
+    function summariesCache() {
+        return projects.map(entry => ({ id: entry.id, name: entry.name }))
+            .filter(entry => !entry.archived)
+            .concat(projects.some(entry => entry.id === 'inbox') ? [] : [])
+            .sort((left, right) => String(left.name).localeCompare(String(right.name), 'zh'));
+    }
+
+    async function verifyDeleteImpact(projectId, nodeId) {
+        const response = await apiFetch(
+            `/api/node/delete-impact?projectId=${encodeURIComponent(projectId)}&nodeId=${encodeURIComponent(nodeId)}`,
+            { cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '读取删除影响面失败');
+        return payload.impact;
+    }
+
+    function describeImpact(impact) {
+        if (!impact) return '';
+        const parts = [];
+        if (impact.descendantCount > 0) parts.push(`包含 ${impact.descendantCount} 个子节点`);
+        if (impact.itemCount > 0) parts.push(`共 ${impact.itemCount} 个任务`);
+        if (impact.completedCount > 0) parts.push(`其中 ${impact.completedCount} 个已完成`);
+        if (impact.estimateMinutes > 0) parts.push(`预计耗时合计 ${impact.estimateMinutes} 分钟`);
+        return parts.length ? parts.join('，') : '没有子任务';
+    }
+
     function renderDetail() {
         const project = getCurrentProject();
         if (!project) {
@@ -4321,6 +5282,26 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             deleteNode(node, row);
         });
         actions.appendChild(deleteBtn);
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'copy-btn';
+        copyBtn.textContent = '⧉';
+        copyBtn.title = '复制这个节点（可选是否带走子任务 / 完成状态 / AI 历史 / 复习）';
+        copyBtn.setAttribute('aria-label', copyBtn.title);
+        copyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            duplicateNodeWithOptions(node);
+        });
+        actions.appendChild(copyBtn);
+        const moveBtn = document.createElement('button');
+        moveBtn.className = 'move-btn';
+        moveBtn.textContent = '⇄';
+        moveBtn.title = '移动到其他周 / 学习单元 / 项目（也可以直接拖拽）';
+        moveBtn.setAttribute('aria-label', moveBtn.title);
+        moveBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openMoveNodeDialog(node);
+        });
+        actions.appendChild(moveBtn);
         row.appendChild(arrow);
         row.appendChild(checkbox);
         row.appendChild(textSpan);
@@ -4397,6 +5378,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             e.stopPropagation();
             startEditNode(node, textSpan, row);
         });
+        attachDragHandlers(li, row, node);
         return li;
     }
 
@@ -4825,6 +5807,27 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         });
     }
 
+    async function deleteNodeToTrash(projectId, nodeId) {
+        const project = await ensureProjectLoaded(projectId);
+        const snapshot = snapshotNodeForTrash(project.tree || [], nodeId);
+        if (!snapshot) throw new Error('节点已不存在');
+        const saved = await storeTrashItem({
+            kind: 'node',
+            projectId,
+            title: snapshot.node.text || '未命名任务',
+            context: `${project.name || '未命名项目'} · ${snapshot.path || ''}`.trim(),
+            parentId: snapshot.parentId,
+            position: snapshot.position,
+            revision: project._revision || 0,
+            payload: snapshot.node,
+        });
+        removeNodeById(project.tree, nodeId);
+        cleanupEmptyNodes(project.tree);
+        markProjectDirty(project);
+        await saveProjects();
+        return saved;
+    }
+
     async function deleteNode(node, row) {
         const project = getCurrentProject();
         if (!project) return;
@@ -4832,54 +5835,34 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast('补漏队列是固定入口，不能删除；可以继续添加或删除其中的具体任务');
             return;
         }
-        const snapshot = snapshotNodeForTrash(project.tree || [], node.id);
-        let trashId = null;
-        if (snapshot) {
-            try {
-                const savedTrash = await storeTrashItem({
-                    kind: 'node',
-                    projectId: project.id,
-                    title: node.text || '未命名任务',
-                    context: `${project.name || '未命名项目'} · ${snapshot.path || ''}`.trim(),
-                    parentId: snapshot.parentId,
-                    position: snapshot.position,
-                    revision: project._revision || 0,
-                    payload: snapshot.node
-                });
-                trashId = savedTrash.id;
-            } catch (error) {
-                console.warn('写入回收站失败', error);
-            }
+        // 删除前先问一句"会影响多少东西"（可预览、可撤销）
+        let impact = null;
+        try {
+            impact = await verifyDeleteImpact(project.id, node.id);
+        } catch (error) {
+            console.warn('读取删除影响面失败', error);
         }
-        const treeBeforeDelete = cloneData(project.tree);
-        let finalized = false;
-        const finalizeDelete = () => {
-            if (finalized) return;
-            finalized = true;
-            removeNodeById(project.tree, node.id);
-            cleanupEmptyNodes(project.tree);
-            markProjectDirty(project);
-            saveProjects();
-            renderDetail();
-            showToast(`已删除：${node.text}`, {
-                label: '撤销',
-                onClick: async () => {
-                    if (!projects.includes(project)) return;
-                    project.tree = treeBeforeDelete;
-                    markProjectDirty(project);
-                    try {
-                        if (trashId) await deleteTrashItemById(trashId);
-                    } catch (error) {
-                        console.warn('清理回收站条目失败', error);
-                    }
-                    saveProjects();
-                    renderDetail();
-                }
-            });
-        };
-        row.classList.add('removing');
-        row.addEventListener('transitionend', finalizeDelete, { once: true });
-        setTimeout(finalizeDelete, 400);
+        const detail = describeImpact(impact);
+        if (!window.confirm(`确认删除「${node.text || '未命名'}」？\n${detail}\n\n会放进回收站，之后可以恢复（原位或孤立任务箱）。`)) return;
+        let savedTrash = null;
+        try {
+            savedTrash = await deleteNodeToTrash(project.id, node.id);
+        } catch (error) {
+            showToast(error.message || '删除失败，请重试');
+            return;
+        }
+        const trashId = savedTrash && savedTrash.id;
+        pushUndoStep({
+            label: `删除「${node.text || '未命名'}」`,
+            ops: [{ kind: 'node-delete', projectId: project.id, nodeId: node.id }],
+            trashId,
+        });
+        if (row) {
+            row.classList.add('removing');
+            setTimeout(() => { if (row.isConnected) row.classList.remove('removing'); }, 400);
+        }
+        renderDetail();
+        showToast(`已删除：${node.text}`, undoAction());
     }
 
     async function clearCompletedInDetail() {
@@ -4887,8 +5870,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (!project) return;
         const completedIds = collectCompletedItemIds(project.tree);
         if (completedIds.length === 0) return;
-        if (!window.confirm(`确认清空 ${completedIds.length} 项已完成任务？清空前会自动生成一份完整快照。`)) return;
-        await createSnapshot('before-clear-completed');
+        if (!window.confirm(`确认清空 ${completedIds.length} 项已完成任务？清空前会自动生成一份完整快照，之后可以撤销。`)) return;
+        const snapshotName = await createSnapshot('before-clear-completed');
         const treeBeforeClear = cloneData(project.tree);
         let delay = 0;
         completedIds.forEach(id => {
@@ -4899,22 +5882,24 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
         });
         const totalDelay = delay + 350;
-        setTimeout(() => {
+        setTimeout(async () => {
             completedIds.forEach(id => removeNodeById(project.tree, id));
             cleanupEmptyNodes(project.tree);
             markProjectDirty(project);
-            saveProjects();
+            try {
+                await saveProjects();
+            } catch (error) {
+                showToast(error.message || '清空后保存失败，请重试');
+            }
             renderDetail();
-            showToast(`已清空 ${completedIds.length} 项`, {
-                label: '撤销',
-                onClick: () => {
-                    if (!projects.includes(project)) return;
-                    project.tree = treeBeforeClear;
-                    markProjectDirty(project);
-                    saveProjects();
-                    renderDetail();
-                }
-            });
+            if (snapshotName) {
+                // 撤销 = 恢复清空前的完整快照（最稳妥：连 AI 历史、复习安排一起回来）
+                pushUndoStep({
+                    label: `清空 ${completedIds.length} 项已完成`,
+                    ops: [{ kind: 'restore-backup', name: snapshotName }],
+                });
+            }
+            showToast(`已清空 ${completedIds.length} 项`, undoAction());
         }, totalDelay);
     }
 
@@ -5508,10 +6493,28 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return project;
     }
 
+    const BATCH_FIELD_KEYS = ['priority', 'dueDate', 'estimateMinutes', 'tags', 'note', 'links', 'repeat', 'completed', 'completedAt', 'review'];
+
+    function captureBatchFields(targets) {
+        const captured = [];
+        for (const target of targets) {
+            const project = projects.find(entry => String(entry.id) === String(target.projectId));
+            if (!project || !Array.isArray(project.tree)) continue;
+            const node = findNodeById(project.tree, target.nodeId);
+            if (!node) continue;
+            const fields = {};
+            BATCH_FIELD_KEYS.forEach(key => { fields[key] = key in node ? cloneData(node[key]) : null; });
+            captured.push({ projectId: String(target.projectId), id: node.id, fields });
+        }
+        return captured;
+    }
+
     async function runBatch(action, value) {
         const targets = selectedTargets();
         if (targets.length === 0) return;
         const projectId = getCurrentProject() ? getCurrentProject().id : null;
+        const beforeFields = captureBatchFields(targets);
+        const batchLabel = (document.querySelector(`#batchToolbar [data-batch-action="${action}"]`) || {}).textContent;
         try {
             const response = await apiFetch('/api/batch', {
                 method: 'POST',
@@ -5532,10 +6535,29 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (projectId) await reloadProjectFromServer(projectId);
             renderDetail();
             renderBatchToolbar();
+            // 记下"改完是什么样"，撤销时把字段写回去（可逆、可重做）
+            const afterFields = captureBatchFields(targets);
+            if (changed > 0 && beforeFields.length > 0) {
+                const grouped = new Map();
+                const collect = (entries, key) => {
+                    entries.forEach(entry => {
+                        if (!grouped.has(entry.projectId)) grouped.set(entry.projectId, { before: [], after: [] });
+                        grouped.get(entry.projectId)[key].push({ id: entry.id, fields: entry.fields });
+                    });
+                };
+                collect(beforeFields, 'before');
+                collect(afterFields, 'after');
+                const ops = [];
+                grouped.forEach((lists, projectKey) => {
+                    ops.push({ kind: 'node-fields', projectId: projectKey,
+                               before: lists.before, after: lists.after });
+                });
+                pushUndoStep({ label: `批量${batchLabel ? batchLabel : action}`, ops });
+            }
             if (failed.length > 0) {
-                showToast(`已修改 ${changed} 项，${failed.length} 项被跳过：${failed[0].error}`);
+                showToast(`已修改 ${changed} 项，${failed.length} 项被跳过：${failed[0].error}`, undoAction());
             } else {
-                showToast(`已修改 ${changed} 项`);
+                showToast(`已修改 ${changed} 项`, undoAction());
             }
         } catch (error) {
             showToast(error.message || '批量修改失败，请重试');
@@ -7070,7 +8092,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         utilityBody.appendChild(toolbar);
         const hint = document.createElement('p');
         hint.className = 'utility-hint';
-        hint.textContent = '删除的项目和任务会在这里保留 7 天；恢复或删除都可以逐条操作，也可以勾选后批量处理。';
+        hint.textContent = '删除的项目和任务会按设置里的保留天数自动清理；'
+            + '恢复或删除都可以逐条操作，也可以勾选后批量处理（恢复不了原位置的会进「孤立任务箱」）。';
         utilityBody.appendChild(hint);
         if (items.length === 0) {
             const empty = document.createElement('p');
@@ -7189,6 +8212,20 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const context = document.createElement('div');
             context.className = 'trash-context';
             context.textContent = item.context || item.projectId || '';
+            const target = document.createElement('div');
+            target.className = 'trash-target';
+            if (item.restoreTarget === 'orphan') {
+                target.textContent = '原位置已不存在：恢复后会放进「孤立任务箱」';
+            } else if (item.restoreTarget === 'unavailable') {
+                target.textContent = '原项目已不存在：无法恢复（可以永久删除）';
+            } else if (item.restoreTarget === 'conflict') {
+                target.textContent = '同 ID 的项目已存在：恢复前需要先处理现有项目';
+            } else {
+                target.textContent = '恢复到删除前的位置';
+            }
+            if (item.restoreTarget === 'unavailable' || item.restoreTarget === 'conflict') {
+                restoreBtn.disabled = true;
+            }
             const actions = document.createElement('div');
             actions.className = 'trash-actions';
             const restoreBtn = document.createElement('button');
@@ -7220,7 +8257,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 }
             });
             actions.append(restoreBtn, deleteBtn);
-            card.append(head, meta, context, actions);
+            card.append(head, meta, context, target, actions);
             trashFragment.appendChild(card);
         });
         list.replaceChildren(trashFragment);
@@ -7630,7 +8667,26 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (saveConflict) openConflictPanel();
         });
         saveStatus.title = '有版本冲突时点这里解决';
-        exportBtn.addEventListener('click', exportBackup);
+        if (undoBtn) undoBtn.addEventListener('click', () => performUndo());
+        if (redoBtn) redoBtn.addEventListener('click', () => performRedo());
+        if (duplicateProjectBtn) duplicateProjectBtn.addEventListener('click', duplicateCurrentProject);
+        if (saveTemplateBtn) saveTemplateBtn.addEventListener('click', saveCurrentProjectAsTemplate);
+        if (createFromTemplateBtn) createFromTemplateBtn.addEventListener('click', () => {
+            const templateId = templateSelect ? templateSelect.value : '';
+            if (!templateId) {
+                showToast('请先选择一个模板');
+                return;
+            }
+            createProjectFromTemplate(templateId);
+        });
+        if (runAutoArchiveBtn) runAutoArchiveBtn.addEventListener('click', runAutoArchiveFromUi);
+        if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettingsFromUi);
+        if (refreshActivityBtn) refreshActivityBtn.addEventListener('click', loadActivity);
+        if (clearActivityBtn) clearActivityBtn.addEventListener('click', clearActivityFromUi);
+        document.addEventListener('keydown', handleHistoryShortcut);
+        exportBtn.addEventListener('click', () => exportBackup('json'));
+        exportMarkdownBtn.addEventListener('click', () => exportBackup('markdown'));
+        exportCsvBtn.addEventListener('click', () => exportBackup('csv'));
         downloadDatabaseBackupBtn.addEventListener('click', downloadDatabaseBackup);
         inspectDatabaseBackupBtn.addEventListener('click', inspectDatabaseBackupFromUi);
         importInput.addEventListener('change', () => {
@@ -7818,6 +8874,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         loadSavedViews();
         loadReminderSettings();
         renderReminderStatus();
+        loadUndoStack();
+        loadTemplates();
+        loadSettings();
+        loadActivity();
         if (reminderState.enabled) startReminders();
     }
     if (document.readyState === 'loading') {

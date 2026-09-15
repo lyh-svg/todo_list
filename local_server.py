@@ -67,6 +67,24 @@ list_saved_views = storage_service.list_saved_views
 save_saved_view = storage_service.save_saved_view
 delete_saved_view = storage_service.delete_saved_view
 batch_update_nodes = storage_service.batch_update_nodes
+reorder_node = storage_service.reorder_node
+duplicate_node = storage_service.duplicate_node
+duplicate_project = storage_service.duplicate_project
+describe_node_delete = storage_service.describe_node_delete
+preview_import = storage_service.preview_import
+import_projects = storage_service.import_projects
+list_templates = storage_service.list_templates
+save_project_as_template = storage_service.save_project_as_template
+delete_template = storage_service.delete_template
+create_project_from_template = storage_service.create_project_from_template
+log_activity = storage_service.log_activity
+list_activity = storage_service.list_activity
+clear_activity = storage_service.clear_activity
+read_app_settings = storage_service.read_app_settings
+update_app_settings = storage_service.update_app_settings
+auto_archive_projects = storage_service.auto_archive_projects
+export_markdown = storage_service.export_markdown
+export_csv = storage_service.export_csv
 workbench = storage_service.workbench
 recent_overview = storage_service.recent_overview
 SchemaVersionError = storage_service.SchemaVersionError
@@ -349,18 +367,32 @@ class TodoHandler(SimpleHTTPRequestHandler):
             if not hmac.compare_digest(supplied, SESSION_TOKEN):
                 self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
                 return
+            export_format = str(query.get("format", ["json"])[0] or "json").lower()
+            if export_format in {"md", "markdown"}:
+                export_format = "markdown"
+            if export_format not in {"json", "markdown", "csv"}:
+                self.send_json(400, {"error": "不支持的导出格式"})
+                return
+            stamp = time.strftime("%Y%m%d")
             try:
-                snapshot = export_projects_snapshot()
+                if export_format == "markdown":
+                    body = export_markdown().encode("utf-8")
+                    content_type = "text/markdown; charset=utf-8"
+                    file_name = f"todo-projects-{stamp}.md"
+                elif export_format == "csv":
+                    body = export_csv().encode("utf-8")
+                    content_type = "text/csv; charset=utf-8"
+                    file_name = f"todo-projects-{stamp}.csv"
+                else:
+                    body = json.dumps(export_projects_snapshot(), ensure_ascii=False, indent=2).encode("utf-8")
+                    content_type = "application/json; charset=utf-8"
+                    file_name = f"todo-projects-{stamp}.json"
             except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
                 self.send_json(500, {"error": f"导出项目失败：{error}"})
                 return
-            body = json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header(
-                "Content-Disposition",
-                f'attachment; filename="todo-projects-{time.strftime("%Y%m%d")}.json"',
-            )
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition", f'attachment; filename="{file_name}"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -495,6 +527,35 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, RuntimeError, zipfile.BadZipFile) as error:
                 self.send_json(500, {"error": f"读取备份内容失败：{error}"})
             return
+        if path == "/api/node/delete-impact":
+            try:
+                params = query_params(self)
+                impact = describe_node_delete(required_param(params, "projectId"), required_param(params, "nodeId"))
+                self.send_json(200, {"impact": impact})
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取删除影响面失败：{error}"})
+            return
+        if path == "/api/templates":
+            try:
+                self.send_json(200, {"templates": list_templates()})
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取模板失败：{error}"})
+            return
+        if path == "/api/activity":
+            try:
+                limit = int_param(query_params(self), "limit", required=False, default=50)
+                self.send_json(200, {"entries": list_activity(limit)})
+            except (ValueError, OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(400 if isinstance(error, ValueError) else 500, {"error": f"读取活动历史失败：{error}"})
+            return
+        if path == "/api/settings":
+            try:
+                self.send_json(200, {"settings": read_app_settings()})
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取设置失败：{error}"})
+            return
         if path == "/api/trash":
             try:
                 self.send_json(200, {"items": list_trash_items()})
@@ -564,6 +625,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         length = self.request_length()
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
+                        "/api/node/reorder", "/api/node/duplicate", "/api/project/duplicate",
+                        "/api/import/preview", "/api/templates", "/api/project/from-template",
+                        "/api/activity", "/api/settings", "/api/archive/auto",
                         "/api/inbox/add", "/api/inbox/move", "/api/views", "/api/batch",
                         "/api/background",
                         "/api/memo", "/api/memos/database-import",
@@ -669,13 +733,89 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         raise ValueError("expectedRevision 格式不正确") from None
                 revision, summary = write_project(project, expected_revision)
                 self.send_json(200, {"ok": True, "revision": revision, "summary": summary})
+            elif path == "/api/import/preview":
+                projects = payload.get("projects")
+                if not isinstance(projects, list):
+                    raise ValueError("导入项目格式不正确")
+                mode = str(payload.get("mode") or "replace")
+                keep_ai = payload.get("keepAiHistory")
+                preview = preview_import(projects, mode, keep_ai_history=keep_ai is not False)
+                self.send_json(200, {"ok": True, "preview": preview})
             elif path == "/api/import":
                 projects = payload.get("projects")
                 if not isinstance(projects, list):
                     raise ValueError("导入项目格式不正确")
-                create_full_backup("before-import")
-                storage_service.replace_projects(projects, pre_backup=False)
-                self.send_json(200, {"ok": True, "projects": read_project_summaries()})
+                mode = str(payload.get("mode") or "replace")
+                keep_ai = payload.get("keepAiHistory")
+                # 导入前一律留一份完整快照，任何模式都能整体回退
+                import_backup_name = create_full_backup("before-import")
+                if mode == "replace":
+                    storage_service.replace_projects(projects, pre_backup=False)
+                    result = {"mode": mode, "projects": read_project_summaries()}
+                else:
+                    result = import_projects(projects, mode, keep_ai_history=keep_ai is not False)
+                self.send_json(200, {"ok": True, "preview": result.get("preview"),
+                                     "projects": result["projects"], "mode": result["mode"],
+                                     "backup": import_backup_name})
+            elif path == "/api/node/reorder":
+                moved = reorder_node(str(payload.get("projectId") or ""), str(payload.get("nodeId") or ""),
+                                     payload.get("parentId"),
+                                     payload.get("position"))
+                self.send_json(200, {"ok": True, "move": moved, "projects": read_project_summaries()})
+            elif path == "/api/node/duplicate":
+                created = duplicate_node(
+                    str(payload.get("projectId") or ""), str(payload.get("nodeId") or ""),
+                    include_children=payload.get("includeChildren") is not False,
+                    keep_completion=bool(payload.get("keepCompletion")),
+                    keep_assessment=bool(payload.get("keepAssessment")),
+                    keep_review=bool(payload.get("keepReview")),
+                )
+                project = read_project(created["projectId"])
+                self.send_json(200, {"ok": True, "node": created["node"],
+                                     "project": project[0] if project else None,
+                                     "revision": project[1] if project else 0})
+            elif path == "/api/project/duplicate":
+                created = duplicate_project(
+                    str(payload.get("projectId") or ""), name=payload.get("name"),
+                    keep_completion=payload.get("keepCompletion") is not False,
+                    keep_assessment=payload.get("keepAssessment") is not False,
+                    keep_review=payload.get("keepReview") is not False,
+                )
+                self.send_json(200, {"ok": True, "project": created["project"],
+                                     "projects": read_project_summaries()})
+            elif path == "/api/project/from-template":
+                created = create_project_from_template(str(payload.get("templateId") or ""),
+                                                       payload.get("name"))
+                self.send_json(200, {"ok": True, "project": created["project"],
+                                     "projects": read_project_summaries()})
+            elif path == "/api/templates":
+                template = save_project_as_template(str(payload.get("projectId") or ""),
+                                                    payload.get("name"), payload.get("description"))
+                self.send_json(200, {"ok": True, "template": template, "templates": list_templates()})
+            elif path == "/api/activity":
+                log_activity(str(payload.get("kind") or "note"), str(payload.get("summary") or ""),
+                             project_id=payload.get("projectId") or "",
+                             project_name=str(payload.get("projectName") or ""),
+                             detail=payload.get("detail") if isinstance(payload.get("detail"), dict) else {},
+                             undoable=bool(payload.get("undoable")))
+                self.send_json(200, {"ok": True, "entries": list_activity(50)})
+            elif path == "/api/settings":
+                patch = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+                self.send_json(200, {"ok": True, "settings": update_app_settings(
+                    {key: value for key, value in patch.items() if key != "ok"})})
+            elif path == "/api/archive/auto":
+                days = payload.get("days")
+                if days in (None, ""):
+                    result = auto_archive_projects()
+                else:
+                    try:
+                        value = int(days)
+                    except (TypeError, ValueError):
+                        raise ValueError("自动归档天数必须是整数") from None
+                    if not 1 <= value <= 3650:
+                        raise ValueError("自动归档天数应在 1~3650 天之间")
+                    result = auto_archive_projects(value)
+                self.send_json(200, {"ok": True, **result, "projects": read_project_summaries()})
             elif path == "/api/views":
                 saved = save_saved_view(payload.get("name"), payload.get("payload"))
                 self.send_json(200, {"ok": True, "view": saved, "views": list_saved_views()})
@@ -796,7 +936,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
     def do_DELETE(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
         if path not in {"/api/project", "/api/background", "/api/memo", "/api/summary", "/api/summaries",
-                        "/api/views"}:
+                        "/api/views", "/api/templates", "/api/activity"}:
             self.discard_body(self.request_length())
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -813,6 +953,17 @@ class TodoHandler(SimpleHTTPRequestHandler):
         # 绝不把异常抛到 HTTP 层（那会变成"空回复"）。
         params = query_params(self)
         try:
+            if path == "/api/templates":
+                template_id = required_param(params, "id")
+                if not delete_template(template_id):
+                    self.send_json(404, {"error": "模板不存在"})
+                    return
+                self.send_json(200, {"ok": True, "templates": list_templates()})
+                return
+            if path == "/api/activity":
+                removed = clear_activity()
+                self.send_json(200, {"ok": True, "removed": removed, "entries": []})
+                return
             if path == "/api/views":
                 view_id = required_param(params, "id")
                 if not delete_saved_view(view_id):
@@ -874,6 +1025,13 @@ def main() -> None:
             f"SQLite integrity check failed; restore a backup from {BACKUP_DIR}"
         )
     ensure_schema()
+    # 自动归档：只归档"全部完成且很久没动"的项目；设置里没打开就什么都不做
+    try:
+        archived = storage_service.auto_archive_projects()
+        if archived.get("archived"):
+            print(f"Auto archived {len(archived['archived'])} completed project(s).")
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+        print(f"Auto archive skipped: {error}", file=sys.stderr)
     backup_service.create_daily_snapshot()
     storage_service.purge_trash_items()
     memo_storage.initialize()

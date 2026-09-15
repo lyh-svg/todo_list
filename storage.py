@@ -25,7 +25,18 @@ BACKUP_DIR = Path(
 ).expanduser()
 MAX_PROJECT_PAYLOAD_BYTES = 50 * 1024 * 1024
 TRASH_RETENTION_DAYS = 7
-SCHEMA_VERSION = 6
+# 应用级设置（存在 app_state 的 'settings' 键里，可被前端改）
+DEFAULT_APP_SETTINGS: dict[str, Any] = {
+    "trashRetentionDays": TRASH_RETENTION_DAYS,   # 回收站保留天数 1~365
+    "autoArchiveEnabled": False,                  # 是否自动归档"全部完成且很久没动"的项目
+    "autoArchiveDays": 30,                        # 多久没动算"很久" 1~3650
+}
+MIN_TRASH_RETENTION_DAYS = 1
+MAX_TRASH_RETENTION_DAYS = 365
+MAX_AUTO_ARCHIVE_DAYS = 3650
+ORPHAN_BOX_TITLE = "孤立任务箱"                    # 父节点被删掉时，恢复到这里
+ACTIVITY_LIMIT_MAX = 500
+SCHEMA_VERSION = 7
 # 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
 PRIORITIES = ("", "high", "mid", "low")
 MAX_TAGS = 20
@@ -334,6 +345,25 @@ def open_state_database() -> sqlite3.Connection:
             updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_saved_views_name ON saved_views(name);
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            at TEXT NOT NULL,
+            project_id TEXT NOT NULL DEFAULT '',
+            project_name TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            undoable INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_at ON activity_log(at DESC, id DESC);
+        CREATE TABLE IF NOT EXISTS project_templates (
+            template_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            builtin INTEGER NOT NULL DEFAULT 0
+        );
         """
     )
     node_columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
@@ -876,6 +906,146 @@ def _mark_normalized_state(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE app_state SET payload=? WHERE key='projects'", (_json(state),))
 
 
+# ---------------------------------------------------------------------------
+# 应用设置（回收站保留天数 / 自动归档）与活动历史
+# ---------------------------------------------------------------------------
+
+SETTINGS_KEY = "settings"
+
+
+def _clean_int(value: Any, *, minimum: int, maximum: int, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, number))
+
+
+def read_app_settings(connection: sqlite3.Connection | None = None) -> dict[str, Any]:
+    """读取应用设置；缺失或损坏时回落到默认值（不能因为设置坏了打不开应用）。"""
+    settings = dict(DEFAULT_APP_SETTINGS)
+
+    def _load(conn: sqlite3.Connection) -> dict[str, Any]:
+        row = conn.execute("SELECT payload FROM app_state WHERE key=?", (SETTINGS_KEY,)).fetchone()
+        if not row:
+            return dict(settings)
+        try:
+            stored = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return dict(settings)
+        if not isinstance(stored, dict):
+            return dict(settings)
+        merged = dict(settings)
+        merged["trashRetentionDays"] = _clean_int(
+            stored.get("trashRetentionDays"), minimum=MIN_TRASH_RETENTION_DAYS,
+            maximum=MAX_TRASH_RETENTION_DAYS, default=settings["trashRetentionDays"])
+        merged["autoArchiveEnabled"] = bool(stored.get("autoArchiveEnabled", settings["autoArchiveEnabled"]))
+        merged["autoArchiveDays"] = _clean_int(
+            stored.get("autoArchiveDays"), minimum=1, maximum=MAX_AUTO_ARCHIVE_DAYS,
+            default=settings["autoArchiveDays"])
+        return merged
+
+    if connection is not None:
+        return _load(connection)
+    with _database_lock, open_state_database() as own:
+        return _load(own)
+
+
+def update_app_settings(patch: dict[str, Any]) -> dict[str, Any]:
+    """只接受白名单字段；非法值直接报错，避免把设置写成乱七八糟的值。"""
+    if not isinstance(patch, dict):
+        raise ValueError("设置格式不正确")
+    unknown = set(patch) - set(DEFAULT_APP_SETTINGS)
+    if unknown:
+        raise ValueError("不支持的设置项：" + "、".join(sorted(unknown)))
+    with _database_lock, open_state_database() as connection:
+        settings = read_app_settings(connection)
+        if "trashRetentionDays" in patch:
+            try:
+                days = int(patch["trashRetentionDays"])
+            except (TypeError, ValueError):
+                raise ValueError("回收站保留天数必须是整数") from None
+            if not MIN_TRASH_RETENTION_DAYS <= days <= MAX_TRASH_RETENTION_DAYS:
+                raise ValueError(f"回收站保留天数应在 {MIN_TRASH_RETENTION_DAYS}~{MAX_TRASH_RETENTION_DAYS} 天之间")
+            settings["trashRetentionDays"] = days
+        if "autoArchiveEnabled" in patch:
+            settings["autoArchiveEnabled"] = bool(patch["autoArchiveEnabled"])
+        if "autoArchiveDays" in patch:
+            try:
+                days = int(patch["autoArchiveDays"])
+            except (TypeError, ValueError):
+                raise ValueError("自动归档天数必须是整数") from None
+            if not 1 <= days <= MAX_AUTO_ARCHIVE_DAYS:
+                raise ValueError(f"自动归档天数应在 1~{MAX_AUTO_ARCHIVE_DAYS} 天之间")
+            settings["autoArchiveDays"] = days
+        encoded = _json(settings)
+        row = connection.execute("SELECT 1 FROM app_state WHERE key=?", (SETTINGS_KEY,)).fetchone()
+        if row:
+            connection.execute("UPDATE app_state SET payload=?, updated_at=? WHERE key=?",
+                               (encoded, _now(), SETTINGS_KEY))
+        else:
+            connection.execute(
+                "INSERT INTO app_state(key,payload,updated_at,revision) VALUES(?,?,?,0)",
+                (SETTINGS_KEY, encoded, _now()))
+    return settings
+
+
+def log_activity(kind: str, summary: str, *, project_id: Any = "", project_name: str = "",
+                 detail: dict[str, Any] | None = None, undoable: bool = False,
+                 connection: sqlite3.Connection | None = None) -> None:
+    """记录一条活动历史（可追溯）。同一事务里调用时传 connection，保证与业务一起提交/回滚。"""
+    payload = (
+        str(kind or "unknown"),
+        str(project_id or ""),
+        str(project_name or ""),
+        str(summary or "")[:500],
+        _json(detail or {}),
+        1 if undoable else 0,
+        _now(),
+    )
+
+    def _write(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "INSERT INTO activity_log(kind,project_id,project_name,summary,detail,undoable,at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6]),
+        )
+
+    if connection is not None:
+        _write(connection)
+        return
+    with _database_lock, open_state_database() as own:
+        _write(own)
+
+
+def list_activity(limit: int = 50) -> list[dict[str, Any]]:
+    size = _clean_int(limit, minimum=1, maximum=ACTIVITY_LIMIT_MAX, default=50)
+    with _database_lock, open_state_database() as connection:
+        rows = connection.execute(
+            "SELECT id,at,kind,project_id,project_name,summary,detail,undoable "
+            "FROM activity_log ORDER BY id DESC LIMIT ?", (size,)
+        ).fetchall()
+    entries = []
+    for row in rows:
+        entries.append({
+            "id": int(row["id"]),
+            "at": str(row["at"]),
+            "kind": str(row["kind"]),
+            "projectId": str(row["project_id"]),
+            "projectName": str(row["project_name"]),
+            "summary": str(row["summary"]),
+            "detail": _decode_object(row["detail"], "活动记录损坏"),
+            "undoable": bool(row["undoable"]),
+        })
+    return entries
+
+
+def clear_activity() -> int:
+    with _database_lock, open_state_database() as connection:
+        cursor = connection.execute("DELETE FROM activity_log")
+    return cursor.rowcount
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -934,8 +1104,10 @@ def store_trash_item(
     }
 
 
-def purge_trash_items(days: int = TRASH_RETENTION_DAYS) -> int:
-    """删除早于 days 天的回收站条目（默认 7 天）。"""
+def purge_trash_items(days: int | None = None) -> int:
+    """删除早于保留天数的回收站条目（默认取应用设置里的 trashRetentionDays）。"""
+    if days is None:
+        days = int(read_app_settings()["trashRetentionDays"])
     cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
     with _database_lock, open_state_database() as connection:
         cursor = connection.execute(
@@ -944,34 +1116,74 @@ def purge_trash_items(days: int = TRASH_RETENTION_DAYS) -> int:
     return cursor.rowcount
 
 
+def _ensure_orphan_box(project: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    """父节点已被删除时，把任务恢复到这个保留容器里（找不到就新建一个）。"""
+    tree = project.setdefault("tree", [])
+    for node in tree:
+        if str(node.get("type")) in CONTAINER_TYPES and str(node.get("text")) == ORPHAN_BOX_TITLE:
+            return node.setdefault("children", []), str(node.get("id"))
+    box_id = str(uuid.uuid4())
+    box = {
+        "id": box_id,
+        "type": "day",
+        "text": ORPHAN_BOX_TITLE,
+        "completed": False,
+        "expanded": True,
+        "createdAt": date.today().isoformat(),
+        "children": [],
+    }
+    tree.append(box)
+    return box["children"], box_id
+
+
 def list_trash_items() -> list[dict[str, Any]]:
     purge_trash_items()
+    settings = read_app_settings()
+    retention = int(settings["trashRetentionDays"])
 
     with _database_lock, open_state_database() as connection:
         rows = connection.execute(
             "SELECT trash_id,kind,project_id,parent_id,position,title,context,deleted_at,revision "
             "FROM trash_items ORDER BY deleted_at DESC,trash_id"
         ).fetchall()
+        live_projects = {str(row[0]) for row in connection.execute("SELECT project_id FROM projects")}
+        known_nodes: set[tuple[str, str]] = {
+            (str(row[0]), str(row[1]))
+            for row in connection.execute("SELECT project_id,node_id FROM nodes")
+        }
     items = []
     for row in rows:
         deleted_at = str(row["deleted_at"])
         expires = ""
         try:
-            expires = (datetime.fromisoformat(deleted_at) + timedelta(days=TRASH_RETENTION_DAYS)).isoformat(
+            expires = (datetime.fromisoformat(deleted_at) + timedelta(days=retention)).isoformat(
                 timespec="seconds")
         except ValueError:
             expires = ""
+        project_id = str(row["project_id"])
+        parent_id = row["parent_id"]
+        # 告诉前端"能不能恢复到原位"：父节点/项目没了就走孤立任务箱或直接禁用
+        if str(row["kind"]) == "node":
+            if project_id not in live_projects:
+                restore_target = "unavailable"
+            elif parent_id is not None and (project_id, str(parent_id)) not in known_nodes:
+                restore_target = "orphan"
+            else:
+                restore_target = "original"
+        else:
+            restore_target = "original" if project_id not in live_projects else "conflict"
         items.append({
             "id": row["trash_id"],
             "kind": row["kind"],
-            "projectId": row["project_id"],
-            "parentId": row["parent_id"],
+            "projectId": project_id,
+            "parentId": parent_id,
             "position": int(row["position"]),
             "title": row["title"],
             "context": row["context"],
             "deletedAt": deleted_at,
             "expiresAt": expires,
             "revision": int(row["revision"]),
+            "restoreTarget": restore_target,
         })
     return items
 
@@ -1042,6 +1254,8 @@ def delete_trash_items(ids: list[Any]) -> dict[str, Any]:
 
 def restore_trash_item(trash_id: Any) -> dict[str, Any]:
     trash_id = str(trash_id)
+    restored_to = "original"
+    restored_parent: str | None = None
     with _database_lock:
         with open_state_database() as connection:
             row = connection.execute("SELECT * FROM trash_items WHERE trash_id=?", (trash_id,)).fetchone()
@@ -1062,6 +1276,9 @@ def restore_trash_item(trash_id: Any) -> dict[str, Any]:
                     raise StateConflictError("同名项目已经存在，请先删除现有项目")
                 revision = int(row["revision"] or 0) or 1
                 _upsert_project(connection, project, int(row["position"]), revision, _now())
+                log_activity("restore-project", f"恢复项目「{_project_title(project)}」",
+                             project_id=project_id, project_name=_project_title(project),
+                             connection=connection)
             else:
                 project_id = str(row["project_id"])
                 project_row = connection.execute(
@@ -1074,12 +1291,24 @@ def restore_trash_item(trash_id: Any) -> dict[str, Any]:
                 if not project:
                     raise ValueError("原项目已不存在，无法恢复任务")
                 root, revision = project
-                _find_parent_and_insert(root.get("tree") or [], row["parent_id"], payload, int(row["position"]))
+                parent_id = row["parent_id"]
+                if parent_id is not None and _find_children_list(root.get("tree") or [], str(parent_id)) is None:
+                    # 原位置已经不存在（父节点被删了）：恢复到"孤立任务箱"，而不是拒绝恢复
+                    siblings, restored_parent = _ensure_orphan_box(root)
+                    siblings.append(payload)
+                    restored_to = "orphan"
+                else:
+                    _find_parent_and_insert(root.get("tree") or [], parent_id, payload, int(row["position"]))
+                    restored_parent = str(parent_id) if parent_id is not None else None
                 _upsert_project(connection, root, int(connection.execute(
                     "SELECT position FROM projects WHERE project_id=?", (project_id,)
                 ).fetchone()[0]), int(revision) + 1, _now())
+                log_activity("restore", f"恢复「{str(payload.get('text') or row['title'])}」",
+                             project_id=project_id, project_name=_project_title(root),
+                             detail={"trashId": trash_id, "restoredTo": restored_to},
+                             connection=connection)
             connection.execute("DELETE FROM trash_items WHERE trash_id=?", (trash_id,))
-    return {"id": trash_id, "kind": kind}
+    return {"id": trash_id, "kind": kind, "restoredTo": restored_to, "parentId": restored_parent}
 
 
 def read_project_summaries() -> list[dict[str, Any]]:
@@ -1154,6 +1383,546 @@ def export_projects_snapshot() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# 导出（Markdown / CSV）、项目模板、导入预览与三种导入模式（第五批 7~10）
+# ---------------------------------------------------------------------------
+
+EXPORT_FORMATS = ("json", "markdown", "csv")
+
+
+def _node_meta_suffix(node: dict[str, Any]) -> str:
+    """任务的一行元数据后缀（Markdown/CSV 共用同一套字段名）。"""
+    parts: list[str] = []
+    priority = {"high": "高", "mid": "中", "low": "低"}.get(str(node.get("priority") or ""), "")
+    if priority:
+        parts.append(f"优先级 {priority}")
+    if node.get("dueDate"):
+        parts.append(f"截止 {node['dueDate']}")
+    if node.get("estimateMinutes"):
+        parts.append(f"预计 {int(node['estimateMinutes'])} 分钟")
+    repeat = clean_repeat(node.get("repeat"))
+    if repeat:
+        parts.append("周期 " + format_repeat_text(repeat))
+    if node.get("optional"):
+        parts.append("选做")
+    if node.get("assessmentRequired"):
+        parts.append("需验收")
+    return "（" + " · ".join(parts) + "）" if parts else ""
+
+
+def format_repeat_text(rule: dict[str, Any]) -> str:
+    freq = str(rule.get("freq"))
+    if freq == "daily":
+        interval = int(rule.get("interval") or 1)
+        return "每天" if interval <= 1 else f"每 {interval} 天"
+    if freq == "weekday":
+        return "每个工作日"
+    if freq == "weekly":
+        names = ["日", "一", "二", "三", "四", "五", "六"]
+        weekday = int(rule.get("weekday") or 0) % 7
+        return f"每周{names[weekday]}"
+    if freq == "monthly":
+        return f"每月 {int(rule.get('day') or 1)} 日"
+    return freq
+
+
+def export_markdown() -> str:
+    """人看的导出：按 周 → 单元 → 任务 分层，任务带复选框与元数据后缀。"""
+    snapshot = export_projects_snapshot()
+    lines: list[str] = ["# 学习计划导出", "",
+                        f"导出时间：{snapshot['exportedAt']}　共 {len(snapshot['projects'])} 个项目", ""]
+    for project in snapshot["projects"]:
+        lines.append(f"## {project.get('name') or '未命名项目'}")
+        description = str(project.get("description") or "").strip()
+        if description:
+            lines.append("")
+            lines.append(f"> {description}")
+        lines.append("")
+        for week in project.get("tree") or []:
+            lines.append(f"### {week.get('text') or '未命名'}{_node_meta_suffix(week)}")
+            for day in week.get("children") or []:
+                lines.append(f"#### {day.get('text') or '未命名'}{_node_meta_suffix(day)}")
+                items = day.get("children") or []
+                if not items:
+                    lines.append("- （没有任务）")
+                for node in items:
+                    box = "x" if node.get("completed") else " "
+                    line = f"- [{box}] {node.get('text') or '未命名'}{_node_meta_suffix(node)}"
+                    if node.get("tags"):
+                        line += " " + " ".join(f"#{tag}" for tag in node["tags"])
+                    lines.append(line)
+                    note = str(node.get("note") or "").strip()
+                    if note:
+                        for note_line in note.splitlines():
+                            lines.append(f"      > {note_line}")
+                    for link in node.get("links") or []:
+                        label = str(link.get("label") or "链接")
+                        lines.append(f"      - [{label}]({link.get('url')})")
+                lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+CSV_COLUMNS = ["项目", "周", "单元", "任务", "类型", "完成", "选做", "需验收", "优先级", "截止日期",
+               "预计分钟", "标签", "备注", "链接", "周期", "创建时间", "完成时间"]
+
+
+def export_csv() -> str:
+    """表格导出：一行一个节点（任务为主，周/单元也各占一行便于透视）。UTF-8 BOM 便于 Excel 打开。"""
+    import csv as _csv
+    import io as _io
+    snapshot = export_projects_snapshot()
+    buffer = _io.StringIO()
+    writer = _csv.writer(buffer)
+    writer.writerow(CSV_COLUMNS)
+    for project in snapshot["projects"]:
+        project_name = str(project.get("name") or "未命名项目")
+        for week in project.get("tree") or []:
+            writer.writerow([project_name, week.get("text") or "", "", "", "week",
+                             "是" if week.get("completed") else "否", "", "", "", "", "", "", "", "", "",
+                             week.get("createdAt") or "", ""])
+            for day in week.get("children") or []:
+                writer.writerow([project_name, week.get("text") or "", day.get("text") or "", "", "day",
+                                 "是" if day.get("completed") else "否", "", "", "", "", "", "", "", "", "",
+                                 day.get("createdAt") or "", ""])
+                for node in day.get("children") or []:
+                    writer.writerow([
+                        project_name,
+                        week.get("text") or "",
+                        day.get("text") or "",
+                        node.get("text") or "",
+                        node.get("type") or "item",
+                        "是" if node.get("completed") else "否",
+                        "是" if node.get("optional") else "",
+                        "是" if node.get("assessmentRequired") else "",
+                        node.get("priority") or "",
+                        node.get("dueDate") or "",
+                        int(node.get("estimateMinutes") or 0) or "",
+                        "、".join(node.get("tags") or []),
+                        str(node.get("note") or "").replace("\r\n", "\n"),
+                        " ".join(str(link.get("url") or "") for link in (node.get("links") or [])),
+                        format_repeat_text(clean_repeat(node.get("repeat"))) if node.get("repeat") else "",
+                        node.get("createdAt") or "",
+                        node.get("completedAt") or "",
+                    ])
+    return "\ufeff" + buffer.getvalue()
+
+
+BUILTIN_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "id": "builtin-8-week-review",
+        "name": "8 周系统复习",
+        "description": "每周一个主题：概念 → 练习 → 复盘，适合把一门课从头过一遍。",
+        "builtin": True,
+        "tree": [
+            {"type": "week", "text": f"第{n}周：主题", "children": [
+                {"type": "day", "text": "单元1：概念与原理", "children": [
+                    {"type": "item", "text": "用自己的话解释本周核心概念"},
+                    {"type": "item", "text": "画一张原理图 / 流程图"},
+                ]},
+                {"type": "day", "text": "单元2：动手练习", "children": [
+                    {"type": "item", "text": "完成一个最小可运行示例"},
+                    {"type": "item", "text": "给关键逻辑补 2 条测试"},
+                ]},
+                {"type": "day", "text": "单元3：复盘", "children": [
+                    {"type": "item", "text": "整理易错点清单"},
+                    {"type": "item", "text": "写 3 句话总结本周收获"},
+                ]},
+            ]} for n in range(1, 9)
+        ],
+    },
+    {
+        "id": "builtin-debug-drill",
+        "name": "排错四步训练",
+        "description": "复现 → 定位 → 修复 → 回归，训练排错肌肉记忆。",
+        "builtin": True,
+        "tree": [
+            {"type": "week", "text": "第1周：排错基本功", "children": [
+                {"type": "day", "text": "单元1：刻意练习", "children": [
+                    {"type": "item", "text": "写下可复现的最短步骤"},
+                    {"type": "item", "text": "用二分法定位到具体函数"},
+                    {"type": "item", "text": "修复并说明根因"},
+                    {"type": "item", "text": "补一条能挡住这个 bug 的测试"},
+                ]},
+            ]},
+        ],
+    },
+]
+
+
+def _template_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(entry.get("id")),
+        "name": str(entry.get("name")),
+        "description": str(entry.get("description") or ""),
+        "builtin": bool(entry.get("builtin")),
+        "tree": entry.get("tree") or [],
+    }
+
+
+def list_templates() -> list[dict[str, Any]]:
+    templates = [_template_payload(entry) for entry in BUILTIN_TEMPLATES]
+    with _database_lock, open_state_database() as connection:
+        rows = connection.execute(
+            "SELECT template_id,name,description,payload,builtin FROM project_templates "
+            "ORDER BY builtin DESC, name"
+        ).fetchall()
+    for row in rows:
+        stored = _decode_object(row["payload"], "模板数据损坏")
+        templates.append({
+            "id": str(row["template_id"]),
+            "name": str(row["name"]),
+            "description": str(row["description"] or ""),
+            "builtin": bool(row["builtin"]),
+            "tree": stored.get("tree") or [],
+        })
+    return templates
+
+
+def save_project_as_template(project_id: Any, name: Any = None, description: Any = "") -> dict[str, Any]:
+    """把现有项目存成模板（只存结构，不存完成状态/AI 历史/复习）。"""
+    project_key = str(project_id)
+    with _database_lock, open_state_database() as connection:
+        result = _read_project_from_connection(connection, project_key)
+        if not result:
+            raise ValueError("项目不存在")
+        project, _revision = result
+        template_name = str(name or "").strip()[:60] or f"{_project_title(project)} 模板"
+        existing = connection.execute(
+            "SELECT template_id FROM project_templates WHERE name=?", (template_name,)
+        ).fetchone()
+        tree = []
+        for node in project.get("tree") or []:
+            clone = _refresh_all_ids(node)
+            clone["text"] = str(node.get("text") or "未命名")
+            for entry in _walk_nodes([clone]):
+                entry["completed"] = False
+                entry["completedAt"] = None
+                entry["assessment"] = None
+                entry["assessmentHistory"] = 0
+                entry.pop("review", None)
+            tree.append(clone)
+        payload = _json({"tree": tree})
+        template_id = str(existing["template_id"]) if existing else str(uuid.uuid4())
+        now = _now()
+        if existing:
+            connection.execute(
+                "UPDATE project_templates SET payload=?,description=? WHERE template_id=?",
+                (payload, str(description or "")[:200], template_id))
+        else:
+            connection.execute(
+                "INSERT INTO project_templates(template_id,name,description,payload,created_at,builtin) "
+                "VALUES(?,?,?,?,?,0)",
+                (template_id, template_name, str(description or "")[:200], payload, now))
+        log_activity("template", f"把「{_project_title(project)}」存为模板「{template_name}」",
+                     project_id=project_key, project_name=_project_title(project),
+                     connection=connection)
+    return {"id": template_id, "name": template_name, "description": str(description or ""),
+            "builtin": False, "tree": tree}
+
+
+def delete_template(template_id: Any) -> bool:
+    template_key = str(template_id)
+    if any(entry["id"] == template_key for entry in BUILTIN_TEMPLATES):
+        raise ValueError("内置模板不能删除")
+    with _database_lock, open_state_database() as connection:
+        cursor = connection.execute("DELETE FROM project_templates WHERE template_id=?", (template_key,))
+    return cursor.rowcount > 0
+
+
+def create_project_from_template(template_id: Any, name: Any = None) -> dict[str, Any]:
+    template_key = str(template_id)
+    template = next((entry for entry in list_templates() if entry["id"] == template_key), None)
+    if template is None:
+        raise ValueError("模板不存在")
+    project = {
+        "id": str(uuid.uuid4()),
+        "name": str(name or "").strip()[:200] or template["name"],
+        "description": str(template.get("description") or ""),
+        "createdAt": date.today().isoformat(),
+        "assessmentEnabled": False,
+        "reviewEnabled": False,
+        "archived": False,
+        "tree": [_refresh_all_ids(node) for node in template.get("tree") or []],
+    }
+    with _database_lock:
+        with open_state_database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            position = connection.execute("SELECT COALESCE(MAX(position),-1)+1 FROM projects").fetchone()[0]
+            _upsert_project(connection, project, int(position), 1, _now())
+            log_activity("template", f"用模板「{template['name']}」创建项目「{project['name']}」",
+                         project_id=project["id"], project_name=project["name"],
+                         detail={"templateId": template_key}, connection=connection)
+    return {"project": project, "templateId": template_key}
+
+
+def count_node_progress(nodes: Any) -> tuple[int, int]:
+    items = [node for node in _walk_nodes(nodes) if str(node.get("type")) == "item"]
+    return len(items), len([node for node in items if node.get("completed")])
+
+
+def _node_index_by_id(nodes: Any) -> dict[str, dict[str, Any]]:
+    return {str(node.get("id")): node for node in _walk_nodes(nodes)}
+
+
+def find_import_duplicate_ids(projects: list[Any]) -> list[str]:
+    """导入前的重复 ID 检查（返回人类可读的问题列表；空列表=没问题）。"""
+    problems: list[str] = []
+    seen_projects: dict[str, str] = {}
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        project_id = str(project.get("id") or "")
+        name = str(project.get("name") or "未命名项目")
+        if project_id:
+            if project_id in seen_projects:
+                problems.append(f"重复的项目 ID：{project_id}（“{seen_projects[project_id]}”与“{name}”）")
+            else:
+                seen_projects[project_id] = name
+        seen_nodes: set[str] = set()
+        stack = [(node, name) for node in (project.get("tree") or []) if isinstance(node, dict)]
+        while stack:
+            node, path = stack.pop()
+            node_id = str(node.get("id") or "")
+            label = str(node.get("text") or node.get("type") or "未命名")
+            node_path = f"{path} / {label}"
+            if node_id:
+                if node_id in seen_nodes:
+                    problems.append(f"重复的节点 ID：{node_path}（ID {node_id}）")
+                seen_nodes.add(node_id)
+            for child in node.get("children") or []:
+                if isinstance(child, dict):
+                    stack.append((child, node_path))
+    return problems
+
+
+def preview_import(projects: Any, mode: str = "replace", *, keep_ai_history: bool = True) -> dict[str, Any]:
+    """导入前的差异报告：新增/更新/删除、重复 ID、覆盖内容与 AI 历史处理方式。"""
+    if not isinstance(projects, list):
+        raise ValueError("导入数据格式不正确")
+    if mode not in {"replace", "merge", "new"}:
+        raise ValueError("不支持的导入模式")
+    duplicate_problems = find_import_duplicate_ids(projects)
+    incoming_ids: list[str] = []
+    for index, project in enumerate(projects):
+        if not isinstance(project, dict):
+            raise ValueError(f"导入的第 {index + 1} 项不是项目对象")
+        incoming_ids.append(str(project.get("id") or ""))
+    existing = {entry["id"]: entry for entry in read_project_summaries()}
+
+    new_projects: list[dict[str, Any]] = []
+    updated_projects: list[dict[str, Any]] = []
+    unchanged_projects: list[dict[str, Any]] = []
+    removed_projects: list[dict[str, Any]] = []
+    totals = {"addedNodes": 0, "updatedNodes": 0, "keptLocalOnlyNodes": 0, "deletedNodes": 0}
+    ai_nodes = 0
+    review_nodes = 0
+
+    for project in projects:
+        incoming = dict(project)
+        pid = str(incoming.get("id") or "")
+        local = existing.get(pid)
+        item_count, completed_count = count_node_progress(incoming.get("tree"))
+        ai_nodes += len([node for node in _walk_nodes(incoming.get("tree"))
+                         if isinstance(node.get("assessment"), dict) and node.get("assessment")])
+        review_nodes += len([node for node in _walk_nodes(incoming.get("tree")) if node.get("review")])
+        summary = {
+            "id": pid,
+            "name": str(incoming.get("name") or "未命名项目"),
+            "itemCount": item_count,
+            "completedCount": completed_count,
+        }
+        if mode == "new" or local is None:
+            summary["duplicateName"] = any(
+                entry["name"] == summary["name"] and entry["id"] != pid for entry in existing.values())
+            new_projects.append(summary)
+            continue
+        # merge / replace 且本地已有同 ID 项目
+        with _database_lock, open_state_database() as connection:
+            stored = _read_project_from_connection(connection, pid)
+        local_tree = stored[0].get("tree") if stored else []
+        local_index = _node_index_by_id(local_tree)
+        incoming_index = _node_index_by_id(incoming.get("tree"))
+        added = len([nid for nid in incoming_index if nid not in local_index])
+        updated = len([nid for nid in incoming_index if nid in local_index])
+        kept_local = len([nid for nid in local_index if nid not in incoming_index])
+        totals["addedNodes"] += added
+        totals["updatedNodes"] += updated
+        totals["keptLocalOnlyNodes"] += kept_local
+        if mode == "replace":
+            totals["deletedNodes"] += len([nid for nid in local_index if nid not in incoming_index])
+        summary.update({"addedNodes": added, "updatedNodes": updated, "keptLocalOnlyNodes": kept_local})
+        (unchanged_projects if added == 0 and updated == 0 else updated_projects).append(summary)
+
+    if mode == "replace":
+        incoming_set = {pid for pid in incoming_ids if pid}
+        removed_projects = [
+            {"id": entry["id"], "name": entry["name"]}
+            for entry in existing.values() if entry["id"] not in incoming_set
+        ]
+        totals["deletedNodes"] = sum(
+            len(_walk_nodes((read_project(entry["id"]) or ({}, 0))[0].get("tree") or []))
+            for entry in removed_projects
+        )
+    return {
+        "mode": mode,
+        "keepAiHistory": bool(keep_ai_history),
+        "duplicates": duplicate_problems,
+        "newProjects": new_projects,
+        "updatedProjects": updated_projects,
+        "unchangedProjects": unchanged_projects,
+        "removedProjects": removed_projects,
+        "totals": totals,
+        "aiHistory": {
+            "nodesWithAssessment": ai_nodes,
+            "nodesWithReview": review_nodes,
+            "policy": "保留" if keep_ai_history else "导入时清空 AI 验收历史与复习安排",
+        },
+    }
+
+
+def _merge_tree(local: list[dict[str, Any]], incoming: list[dict[str, Any]],
+                *, keep_ai_history: bool = True) -> dict[str, int]:
+    """按节点 ID 合并：同 ID 用新内容覆盖（保留顺序），新 ID 追加，本地独有的保留不删。
+
+    keep_ai_history=False 时，被覆盖的节点也要清掉验收/复习——否则"导入时清空 AI 历史"
+    对合并模式只在本地没有该节点时才生效，看起来像没生效。
+    """
+    added = updated = 0
+    local_index = _node_index_by_id(local)
+
+    def _merge_into(local_nodes: list[dict[str, Any]], incoming_nodes: list[dict[str, Any]]) -> None:
+        nonlocal added, updated
+        for node in incoming_nodes or []:
+            node_id = str(node.get("id") or "")
+            if not node_id:
+                continue
+            target = local_index.get(node_id)
+            if target is not None:
+                children = target.get("children") or []
+                for key, value in node.items():
+                    if key == "children":
+                        continue
+                    target[key] = value
+                if not keep_ai_history:
+                    target["assessment"] = None
+                    target["assessmentHistory"] = 0
+                    target.pop("review", None)
+                _merge_into(children, node.get("children") or [])
+                updated += 1
+            else:
+                clone = json.loads(json.dumps(node))
+                if not isinstance(clone.get("children"), list):
+                    clone["children"] = []
+                local_nodes.append(clone)
+                local_index[node_id] = clone
+                added += 1
+                _merge_into(clone["children"], node.get("children") or [])
+
+    _merge_into(local, incoming)
+    return {"addedNodes": added, "updatedNodes": updated}
+
+
+def import_projects(projects: Any, mode: str = "replace", *, keep_ai_history: bool = True) -> dict[str, Any]:
+    """按模式导入：replace（整体替换）/ merge（合并进现有项目）/ new（都当新项目）。"""
+    if not isinstance(projects, list) or not projects:
+        raise ValueError("没有可导入的项目")
+    if mode not in {"replace", "merge", "new"}:
+        raise ValueError("不支持的导入模式")
+    preview = preview_import(projects, mode, keep_ai_history=keep_ai_history)
+    if preview["duplicates"]:
+        raise ValueError("导入被拒绝：发现重复 ID——" + preview["duplicates"][0])
+    prepared = [json.loads(json.dumps(project)) for project in projects]
+    if not keep_ai_history:
+        for project in prepared:
+            for node in _walk_nodes(project.get("tree") if isinstance(project, dict) else []):
+                node["assessment"] = None
+                node["assessmentHistory"] = 0
+                node.pop("review", None)
+    if mode == "replace":
+        replace_projects(prepared, pre_backup=False)
+        log_activity("import", f"整体替换导入 {len(prepared)} 个项目",
+                     detail={"mode": mode, "projects": len(prepared), "preview": preview["totals"]})
+    elif mode == "new":
+        created = []
+        with _database_lock:
+            with open_state_database() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                position = connection.execute("SELECT COALESCE(MAX(position),-1)+1 FROM projects").fetchone()[0]
+                for project in prepared:
+                    project = dict(project)
+                    project["id"] = str(uuid.uuid4())
+                    project["createdAt"] = str(project.get("createdAt") or date.today().isoformat())
+                    _upsert_project(connection, project, int(position), 1, _now())
+                    position += 1
+                    created.append({"id": project["id"], "name": project.get("name")})
+                log_activity("import", f"导入为新项目 {len(created)} 个",
+                             detail={"mode": mode, "projects": created}, connection=connection)
+    else:  # merge：只增不删
+        totals = {"addedNodes": 0, "updatedNodes": 0, "newProjects": 0}
+        with _database_lock:
+            with open_state_database() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                for project in prepared:
+                    pid = str(project.get("id") or "")
+                    existing = _read_project_from_connection(connection, pid) if pid else None
+                    if not existing:
+                        position = connection.execute(
+                            "SELECT COALESCE(MAX(position),-1)+1 FROM projects").fetchone()[0]
+                        _upsert_project(connection, project, int(position), 1, _now())
+                        totals["newProjects"] += 1
+                        continue
+                    local_project, revision = existing
+                    counts = _merge_tree(local_project.setdefault("tree", []), project.get("tree") or [],
+                                           keep_ai_history=keep_ai_history)
+                    totals["addedNodes"] += counts["addedNodes"]
+                    totals["updatedNodes"] += counts["updatedNodes"]
+                    local_project["name"] = str(project.get("name") or local_project.get("name"))
+                    local_project["description"] = str(project.get("description") or local_project.get("description") or "")
+                    _upsert_project(connection, local_project,
+                                    _project_position(connection, pid), int(revision) + 1, _now())
+                log_activity("import", f"合并导入：新增 {totals['addedNodes']} 个任务、更新 {totals['updatedNodes']} 个",
+                             detail={"mode": mode, **totals}, connection=connection)
+    return {"mode": mode, "preview": preview, "projects": read_project_summaries()}
+
+
+def auto_archive_projects(days: int | None = None) -> dict[str, Any]:
+    """把"所有任务都完成、且很久没动过"的项目自动归档（可在设置里关掉）。"""
+    settings = read_app_settings()
+    if days is None:
+        if not settings["autoArchiveEnabled"]:
+            return {"archived": [], "skipped": "autoArchiveEnabled=false"}
+        days = int(settings["autoArchiveDays"])
+    cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
+    archived: list[dict[str, str]] = []
+    with _database_lock:
+        with open_state_database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT project_id,position,revision,updated_at FROM projects "
+                "WHERE archived=0 AND project_id<>? AND updated_at<>'' AND updated_at<? "
+                "ORDER BY position",
+                (INBOX_PROJECT_ID, cutoff),
+            ).fetchall()
+            for row in rows:
+                project_id = str(row["project_id"])
+                if project_id in {"inbox"}:
+                    continue
+                result = _read_project_from_connection(connection, project_id)
+                if not result:
+                    continue
+                project, revision = result
+                total, completed = count_node_progress(project.get("tree"))
+                if total == 0 or completed < total:
+                    continue
+                project["archived"] = True
+                _upsert_project(connection, project, int(row["position"]), int(revision) + 1, _now())
+                archived.append({"id": project_id, "name": _project_title(project)})
+                log_activity("auto-archive", f"自动归档已完成项目「{_project_title(project)}」",
+                             project_id=project_id, project_name=_project_title(project),
+                             detail={"days": int(days)}, connection=connection)
+    return {"archived": archived, "days": int(days)}
+
+
 def write_project(project: dict[str, Any], expected_revision: int | None) -> tuple[int, dict[str, Any]]:
     stored = {key: value for key, value in project.items() if not str(key).startswith("_")}
     encoded = _json(stored).encode("utf-8")
@@ -1217,6 +1986,10 @@ def delete_project(project_id: Any, expected_revision: int) -> None:
                     ),
                 )
             connection.execute("DELETE FROM projects WHERE project_id=?", (str(project_id),))
+            if project:
+                log_activity("delete-project", f"删除项目「{_project_title(stored_project)}」（可在回收站恢复）",
+                             project_id=str(project_id), project_name=_project_title(stored_project),
+                             detail={"title": _project_title(stored_project)}, connection=connection)
 
 
 def replace_projects(projects: list[dict[str, Any]], *, pre_backup: bool = True) -> None:
@@ -1582,6 +2355,18 @@ def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[
     return spawned
 
 
+_BATCH_ACTION_NAMES = {
+    "set-priority": "改优先级",
+    "add-tags": "加标签",
+    "remove-tags": "移标签",
+    "set-due": "设截止",
+    "shift-due": "延期",
+    "set-estimate": "设耗时",
+    "complete": "标记完成",
+    "uncomplete": "取消完成",
+}
+
+
 def _project_auto_review(project: dict[str, Any]) -> bool:
     """与前端 projectAutoReview 一致：reviewEnabled 显式布尔优先，否则看 assessmentEnabled。"""
     enabled = project.get("reviewEnabled")
@@ -1645,6 +2430,14 @@ def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str
                             node["review"] = {"due": review_due, "learning": False, "log": []}
                 spawned = _spawn_next_occurrences(project, marks)
                 _upsert_project(connection, project, position(connection, project_id), revision + 1, now)
+                log_activity(
+                    "batch", f"批量{_BATCH_ACTION_NAMES.get(action, action)} {applied} 项",
+                    project_id=project_id, project_name=_project_title(project),
+                    detail={"action": action, "changed": applied, "spawned": spawned,
+                            "nodeIds": sorted(node_ids)},
+                    undoable=action not in {"complete"},
+                    connection=connection,
+                )
                 projects_touched.append(project_id)
                 changed += applied
                 spawned_total += spawned
@@ -1804,6 +2597,236 @@ def move_node(node_id: str, from_project_id: str, to_project_id: str,
             _upsert_project(connection, target_project,
                             _project_position(connection, str(to_project_id)), target_revision + 1, now)
     return {"nodeId": str(node_id), "from": str(from_project_id), "to": str(to_project_id)}
+
+
+# ---------- 拖拽排序 / 复制 / 删除影响面（第五批 1、2、3、13） ----------
+
+CONTAINER_TYPES = ("week", "day")
+
+
+def _find_node(nodes: Any, node_id: Any) -> dict[str, Any] | None:
+    target = str(node_id)
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id")) == target:
+            return node
+        found = _find_node(node.get("children") or [], target)
+        if found is not None:
+            return found
+    return None
+
+
+def _parent_of(nodes: list[dict[str, Any]], target_id: str, parent_id: str | None = None) -> str | None:
+    for node in nodes or []:
+        if str(node.get("id")) == str(target_id):
+            return parent_id
+        found = _parent_of(node.get("children") or [], target_id, str(node.get("id")))
+        if found is not None:
+            return found
+    return None
+
+
+def _index_of(nodes: list[dict[str, Any]], target_id: str) -> int:
+    for index, node in enumerate(nodes or []):
+        if str(node.get("id")) == str(target_id):
+            return index
+    return -1
+
+
+def _walk_nodes(nodes: Any) -> list[dict[str, Any]]:
+    collected: list[dict[str, Any]] = []
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        collected.append(node)
+        collected.extend(_walk_nodes(node.get("children") or []))
+    return collected
+
+
+def _refresh_all_ids(node: dict[str, Any]) -> dict[str, Any]:
+    """深拷贝一棵子树并给每个节点换新 ID（复制用）。"""
+    clone = json.loads(json.dumps(node))
+    for item in _walk_nodes([clone]):
+        item["id"] = str(uuid.uuid4())
+    return clone
+
+
+def _apply_copy_options(node: dict[str, Any], *, keep_completion: bool, keep_assessment: bool,
+                        keep_review: bool) -> None:
+    for item in _walk_nodes([node]):
+        if not keep_completion:
+            item["completed"] = False
+            item["completedAt"] = None
+        if not keep_assessment:
+            item["assessment"] = None
+            item["assessmentHistory"] = 0
+        if not keep_review:
+            item.pop("review", None)
+
+
+def reorder_node(project_id: Any, node_id: Any, parent_id: Any = None,
+                 position: Any = None) -> dict[str, Any]:
+    """在同一个项目内拖拽排序/跨周跨单元移动（父节点与位置一起给）。"""
+    project_key = str(project_id)
+    target_parent = str(parent_id) if parent_id not in (None, "") else None
+    with _database_lock:
+        with open_state_database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            result = _read_project_from_connection(connection, project_key)
+            if not result:
+                raise ValueError("项目不存在")
+            project, revision = result
+            tree = project.setdefault("tree", [])
+            node = _find_node(tree, node_id)
+            if node is None:
+                raise ValueError("节点不存在或已被删除")
+            if target_parent is not None:
+                if target_parent == str(node_id):
+                    raise ValueError("不能把节点移动到它自己下面")
+                parent_node = _find_node(tree, target_parent)
+                if parent_node is None:
+                    raise ValueError("目标父节点不存在")
+                if str(parent_node.get("type")) not in CONTAINER_TYPES:
+                    raise ValueError("只能移动到周或学习单元下面")
+                if _find_node(node.get("children") or [], target_parent) is not None:
+                    raise ValueError("不能把节点移动到它自己的子节点下面")
+            previous_parent = _parent_of(tree, str(node_id))
+            previous_list = _find_children_list(tree, previous_parent) or []
+            previous_position = _index_of(previous_list, str(node_id))
+            detached = _detach_node(tree, str(node_id))
+            if detached is None:
+                raise ValueError("节点不存在或已被删除")
+            siblings = _find_children_list(tree, target_parent)
+            if siblings is None:
+                raise ValueError("目标父节点不存在")
+            index = len(siblings) if position in (None, "") else max(0, min(int(position), len(siblings)))
+            siblings.insert(index, detached)
+            now = _now()
+            _upsert_project(connection, project, _project_position(connection, project_key), revision + 1, now)
+            log_activity(
+                "reorder", f"移动「{str(detached.get('text') or '未命名')}」",
+                project_id=project_key, project_name=_project_title(project),
+                detail={"nodeId": str(node_id), "parentId": target_parent, "position": index,
+                        "previousParentId": previous_parent, "previousPosition": previous_position},
+                undoable=True, connection=connection,
+            )
+    return {
+        "projectId": project_key,
+        "nodeId": str(node_id),
+        "parentId": target_parent,
+        "position": index,
+        "previous": {"parentId": previous_parent, "position": previous_position},
+    }
+
+
+def duplicate_node(project_id: Any, node_id: Any, *,
+                   include_children: bool = True,
+                   keep_completion: bool = False,
+                   keep_assessment: bool = False,
+                   keep_review: bool = False) -> dict[str, Any]:
+    """复制节点（可整枝复制）。副本插在原节点后面，ID 全部重新生成。"""
+    project_key = str(project_id)
+    with _database_lock:
+        with open_state_database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            result = _read_project_from_connection(connection, project_key)
+            if not result:
+                raise ValueError("项目不存在")
+            project, revision = result
+            tree = project.setdefault("tree", [])
+            node = _find_node(tree, node_id)
+            if node is None:
+                raise ValueError("节点不存在或已被删除")
+            parent_id = _parent_of(tree, str(node_id))
+            siblings = _find_children_list(tree, parent_id)
+            if siblings is None:
+                raise ValueError("找不到原节点的位置")
+            index = _index_of(siblings, str(node_id))
+            clone = _refresh_all_ids(node)
+            if not include_children:
+                clone["children"] = []
+            if str(clone.get("type")) == "item":
+                clone["children"] = []
+            clone["text"] = str(node.get("text") or "未命名") + "（副本）"
+            _apply_copy_options(clone, keep_completion=keep_completion,
+                                keep_assessment=keep_assessment, keep_review=keep_review)
+            siblings.insert(index + 1, clone)
+            now = _now()
+            _upsert_project(connection, project, _project_position(connection, project_key), revision + 1, now)
+            log_activity(
+                "duplicate", f"复制「{str(node.get('text') or '未命名')}」",
+                project_id=project_key, project_name=_project_title(project),
+                detail={"sourceNodeId": str(node_id), "newNodeId": clone["id"],
+                        "withChildren": bool(include_children)},
+                undoable=True, connection=connection,
+            )
+    return {"projectId": project_key, "node": clone, "sourceNodeId": str(node_id)}
+
+
+def duplicate_project(project_id: Any, *, name: str | None = None,
+                      keep_completion: bool = True,
+                      keep_assessment: bool = True,
+                      keep_review: bool = True) -> dict[str, Any]:
+    """复制整个项目（ID 全部重新生成），可选是否保留完成状态 / AI 历史 / 复习安排。"""
+    project_key = str(project_id)
+    with _database_lock:
+        with open_state_database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            result = _read_project_from_connection(connection, project_key)
+            if not result:
+                raise ValueError("项目不存在")
+            original, _revision = result
+            clone = json.loads(json.dumps(original))
+            clone["id"] = str(uuid.uuid4())
+            clone["name"] = str(name or "").strip()[:200] or f"{_project_title(original)}（副本）"
+            clone["createdAt"] = date.today().isoformat()
+            clone["archived"] = False
+            clone.pop("lastOpenedAt", None)
+            clone["tree"] = [
+                _refresh_all_ids(node) for node in (original.get("tree") or [])
+            ]
+            for node in clone["tree"]:
+                _apply_copy_options(node, keep_completion=keep_completion,
+                                    keep_assessment=keep_assessment, keep_review=keep_review)
+            position = connection.execute("SELECT COALESCE(MAX(position),-1)+1 FROM projects").fetchone()[0]
+            _upsert_project(connection, clone, int(position), 1, _now())
+            log_activity(
+                "duplicate-project", f"复制项目「{_project_title(original)}」",
+                project_id=clone["id"], project_name=clone["name"],
+                detail={"sourceProjectId": project_key, "keepCompletion": bool(keep_completion),
+                        "keepAssessment": bool(keep_assessment), "keepReview": bool(keep_review)},
+                connection=connection,
+            )
+    return {"project": clone, "sourceProjectId": project_key}
+
+
+def describe_node_delete(project_id: Any, node_id: Any) -> dict[str, Any]:
+    """删除前的影响面：子树有多少任务、多少已完成、预计耗时合计。"""
+    project_key = str(project_id)
+    with _database_lock, open_state_database() as connection:
+        result = _read_project_from_connection(connection, project_key)
+    if not result:
+        raise ValueError("项目不存在")
+    project, _revision = result
+    node = _find_node(project.get("tree") or [], node_id)
+    if node is None:
+        raise ValueError("节点不存在或已被删除")
+    descendants = _walk_nodes(node.get("children") or [])
+    items = [entry for entry in descendants if str(entry.get("type")) == "item"]
+    if str(node.get("type")) == "item":
+        items.append(node)
+    minutes = sum(int(entry.get("estimateMinutes") or 0) for entry in items)
+    return {
+        "projectId": project_key,
+        "nodeId": str(node_id),
+        "title": str(node.get("text") or "未命名"),
+        "type": str(node.get("type") or ""),
+        "descendantCount": len(descendants),
+        "itemCount": len(items),
+        "completedCount": len([entry for entry in items if entry.get("completed")]),
+        "estimateMinutes": minutes,
+    }
 
 
 def touch_project_opened(project_id: Any) -> None:

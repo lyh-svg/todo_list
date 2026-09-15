@@ -184,6 +184,13 @@ class BrowserFlowTests(unittest.TestCase):
         cls.workdir = Path(cls.tmp.name)
         cls.server = ServerProcess(cls.workdir)
         cls.server.start()
+        # 缺系统 NSS/NSPR 时，scripts/browser-test.sh 会把 deb 解包到 .playwright-libs；
+        # 这里自动带上它，这样直接跑 unittest 也能启动浏览器（不需要 sudo）。
+        libs = APP_DIR / ".playwright-libs" / "extracted" / "usr" / "lib" / "x86_64-linux-gnu"
+        if libs.is_dir():
+            existing = os.environ.get("LD_LIBRARY_PATH", "")
+            if str(libs) not in existing.split(":"):
+                os.environ["LD_LIBRARY_PATH"] = f"{libs}{':' + existing if existing else ''}"
         cls.playwright = sync_playwright().start()
         try:
             cls.browser = cls.playwright.chromium.launch()
@@ -268,10 +275,17 @@ class BrowserFlowTests(unittest.TestCase):
         self.page.wait_for_selector("#projectsView.active")
         self.open_more_tools()
         self.page.set_input_files("#importInput", str(backup))
+        # 第五批之后：导入先出预览（差异报告 + 三种模式），确认后才写库
+        self.page.wait_for_selector("#utilityModal:not([hidden])", timeout=15000)
+        report = self.page.inner_text("#utilityBody")
+        self.assertIn("新增项目", report, f"预览里要有新增项目：{report[:200]}")
+        self.assertIn("导入方式", report)
+        self.assertIn("AI 历史", report)
+        self.page.click("#utilityBody .utility-primary-btn")
+        self.page.wait_for_selector("#utilityModal", state="hidden", timeout=20000)
         self.wait_for_text("#projectGrid", "导入的项目")
         self.assertIn("导入的项目", self.page.inner_text("#projectGrid"))
         self.assertNotIn("浏览器测试项目", self.page.inner_text("#projectGrid"), "导入是整体替换")
-        self.assertTrue(any("导入" in message for message in self.dialogs), f"应出现导入确认：{self.dialogs}")
 
     def test_05_restore_backup(self) -> None:
         """恢复备份：先用 UI 建备份 → 用 API 改坏数据 → 用 UI 恢复到备份状态。"""

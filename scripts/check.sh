@@ -94,8 +94,9 @@ while IFS= read -r file; do
     esac
     total=$(wc -l < "$file")
     crlf=$(grep -c $'\r' "$file" || true)
-    if [ "$total" != "$crlf" ]; then
-        printf '   ✘ %s 行尾不是 CRLF（%s 行 / %s CRLF）\n' "$file" "$total" "$crlf"
+    doubled=$(grep -c $'\r\r' "$file" || true)
+    if [ "$total" != "$crlf" ] || [ "$doubled" != "0" ]; then
+        printf '   ✘ %s 行尾不对（%s 行 / %s 含 CR / %s 行双 CR）\n' "$file" "$total" "$crlf" "$doubled"
         crlf_bad=1
     fi
 done < <({ git ls-files '*.py' '*.js' '*.css' '*.html' '*.md'; git ls-files --others --exclude-standard '*.py' '*.js' '*.css' '*.html' '*.md'; } | sort -u)
