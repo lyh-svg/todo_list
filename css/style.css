@@ -427,6 +427,21 @@ body {
     border-radius: var(--radius);
     box-shadow: var(--shadow);
 }
+/* 回收站批量操作（⑩） */
+.trash-head { display: flex; align-items: center; gap: 8px; }
+.trash-head input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); }
+.trash-action-bar { justify-content: flex-start; flex-wrap: wrap; }
+.trash-action-bar button { min-height: 32px; }
+/* 版本冲突面板（①）：差异列表 + 三个动作 */
+.conflict-list { display: grid; gap: 6px; margin: 10px 0; max-height: 320px; overflow-y: auto; }
+.conflict-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; border: 1px solid #e2e8f5; border-radius: 8px;
+    background: #f8faff; font-size: 12px; line-height: 1.5; color: #414b5f;
+}
+.conflict-row button { flex: 0 0 auto; }
+.utility-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.conflict-merge { display: grid; gap: 6px; }
 /* 空状态/失败状态里的重试按钮（项目网格、复习队列、全局搜索共用） */
 .inline-retry-btn {
     display: block;
@@ -2003,7 +2018,7 @@ body.modal-open { overflow: hidden; }
     .project-ai-toggle { min-height: 40px; }
     .create-project-area button { min-height: 40px; }
     .backup-row { grid-template-columns: 1fr; }
-    .backup-row-actions { display: grid; grid-template-columns: repeat(3, 1fr); }
+    .backup-row-actions { display: grid; grid-template-columns: repeat(2, 1fr); }
     .project-card { grid-template-columns: minmax(0, 1fr) 96px; min-height: 108px; padding: 12px; }
     .project-card .card-name { padding-right: 44px; }
     .detail-header .detail-shortcuts { margin-left: 0; }

@@ -9,6 +9,7 @@ import re
 import sqlite3
 import sys
 import threading
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,16 +23,35 @@ BACKUP_DIR = Path(
     os.environ.get("TODO_SQLITE_BACKUP_DIR", str(DATABASE_FILE.parent / "backups"))
 ).expanduser()
 MAX_PROJECT_PAYLOAD_BYTES = 50 * 1024 * 1024
+TRASH_RETENTION_DAYS = 7
 SCHEMA_VERSION = 5
 # 导出 JSON 的 schema 版本。必须与前端 js/app.js 的 DATA_SCHEMA_VERSION 同步：
 # 前端 extractProjects() 会拒绝比自己更新的 schemaVersion。
 EXPORT_SCHEMA_VERSION = 2
+
+class _ManagedConnection(sqlite3.Connection):
+    """with 块结束时真正关闭连接。
+
+    sqlite3 的上下文管理器只负责提交/回滚，不关闭连接；不关会留下未释放的句柄
+    （表现为 ResourceWarning）。这里统一在 __exit__ 里关闭。
+    """
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc, tb))
+        finally:
+            self.close()
+
 
 _database_lock = threading.RLock()
 
 
 class StateConflictError(RuntimeError):
     pass
+
+
+class SchemaVersionError(RuntimeError):
+    """数据库 schema 版本高于本程序支持的版本：必须拒绝打开，绝不降级。"""
 
 
 def _json(value: Any) -> str:
@@ -48,13 +68,18 @@ def _decode_object(payload: str, error_message: str) -> dict[str, Any]:
     return value
 
 
+def database_user_version() -> int:
+    with sqlite3.connect(DATABASE_FILE, timeout=10, factory=_ManagedConnection) as connection:
+        return int(connection.execute("PRAGMA user_version").fetchone()[0])
+
+
 def open_state_database() -> sqlite3.Connection:
     DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         DATABASE_FILE.parent.chmod(0o700)
     except OSError:
         pass
-    connection = sqlite3.connect(DATABASE_FILE, timeout=10)
+    connection = sqlite3.connect(DATABASE_FILE, timeout=10, factory=_ManagedConnection)
     connection.row_factory = sqlite3.Row
     try:
         DATABASE_FILE.chmod(0o600)
@@ -65,6 +90,13 @@ def open_state_database() -> sqlite3.Connection:
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=10000")
     connection.execute("PRAGMA wal_autocheckpoint=1000")
+    stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if stored_version > SCHEMA_VERSION:
+        connection.close()
+        raise SchemaVersionError(
+            f"数据库 schema 版本为 {stored_version}，高于本程序支持的 {SCHEMA_VERSION}；"
+            "请升级程序后再打开（已拒绝打开，避免降级损坏数据）"
+        )
     connection.execute(
         "CREATE TABLE IF NOT EXISTS app_state ("
         "key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL, "
@@ -160,7 +192,8 @@ def open_state_database() -> sqlite3.Connection:
     project_columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     if "review_enabled" not in project_columns:
         connection.execute("ALTER TABLE projects ADD COLUMN review_enabled INTEGER")
-    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    # 只做幂等补列/建表；版本号由 ensure_schema() 在迁移成功后写入。
+    # 这里绝不能无条件写 user_version：那会把更高版本的库"降级"成旧结构继续用。
     return connection
 
 
@@ -201,17 +234,28 @@ def project_summary(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None) -> list[dict[str, Any]]:
+def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None,
+                   path: tuple[str, ...] = (), seen_ids: set[str] | None = None) -> list[dict[str, Any]]:
     flattened: list[dict[str, Any]] = []
     if not isinstance(nodes, list):
         return flattened
+    if seen_ids is None:
+        seen_ids = set()
     for position, raw in enumerate(nodes):
-        if not isinstance(raw, dict) or raw.get("id") is None:
-            raise ValueError("项目中存在无效节点")
+        if not isinstance(raw, dict):
+            raise ValueError("项目中存在无效节点（不是对象）")
         node_type = str(raw.get("type", ""))
         if node_type not in {"week", "day", "item"}:
-            raise ValueError("项目中存在未知节点类型")
-        node_id = str(raw["id"])
+            raise ValueError("项目中存在未知节点类型：" + (str(raw.get("type")) or "(空)"))
+        label = str(raw.get("text") or node_type)
+        node_path = path + (label,)
+        raw_id = raw.get("id")
+        if raw_id is None or str(raw_id).strip() == "":
+            raw_id = str(uuid.uuid4())  # 缺失 ID 直接生成，而不是整份导入失败
+        node_id = str(raw_id)
+        if node_id in seen_ids:
+            raise ValueError(f"节点 ID 重复：{' / '.join(node_path)}（ID {node_id}）")
+        seen_ids.add(node_id)
         assessment = raw.get("assessment") if isinstance(raw.get("assessment"), dict) else None
         review_due = ""
         review_learning = 0
@@ -238,7 +282,7 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None) ->
         flattened.append({
             "project_id": project_id,
             "node_id": node_id,
-            "id_json": _json(raw["id"]),
+            "id_json": _json(node_id),
             "parent_id": parent_id,
             "position": position,
             "type": node_type,
@@ -255,7 +299,7 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None) ->
             "review_log": review_log,
             "assessment": assessment,
         })
-        flattened.extend(_flatten_nodes(project_id, raw.get("children"), node_id))
+        flattened.extend(_flatten_nodes(project_id, raw.get("children"), node_id, node_path, seen_ids))
     return flattened
 
 
@@ -480,6 +524,45 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
     return project, int(row["revision"])
 
 
+def ensure_schema() -> None:
+    """启动/恢复后调用：版本检查 → 未来版本拒绝；低版本逐步迁移（先快照，失败回滚）。
+
+    本项目的阶梯只有一级：v0/legacy（project_state / app_state 单表 JSON）→ 当前分表结构。
+    以后新增版本时在这里加 `_migrate_vN_to_M` 步骤，并保证每步幂等、可回滚。
+    """
+    with _database_lock:
+        version = 0
+        with open_state_database() as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version == SCHEMA_VERSION:
+                return
+            if version > SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"数据库 schema 版本为 {version}，高于本程序支持的 {SCHEMA_VERSION}；"
+                    "请升级程序后再打开（已拒绝打开，避免降级损坏数据）"
+                )
+            has_data = bool(
+                connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone()
+                or connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_state'"
+                ).fetchone()
+            )
+        backup_name = create_manual_database_backup(f"before-migrate-v{version}") if has_data else ""
+        try:
+            migrate_legacy_state()
+            with _database_lock:
+                with open_state_database() as connection:
+                    if not check_database_integrity():
+                        raise RuntimeError("迁移后数据库完整性检查失败")
+                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        except Exception:
+            if backup_name:
+                _restore_database_file(BACKUP_DIR / backup_name)
+            raise
+        if backup_name:
+            print(f"schema 从 v{version} 迁移到 v{SCHEMA_VERSION}；迁移前快照：{backup_name}")
+
+
 def migrate_legacy_state() -> None:
     """Migrate old JSON rows into normalized tables and verify exact reconstruction."""
     with _database_lock, open_state_database() as connection:
@@ -540,7 +623,6 @@ def _now() -> str:
 
 
 def _new_trash_id() -> str:
-    import uuid
     return str(uuid.uuid4())
 
 
@@ -598,7 +680,7 @@ def store_trash_item(
     }
 
 
-def purge_trash_items(days: int = 7) -> int:
+def purge_trash_items(days: int = TRASH_RETENTION_DAYS) -> int:
     """删除早于 days 天的回收站条目（默认 7 天）。"""
     cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
     with _database_lock, open_state_database() as connection:
@@ -616,17 +698,28 @@ def list_trash_items() -> list[dict[str, Any]]:
             "SELECT trash_id,kind,project_id,parent_id,position,title,context,deleted_at,revision "
             "FROM trash_items ORDER BY deleted_at DESC,trash_id"
         ).fetchall()
-    return [{
-        "id": row["trash_id"],
-        "kind": row["kind"],
-        "projectId": row["project_id"],
-        "parentId": row["parent_id"],
-        "position": int(row["position"]),
-        "title": row["title"],
-        "context": row["context"],
-        "deletedAt": row["deleted_at"],
-        "revision": int(row["revision"]),
-    } for row in rows]
+    items = []
+    for row in rows:
+        deleted_at = str(row["deleted_at"])
+        expires = ""
+        try:
+            expires = (datetime.fromisoformat(deleted_at) + timedelta(days=TRASH_RETENTION_DAYS)).isoformat(
+                timespec="seconds")
+        except ValueError:
+            expires = ""
+        items.append({
+            "id": row["trash_id"],
+            "kind": row["kind"],
+            "projectId": row["project_id"],
+            "parentId": row["parent_id"],
+            "position": int(row["position"]),
+            "title": row["title"],
+            "context": row["context"],
+            "deletedAt": deleted_at,
+            "expiresAt": expires,
+            "revision": int(row["revision"]),
+        })
+    return items
 
 
 def delete_trash_item(trash_id: Any) -> None:
@@ -649,6 +742,40 @@ def _find_parent_and_insert(tree: list[dict[str, Any]], parent_id: str | None, n
         return False
     if not walk(tree):
         raise ValueError("找不到原父节点，无法恢复任务")
+
+
+def clear_trash_items() -> int:
+    """立即清空回收站（调用方负责先做快照与确认）。"""
+    with _database_lock, open_state_database() as connection:
+        cursor = connection.execute("DELETE FROM trash_items")
+    return cursor.rowcount
+
+
+def restore_trash_items(ids: list[Any]) -> dict[str, Any]:
+    """批量恢复：逐条独立处理，返回成功/失败明细，不因为一条失败就中断。"""
+    restored: list[str] = []
+    failed: list[dict[str, str]] = []
+    for raw_id in ids:
+        trash_id = str(raw_id)
+        try:
+            restore_trash_item(trash_id)
+            restored.append(trash_id)
+        except Exception as error:  # 冲突/父节点缺失等都要报给用户，而不是中断整批
+            failed.append({"id": trash_id, "error": str(error)})
+    return {"restored": restored, "failed": failed}
+
+
+def delete_trash_items(ids: list[Any]) -> dict[str, Any]:
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+    for raw_id in ids:
+        trash_id = str(raw_id)
+        try:
+            delete_trash_item(trash_id)
+            deleted.append(trash_id)
+        except Exception as error:
+            failed.append({"id": trash_id, "error": str(error)})
+    return {"deleted": deleted, "failed": failed}
 
 
 def restore_trash_item(trash_id: Any) -> dict[str, Any]:
@@ -815,20 +942,39 @@ def delete_project(project_id: Any, expected_revision: int) -> None:
             connection.execute("DELETE FROM projects WHERE project_id=?", (str(project_id),))
 
 
-def replace_projects(projects: list[dict[str, Any]]) -> None:
+def replace_projects(projects: list[dict[str, Any]], *, pre_backup: bool = True) -> None:
     """Atomically replace every project, used only by explicit JSON import."""
     encoded = _json(projects).encode("utf-8")
     if len(encoded) > 110 * 1024 * 1024:
         raise ValueError("导入数据过大")
+    prepared: list[dict[str, Any]] = []
+    seen_projects: dict[str, str] = {}
+    for position, project in enumerate(projects):
+        if not isinstance(project, dict):
+            raise ValueError(f"导入的第 {position + 1} 项不是项目对象")
+        raw_id = project.get("id")
+        if raw_id is None or str(raw_id).strip() == "":
+            project = {**project, "id": str(uuid.uuid4())}
+            raw_id = project["id"]
+        project_id = str(raw_id)
+        name = str(project.get("name") or "未命名项目")
+        if project_id in seen_projects:
+            raise ValueError(
+                f"导入中存在重复的项目 ID：{project_id}"
+                f"（“{seen_projects[project_id]}”与第 {position + 1} 个项目“{name}”），已拒绝导入"
+            )
+        seen_projects[project_id] = name
+        if len(_json(project).encode("utf-8")) > MAX_PROJECT_PAYLOAD_BYTES:
+            raise ValueError("导入中存在超过 50 MB 的单个项目")
+        prepared.append(project)
     with _database_lock:
-        create_manual_database_backup("before-import")
+        if pre_backup:
+            create_manual_database_backup("before-import")
         with open_state_database() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM projects")
             now = datetime.now().isoformat(timespec="seconds")
-            for position, project in enumerate(projects):
-                if len(_json(project).encode("utf-8")) > MAX_PROJECT_PAYLOAD_BYTES:
-                    raise ValueError("导入中存在超过 50 MB 的单个项目")
+            for position, project in enumerate(prepared):
                 _upsert_project(connection, project, position, 1, now)
 
 
@@ -886,43 +1032,6 @@ def list_database_backups() -> list[dict[str, Any]]:
     return backups
 
 
-def rename_database_backup(old_name: str, new_name: str) -> str:
-    """Rename a backup without changing its SQLite contents."""
-    if Path(old_name).name != old_name or not old_name.endswith(".sqlite3"):
-        raise ValueError("原备份文件名不正确")
-    new_name = str(new_name).strip()
-    if not new_name.endswith(".sqlite3"):
-        new_name += ".sqlite3"
-    if (
-        Path(new_name).name != new_name
-        or len(new_name) > 100
-        or new_name.startswith(".")
-        or not re.fullmatch(r"[\w.\- ()（）]+\.sqlite3", new_name, flags=re.UNICODE)
-    ):
-        raise ValueError("新名称只能包含字母、数字、中文、空格、括号、下划线、连字符和点")
-    with _database_lock:
-        source = BACKUP_DIR / old_name
-        target = BACKUP_DIR / new_name
-        if not source.is_file():
-            raise ValueError("备份不存在")
-        if target.exists() and target != source:
-            raise ValueError("该备份名称已经存在")
-        if target != source:
-            source.replace(target)
-            target.chmod(0o600)
-    return new_name
-
-
-def delete_database_backup(name: str) -> None:
-    if Path(name).name != name or not name.endswith(".sqlite3"):
-        raise ValueError("备份文件名不正确")
-    with _database_lock:
-        target = BACKUP_DIR / name
-        if not target.is_file():
-            raise ValueError("备份不存在")
-        target.unlink()
-
-
 def restore_database_backup(name: str) -> None:
     if Path(name).name != name or not name.endswith(".sqlite3"):
         raise ValueError("备份文件名不正确")
@@ -938,7 +1047,7 @@ def restore_database_backup(name: str) -> None:
         emergency = BACKUP_DIR / emergency_name
         try:
             _restore_database_file(source)
-            migrate_legacy_state()
+            ensure_schema()
             if not check_database_integrity():
                 raise RuntimeError("恢复后的数据库完整性检查失败")
         except Exception:

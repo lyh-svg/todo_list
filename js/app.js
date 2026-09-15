@@ -42,6 +42,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const databaseBackupMenu = document.getElementById('databaseBackupMenu');
     const renameDatabaseBackupBtn = document.getElementById('renameDatabaseBackupBtn');
     const downloadDatabaseBackupBtn = document.getElementById('downloadDatabaseBackupBtn');
+    const inspectDatabaseBackupBtn = document.getElementById('inspectDatabaseBackupBtn');
     const createDatabaseBackupBtn = document.getElementById('createDatabaseBackupBtn');
     const restoreDatabaseBackupBtn = document.getElementById('restoreDatabaseBackupBtn');
     const toast = document.getElementById('toast');
@@ -109,6 +110,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     let apiClient = null;
     let savedProjectJsonById = new Map();
     let saveConflict = false;
+    let inFlightSaves = 0;
+    let leaveGuardArmed = false;
+    let timezoneWarned = false;
     let stateLoadError = '';
     let backupListError = '';
     let currentProjectId = null;
@@ -716,7 +720,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function readStoredState() {
-        return apiFetch('/api/projects', { cache: 'no-store' })
+        // 带上浏览器本地日期：服务端用 WSL/宿主时区算复习计数会差一天（见 R3 ⑦）。
+        return apiFetch(`/api/projects?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' })
             .then(response => {
                 if (!response.ok) throw new Error('SQLite 服务不可用');
                 return response.json();
@@ -732,13 +737,16 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function writeStoredProject(project, expectedRevision) {
+        const body = JSON.stringify({
+            project: serializeProject(project),
+            expectedRevision
+        });
         return apiFetch('/api/project', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                project: serializeProject(project),
-                expectedRevision
-            })
+            body,
+            // 关页/切后台时 keepalive 能让请求继续发完（浏览器上限约 64 KB，大项目退回普通请求）。
+            keepalive: body.length <= 60000
         }).then(response => {
             return response.json().catch(() => ({})).then(payload => {
                 if (!response.ok) {
@@ -919,6 +927,39 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         };
     }
 
+    // 纯函数：找出导入 JSON 里的重复 ID。节点 ID 按项目作用域校验（与服务端一致）。
+    function findImportDuplicateIds(projects) {
+        const problems = [];
+        const projectIds = new Map();
+        (projects || []).forEach((project, index) => {
+            if (!project || typeof project !== 'object') return;
+            const name = String(project.name || `第 ${index + 1} 个项目`);
+            const projectId = project.id;
+            if (projectId !== undefined && projectId !== null && String(projectId).trim() !== '') {
+                const key = String(projectId);
+                if (projectIds.has(key)) problems.push(`重复项目 ID：${key}（“${projectIds.get(key)}”与“${name}”）`);
+                else projectIds.set(key, name);
+            }
+            const seenNodes = new Set();
+            const walk = (nodes, path) => {
+                for (const node of nodes || []) {
+                    if (!node || typeof node !== 'object') continue;
+                    const label = String(node.text || node.type || '未命名节点');
+                    const nodePath = path ? `${path} / ${label}` : label;
+                    const nodeId = node.id;
+                    if (nodeId !== undefined && nodeId !== null && String(nodeId).trim() !== '') {
+                        const key = String(nodeId);
+                        if (seenNodes.has(key)) problems.push(`重复节点 ID：${nodePath}（${key}）`);
+                        else seenNodes.add(key);
+                    }
+                    walk(node.children, nodePath);
+                }
+            };
+            walk(project.tree, name);
+        });
+        return problems;
+    }
+
     function extractProjects(payload) {
         if (Array.isArray(payload)) return payload;
         if (payload && Array.isArray(payload.projects)) {
@@ -977,7 +1018,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
         const waiters = saveWaiters.splice(0);
         const operation = saveQueue.catch(() => undefined).then(async () => {
-            if (saveConflict) throw new Error('存在未解决的版本冲突，请先刷新页面');
+            if (saveConflict) throw new Error('存在未解决的版本冲突，请先解决冲突再保存');
             const snapshot = projects
                 .filter(project => Array.isArray(project.tree))
                 .map(project => cloneData(project));
@@ -991,37 +1032,35 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 || savedProjectJsonById.get(String(project.id)) !== currentProjectJsonById.get(String(project.id))
             );
             if (changedProjects.length === 0) return;
+            inFlightSaves += 1;
+            armLeaveGuard();
             setSaveStatus('保存中…', 'saving');
-            for (const project of changedProjects) {
-                const current = projects.find(item => String(item.id) === String(project.id));
-                const projectId = String(project.id);
-                let expectedRevision = current ? current._revision : project._revision;
-                let payload;
-                try {
-                    payload = await writeStoredProject(project, expectedRevision);
-                } catch (writeError) {
-                    if (!(writeError && writeError.status === 409)) throw writeError;
-                    // 409：本地版本过期。取服务端最新 revision 自动重试一次（单机工具）。
-                    setSaveStatus('检测到其他页面已更新，正在重试…', 'saving');
+            try {
+                for (const project of changedProjects) {
+                    const current = projects.find(item => String(item.id) === String(project.id));
+                    const projectId = String(project.id);
+                    const expectedRevision = current ? current._revision : project._revision;
+                    let payload;
                     try {
-                        const fresh = await readStoredProject(projectId);
-                        payload = await writeStoredProject(project, Number(fresh.revision));
-                    } catch (retryError) {
-                        const finalError = (retryError && retryError.status === 409)
-                            ? new Error('项目已被其他页面修改，请刷新后重试')
-                            : (retryError || new Error('保存失败'));
-                        throw finalError;
+                        payload = await writeStoredProject(project, expectedRevision);
+                    } catch (writeError) {
+                        if (!(writeError && writeError.status === 409)) throw writeError;
+                        // ① 冲突：绝不自动用本地内容覆盖服务端，停下来让用户决定。
+                        await beginProjectConflict(project, current);
+                        continue;
+                    }
+                    savedProjectJsonById.set(projectId, currentProjectJsonById.get(projectId));
+                    dirtyProjectIds.delete(projectId);
+                    if (current) {
+                        current._revision = Number(payload.revision) || expectedRevision + 1;
+                        if (payload.summary) current.stats = payload.summary.stats;
                     }
                 }
-                const savedJson = currentProjectJsonById.get(projectId);
-                savedProjectJsonById.set(String(project.id), savedJson);
-                dirtyProjectIds.delete(String(project.id));
-                if (current) {
-                    current._revision = Number(payload.revision) || expectedRevision + 1;
-                    if (payload.summary) current.stats = payload.summary.stats;
-                }
+            } finally {
+                inFlightSaves -= 1;
+                if (!savePending()) disarmLeaveGuard();
             }
-            setSaveStatus('已保存');
+            if (!saveConflict) setSaveStatus('已保存');
         });
         saveQueue = operation.catch(() => undefined);
         operation.catch(error => {
@@ -1029,7 +1068,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (error.status === 409) {
                 saveConflict = true;
                 setSaveStatus('版本冲突', 'error');
-                showToast('检测到其他页面已修改数据，请刷新页面后重试');
+                showToast('检测到其他页面已修改数据，请先解决冲突');
             } else {
                 setSaveStatus('保存失败', 'error');
                 showToast('SQLite 保存失败，请确认本地服务正在运行');
@@ -1042,11 +1081,353 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return operation;
     }
 
+    // ---------- ① 版本冲突：停写 + 差异 + 三选（保留本地 / 保留远端 / 手动合并） ----------
+
+    let pendingConflict = null;
+
+    function walkTreeEntriesForDiff(nodes, path, out) {
+        for (const node of nodes || []) {
+            if (!node || typeof node !== 'object') continue;
+            const label = String(node.text || node.type || '未命名');
+            const nodePath = path ? `${path} / ${label}` : label;
+            out.set(String(node.id), { node, path: nodePath });
+            walkTreeEntriesForDiff(node.children, nodePath, out);
+        }
+    }
+
+    function nodeFieldDifferences(localNode, remoteNode) {
+        const fields = [];
+        const compare = (field, localValue, remoteValue) => {
+            if (localValue !== remoteValue) fields.push({ field, local: localValue, remote: remoteValue });
+        };
+        const assessment = node => node.assessment || {};
+        const review = node => node.review || {};
+        compare('文字', String(localNode.text || ''), String(remoteNode.text || ''));
+        compare('完成', Boolean(localNode.completed), Boolean(remoteNode.completed));
+        compare('完成时间', localNode.completedAt || '', remoteNode.completedAt || '');
+        compare('选做', Boolean(localNode.optional), Boolean(remoteNode.optional));
+        compare('需要验收', Boolean(localNode.assessmentRequired), Boolean(remoteNode.assessmentRequired));
+        compare('验收通过', Boolean(assessment(localNode).passed), Boolean(assessment(remoteNode).passed));
+        compare('验收分数', Number(assessment(localNode).score) || 0, Number(assessment(remoteNode).score) || 0);
+        compare('复习日期', String(review(localNode).due || ''), String(review(remoteNode).due || ''));
+        compare('展开', Boolean(localNode.expanded), Boolean(remoteNode.expanded));
+        return fields;
+    }
+
+    // 纯函数：本地 vs 服务端的结构化差异（面板与测试都用它）
+    function diffProject(local, remote) {
+        const localMap = new Map();
+        const remoteMap = new Map();
+        walkTreeEntriesForDiff(local && local.tree, '', localMap);
+        walkTreeEntriesForDiff(remote && remote.tree, '', remoteMap);
+        const projectFields = [];
+        if (String(local.name || '') !== String(remote.name || '')) {
+            projectFields.push({ field: '项目名', local: local.name, remote: remote.name });
+        }
+        if (String(local.description || '') !== String(remote.description || '')) {
+            projectFields.push({ field: '描述', local: local.description, remote: remote.description });
+        }
+        const changed = [];
+        const onlyLocal = [];
+        const onlyRemote = [];
+        for (const [id, entry] of localMap) {
+            const other = remoteMap.get(id);
+            if (!other) {
+                onlyLocal.push({ id, path: entry.path });
+                continue;
+            }
+            const fields = nodeFieldDifferences(entry.node, other.node);
+            if (fields.length > 0) changed.push({ id, path: entry.path, fields });
+        }
+        for (const [id, entry] of remoteMap) {
+            if (!localMap.has(id)) onlyRemote.push({ id, path: entry.path });
+        }
+        return { projectFields, changed, onlyLocal, onlyRemote };
+    }
+
+    // 纯函数：按用户选择合并。choices = { project: 'local'|'remote', nodes: {id: 'local'|'remote'},
+    //                                      keepLocalOnly:Set, keepRemoteOnly:Set }
+    function mergeProjects(local, remote, choices) {
+        const options = choices || {};
+        const projectChoice = options.project === 'remote' ? 'remote' : 'local';
+        const nodeChoices = options.nodes || {};
+        const keepLocalOnly = options.keepLocalOnly || new Set();
+        const keepRemoteOnly = options.keepRemoteOnly || new Set();
+        const base = projectChoice === 'remote' ? remote : local;
+        const other = projectChoice === 'remote' ? local : remote;
+        const baseIsLocal = projectChoice === 'local';
+        const localMap = new Map();
+        const remoteMap = new Map();
+        walkTreeEntriesForDiff(local && local.tree, '', localMap);
+        walkTreeEntriesForDiff(remote && remote.tree, '', remoteMap);
+        const keyOf = id => String(id);
+        // 逐层做"并集"：两边都有的节点按选择取内容并继续递归；只有一边有的按保留开关决定。
+        const build = (baseNodes, otherNodes) => {
+            const result = [];
+            const seen = new Set();
+            for (const node of baseNodes || []) {
+                const id = keyOf(node.id);
+                seen.add(id);
+                const counterpart = (baseIsLocal ? remoteMap : localMap).get(id);
+                if (counterpart) {
+                    const choice = nodeChoices[id];
+                    const source = choice === 'remote' ? remoteMap.get(id).node
+                        : choice === 'local' ? localMap.get(id).node
+                            : node;
+                    const copy = cloneData(source);
+                    copy.children = build(node.children, counterpart.node.children);
+                    result.push(copy);
+                    continue;
+                }
+                const keep = baseIsLocal ? keepLocalOnly.has(id) : keepRemoteOnly.has(id);
+                if (keep) result.push(cloneData(node));
+            }
+            for (const node of otherNodes || []) {
+                const id = keyOf(node.id);
+                if (seen.has(id)) continue;
+                seen.add(id);
+                const keep = baseIsLocal ? keepRemoteOnly.has(id) : keepLocalOnly.has(id);
+                if (keep) result.push(cloneData(node));
+            }
+            return result;
+        };
+        return {
+            id: base.id,
+            name: projectChoice === 'remote' ? remote.name : local.name,
+            description: projectChoice === 'remote' ? remote.description : local.description,
+            createdAt: base.createdAt,
+            assessmentEnabled: Boolean(base.assessmentEnabled),
+            reviewEnabled: base.reviewEnabled,
+            tree: build(base.tree, other.tree),
+        };
+    }
+
+    async function beginProjectConflict(localProject, localRef) {
+        saveConflict = true;
+        setSaveStatus('版本冲突', 'error');
+        let remotePayload = null;
+        try {
+            remotePayload = await readStoredProject(String(localProject.id));
+        } catch (error) {
+            showToast(`检测到其他页面已修改该项目，读取服务端版本失败：${error.message || ''}`);
+            return;
+        }
+        const remote = normalizeProjects([remotePayload.project])[0];
+        if (!remote) {
+            showToast('服务端版本无法解析，已停止写入，请刷新页面');
+            return;
+        }
+        remote._revision = Math.max(0, Number(remotePayload.revision) || 0);
+        remote.stats = localRef ? localRef.stats : remote.stats;
+        pendingConflict = { local: localProject, remote };
+        showToast('两个页面改了同一项目，已停止写入', { label: '解决冲突', onClick: () => openConflictPanel() });
+    }
+
+    function openConflictPanel() {
+        if (!pendingConflict) return;
+        const { local, remote } = pendingConflict;
+        const diff = diffProject(local, remote);
+        showUtilityModal('版本冲突', '选择保留哪一份');
+        utilityBody.innerHTML = '';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = `本地版本 ${Number(local._revision) || 0} · 服务端版本 ${Number(remote._revision) || 0}`
+            + `；差异：${diff.changed.length} 个任务被改、仅本地 ${diff.onlyLocal.length} 个、仅服务端 ${diff.onlyRemote.length} 个、项目字段 ${diff.projectFields.length} 处`;
+        utilityBody.appendChild(hint);
+        const list = document.createElement('div');
+        list.className = 'conflict-list';
+        const addRow = text => {
+            const row = document.createElement('div');
+            row.className = 'conflict-row';
+            row.textContent = text;
+            list.appendChild(row);
+        };
+        diff.projectFields.forEach(item => addRow(`${item.field}：本地「${item.local || '空'}」/ 服务端「${item.remote || '空'}」`));
+        diff.changed.forEach(item => addRow(`改动 · ${item.path}（${item.fields.map(f => f.field).join('、')}）`));
+        diff.onlyLocal.forEach(item => addRow(`仅本地有 · ${item.path}`));
+        diff.onlyRemote.forEach(item => addRow(`仅服务端有 · ${item.path}`));
+        if (diff.projectFields.length + diff.changed.length + diff.onlyLocal.length + diff.onlyRemote.length === 0) {
+            addRow('没有可显示的差异（可能只是版本号不同）。');
+        }
+        utilityBody.appendChild(list);
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const keepLocal = document.createElement('button');
+        keepLocal.type = 'button';
+        keepLocal.className = 'utility-primary-btn';
+        keepLocal.textContent = '保留本地并覆盖服务端';
+        keepLocal.addEventListener('click', () => resolveConflictForce(local, remote, local, '已用本地版本覆盖服务端'));
+        const keepRemote = document.createElement('button');
+        keepRemote.type = 'button';
+        keepRemote.className = 'utility-secondary-btn';
+        keepRemote.textContent = '保留服务端并丢弃本地';
+        keepRemote.addEventListener('click', () => resolveConflictTakeRemote(local, remote));
+        const merge = document.createElement('button');
+        merge.type = 'button';
+        merge.className = 'utility-secondary-btn';
+        merge.textContent = '手动合并…';
+        merge.addEventListener('click', () => openConflictMergeView(local, remote, diff));
+        actions.append(keepLocal, keepRemote, merge);
+        utilityBody.appendChild(actions);
+    }
+
+    function openConflictMergeView(local, remote, diff) {
+        const choices = { project: 'local', nodes: {}, keepLocalOnly: new Set(diff.onlyLocal.map(i => i.id)),
+                          keepRemoteOnly: new Set(diff.onlyRemote.map(i => i.id)) };
+        const render = () => {
+            const step = document.createElement('div');
+            step.className = 'conflict-merge';
+            showUtilityModal('手动合并', '逐项选择');
+            utilityBody.innerHTML = '';
+            const projectRow = document.createElement('div');
+            projectRow.className = 'conflict-row';
+            projectRow.textContent = `项目名/描述采用：${choices.project === 'local' ? '本地' : '服务端'}`;
+            const projectToggle = document.createElement('button');
+            projectToggle.type = 'button';
+            projectToggle.className = 'utility-secondary-btn';
+            projectToggle.textContent = '切换';
+            projectToggle.addEventListener('click', () => {
+                choices.project = choices.project === 'local' ? 'remote' : 'local';
+                render();
+            });
+            projectRow.appendChild(projectToggle);
+            utilityBody.appendChild(projectRow);
+            diff.changed.forEach(item => {
+                const row = document.createElement('div');
+                row.className = 'conflict-row';
+                const current = choices.nodes[item.id] || 'local';
+                row.textContent = `${item.path}：${item.fields.map(f => f.field).join('、')} → ${current === 'local' ? '本地' : '服务端'}`;
+                const toggle = document.createElement('button');
+                toggle.type = 'button';
+                toggle.className = 'utility-secondary-btn';
+                toggle.textContent = '切换';
+                toggle.addEventListener('click', () => {
+                    choices.nodes[item.id] = current === 'local' ? 'remote' : 'local';
+                    render();
+                });
+                row.appendChild(toggle);
+                utilityBody.appendChild(row);
+            });
+            const toggleListRow = (item, key) => {
+                const row = document.createElement('div');
+                row.className = 'conflict-row';
+                const on = choices[key].has(item.id);
+                row.textContent = `${key === 'keepLocalOnly' ? '仅本地有' : '仅服务端有'} · ${item.path}：${on ? '保留' : '丢弃'}`;
+                const toggle = document.createElement('button');
+                toggle.type = 'button';
+                toggle.className = 'utility-secondary-btn';
+                toggle.textContent = '切换';
+                toggle.addEventListener('click', () => {
+                    if (on) choices[key].delete(item.id);
+                    else choices[key].add(item.id);
+                    render();
+                });
+                row.appendChild(toggle);
+                utilityBody.appendChild(row);
+            };
+            diff.onlyLocal.forEach(item => toggleListRow(item, 'keepLocalOnly'));
+            diff.onlyRemote.forEach(item => toggleListRow(item, 'keepRemoteOnly'));
+            const actions = document.createElement('div');
+            actions.className = 'utility-actions';
+            const apply = document.createElement('button');
+            apply.type = 'button';
+            apply.className = 'utility-primary-btn';
+            apply.textContent = '按选择合并并保存';
+            apply.addEventListener('click', () => {
+                const merged = mergeProjects(local, remote, choices);
+                resolveConflictForce(local, remote, merged, '已按选择合并并保存');
+            });
+            const back = document.createElement('button');
+            back.type = 'button';
+            back.className = 'utility-secondary-btn';
+            back.textContent = '返回';
+            back.addEventListener('click', openConflictPanel);
+            actions.append(apply, back);
+            utilityBody.appendChild(actions);
+        };
+        render();
+    }
+
+    async function resolveConflictForce(localProject, remote, replacement, successMessage) {
+        try {
+            const saved = await writeStoredProject(replacement, remote._revision);
+            const index = projects.findIndex(item => String(item.id) === String(localProject.id));
+            if (index >= 0) {
+                const stored = normalizeProjects([replacement])[0] || replacement;
+                stored._revision = Number(saved.revision) || (Number(remote._revision) || 0) + 1;
+                if (saved.summary) stored.stats = saved.summary.stats;
+                projects[index] = stored;
+                savedProjectJsonById.set(String(stored.id), JSON.stringify(serializeProject(stored)));
+            }
+            dirtyProjectIds.delete(String(localProject.id));
+            pendingConflict = null;
+            saveConflict = false;
+            setSaveStatus('已保存');
+            closeUtilityModal();
+            renderDetail();
+            showToast(successMessage);
+        } catch (error) {
+            if (error && error.status === 409) {
+                showToast('服务端刚刚又被改动，请重新打开冲突面板');
+                await beginProjectConflict(localProject, projects.find(item => String(item.id) === String(localProject.id)));
+                return;
+            }
+            showToast(`解决冲突失败：${error.message || ''}`);
+        }
+    }
+
+    function resolveConflictTakeRemote(localProject, remote) {
+        const index = projects.findIndex(item => String(item.id) === String(localProject.id));
+        if (index >= 0) {
+            const previous = projects[index];
+            remote.stats = previous.stats;
+            projects[index] = remote;
+            savedProjectJsonById.set(String(remote.id), JSON.stringify(serializeProject(remote)));
+        }
+        dirtyProjectIds.delete(String(localProject.id));
+        pendingConflict = null;
+        saveConflict = false;
+        setSaveStatus('已保存');
+        closeUtilityModal();
+        renderDetail();
+        showToast('已采用服务端版本，本地改动已丢弃');
+    }
+
     function saveProjects() {
         const completion = new Promise((resolve, reject) => saveWaiters.push({ resolve, reject }));
         completion.catch(() => undefined);
         if (!saveTimer) saveTimer = setTimeout(flushProjectsSave, SAVE_DEBOUNCE_MS);
         return completion;
+    }
+
+    function savePending() {
+        return Boolean(saveTimer) || inFlightSaves > 0;
+    }
+
+    function warnBeforeUnload(event) {
+        if (!savePending()) return undefined;
+        event.preventDefault();
+        event.returnValue = '';
+        return '';
+    }
+
+    function armLeaveGuard() {
+        if (leaveGuardArmed) return;
+        leaveGuardArmed = true;
+        window.addEventListener('beforeunload', warnBeforeUnload);
+    }
+
+    function disarmLeaveGuard() {
+        if (!leaveGuardArmed) return;
+        leaveGuardArmed = false;
+        window.removeEventListener('beforeunload', warnBeforeUnload);
+    }
+
+    // 统一等待"所有保存"：既有排队中的（saveTimer），也有已经在飞的（saveQueue/inFlightSaves）。
+    // 只判断 saveTimer 会漏掉"防抖已触发、请求还没落地"的那一段窗口。
+    async function settleSaves() {
+        if (saveTimer) await flushProjectsSave();
+        await saveQueue.catch(() => undefined);
     }
 
     function setSaveStatus(text, state = '') {
@@ -1343,7 +1724,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             for (const backup of payload.backups || []) {
                 const option = document.createElement('option');
                 option.value = backup.name;
-                option.textContent = `${backup.name} · ${formatBytes(backup.bytes)}${backup.valid ? '' : ' · 损坏'}`;
+                option.textContent = `${backup.name} · ${formatBytes(backup.bytes)}`
+                    + `${backup.kind === 'legacy' ? ' · 旧格式' : ''}${backup.valid ? '' : ' · 损坏'}`;
                 option.disabled = !backup.valid;
                 optionFragment.appendChild(option);
                 const row = document.createElement('div');
@@ -1395,6 +1777,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     function setBackupActionsEnabled(enabled) {
         renameDatabaseBackupBtn.disabled = !enabled;
         downloadDatabaseBackupBtn.disabled = !enabled;
+        inspectDatabaseBackupBtn.disabled = !enabled;
         restoreDatabaseBackupBtn.disabled = !enabled;
     }
 
@@ -1421,7 +1804,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             await loadDatabaseBackups();
             databaseBackupSelect.value = payload.name;
             updateBackupPickerLabel();
-            showToast(`已创建数据库备份：${payload.name}`);
+            showToast(`已创建完整备份：${payload.name}`);
         } catch (error) {
             showToast(error.message || '创建数据库备份失败，请重试');
         }
@@ -1430,7 +1813,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     async function renameDatabaseBackupFromUi() {
         const name = databaseBackupSelect.value;
         if (!name) return;
-        const suggested = name.replace(/\.sqlite3$/, '');
+        const suggested = name.replace(/\.(sqlite3|zip)$/, '');
         const newName = window.prompt('请输入新的备份名称（可不写 .sqlite3）：', suggested);
         if (newName === null || !newName.trim()) return;
         try {
@@ -1465,6 +1848,98 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast(`已删除备份：${name}`);
         } catch (error) {
             showToast(error.message || '删除备份失败，请重试');
+        }
+    }
+
+    async function inspectBackup(name) {
+        const response = await apiFetch(`/api/backup/inspect?name=${encodeURIComponent(name)}`, { cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.backup) throw new Error(payload.error || '读取备份内容失败，请重试');
+        return payload.backup;
+    }
+
+    async function inspectDatabaseBackupFromUi() {
+        const name = databaseBackupSelect.value;
+        if (!name) return;
+        showUtilityModal('备份内容', '恢复预览');
+        renderUtilityMessage('正在校验备份…');
+        let preview;
+        try {
+            preview = await inspectBackup(name);
+        } catch (error) {
+            renderUtilityMessage(error.message || '读取备份内容失败，请重试');
+            return;
+        }
+        utilityBody.innerHTML = '';
+        const list = document.createElement('div');
+        list.className = 'conflict-list';
+        const addRow = text => {
+            const row = document.createElement('div');
+            row.className = 'conflict-row';
+            row.textContent = text;
+            list.appendChild(row);
+        };
+        addRow(`备份：${preview.name}`);
+        addRow(preview.kind === 'legacy'
+            ? '格式：旧格式，只包含任务数据库（todo.sqlite3）'
+            : `格式：完整备份（任务 + 备忘录 + 摘要），生成于 ${preview.createdAt || '未知'}`);
+        if (preview.kind !== 'legacy') {
+            const counts = preview.counts || {};
+            addRow(`内容：项目 ${counts.projects ?? 0} · 节点 ${counts.nodes ?? 0} · 备忘录 ${counts.memos ?? 0} · 摘要 ${counts.summaries ?? 0}`);
+            addRow(`schema 版本：${preview.appSchemaVersion ?? '未知'}`);
+        }
+        (preview.files || []).forEach(file => addRow(`${file.ok ? '校验通过' : '校验失败'} · ${file.name}（${formatBytes(file.bytes || 0)}）`));
+        utilityBody.appendChild(list);
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const restore = document.createElement('button');
+        restore.type = 'button';
+        restore.className = 'utility-primary-btn';
+        restore.textContent = '恢复这个备份';
+        restore.disabled = !preview.checksumOk;
+        restore.addEventListener('click', () => resolveRestoreBackup(preview));
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'utility-secondary-btn';
+        close.textContent = '关闭';
+        close.addEventListener('click', closeUtilityModal);
+        actions.append(restore, close);
+        utilityBody.appendChild(actions);
+    }
+
+    async function resolveRestoreBackup(preview) {
+        const scope = preview.kind === 'legacy'
+            ? '任务数据库（todo.sqlite3）'
+            : '任务、备忘录、摘要三个数据库';
+        if (!window.confirm(`确认用“${preview.name}”覆盖${scope}？\n\n恢复前会自动生成一份完整应急备份；恢复后页面会重新加载。`)) return;
+        try {
+            const response = await apiFetch('/api/backup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'restore', name: preview.name })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '恢复备份失败，请重试');
+            window.location.reload();
+        } catch (error) {
+            showToast(error.message || '恢复备份失败，请重试');
+        }
+    }
+
+    async function createSnapshot(reason) {
+        // 大批量改动前先落一份完整快照；失败不阻断操作，但要让用户知道。
+        try {
+            const response = await apiFetch('/api/backup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'snapshot', reason })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '创建快照失败');
+            return payload.name;
+        } catch (error) {
+            showToast(`改动前快照创建失败：${error.message || ''}`);
+            return null;
         }
     }
 
@@ -2396,13 +2871,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     async function exportBackup() {
         // 导出的是服务端库里的完整项目，先把手上的改动落库，避免导出旧数据。
-        if (saveTimer) {
-            try {
-                await flushProjectsSave();
-            } catch (error) {
-                showToast('当前修改尚未保存，请先处理保存失败，请重试');
-                return;
-            }
+        try {
+            await settleSaves();
+        } catch (error) {
+            showToast('当前修改尚未保存，请先解决保存失败');
+            return;
         }
         const link = document.createElement('a');
         link.href = `${getAssessmentApiUrl('/api/export')}?token=${encodeURIComponent(sessionToken)}`;
@@ -2425,7 +2898,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         showToast(`正在下载数据库备份：${name}`);
     }
 
-    function clearAssessmentHistoryInDetail() {
+    async function clearAssessmentHistoryInDetail() {
         const project = getCurrentProject();
         if (!project) return;
         const removableKeys = new Set([
@@ -2454,6 +2927,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             return;
         }
         if (!window.confirm(`确认清理 ${candidates.length} 个任务的 AI 对话、题目历史和草稿？已通过状态与评分会保留。`)) return;
+        await createSnapshot('before-clear-history');
         candidates.forEach(node => {
             const preserved = Object.fromEntries(
                 Object.entries(node.assessment).filter(([key]) => !removableKeys.has(key))
@@ -2477,12 +2951,19 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
             const imported = extractProjects(payload);
             if (!imported) throw new Error('备份文件格式不正确');
+            const duplicateProblems = findImportDuplicateIds(imported);
+            if (duplicateProblems.length > 0) {
+                const shown = duplicateProblems.slice(0, 20).join(String.fromCharCode(10));
+                const more = duplicateProblems.length > 20 ? `${String.fromCharCode(10)}…共 ${duplicateProblems.length} 处` : '';
+                window.alert(`导入被拒绝：发现重复 ID${String.fromCharCode(10, 10)}${shown}${more}`);
+                showToast(`导入被拒绝：发现 ${duplicateProblems.length} 处重复 ID`);
+                return;
+            }
             const nextProjects = normalizeProjects(imported);
             if (!window.confirm(`确认导入 ${nextProjects.length} 个项目？当前数据将被替换。`)) return;
             ensureRemedialQueueAtBottom(nextProjects);
             nextProjects.forEach(project => expandAllNodes(project.tree || [], false));
-            if (saveTimer) await flushProjectsSave();
-            await saveQueue;
+            await settleSaves();
             const response = await apiFetch('/api/import', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2791,7 +3272,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             pinButton.textContent = memo.pinned ? '★ 已置顶' : '☆ 置顶';
             pinButton.addEventListener('click', async () => {
                 if (memoState.saveTimer) {
-                    try { await saveMemoNow(memo); } catch (error) { showToast('当前修改尚未保存，请先处理保存失败，请重试'); return; }
+                    try { await saveMemoNow(memo); } catch (error) { showToast('当前修改尚未保存，请先解决保存失败'); return; }
                 }
                 memo.pinned = !memo.pinned;
                 pinButton.textContent = memo.pinned ? '★ 已置顶' : '☆ 置顶';
@@ -3875,11 +4356,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         setTimeout(finalizeDelete, 400);
     }
 
-    function clearCompletedInDetail() {
+    async function clearCompletedInDetail() {
         const project = getCurrentProject();
         if (!project) return;
         const completedIds = collectCompletedItemIds(project.tree);
         if (completedIds.length === 0) return;
+        if (!window.confirm(`确认清空 ${completedIds.length} 项已完成任务？清空前会自动生成一份完整快照。`)) return;
+        await createSnapshot('before-clear-completed');
         const treeBeforeClear = cloneData(project.tree);
         let delay = 0;
         completedIds.forEach(id => {
@@ -3910,13 +4393,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     async function showProjectsView() {
-        if (saveTimer) {
-            try {
-                await flushProjectsSave();
-            } catch (error) {
-                showToast('当前修改尚未保存，请先处理保存失败，请重试');
-                return;
-            }
+        try {
+            await settleSaves();
+        } catch (error) {
+            showToast('当前修改尚未保存，请先解决保存失败');
+            return;
         }
         const current = getCurrentProject();
         if (current && Array.isArray(current.tree)) {
@@ -4052,11 +4533,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     let reviewQueueState = { dueItems: [], futureItems: [] };
 
     async function showReviewQueue() {
-        if (saveTimer) {
-            try { await flushProjectsSave(); } catch (error) {
-                showToast('当前修改尚未保存，请先处理保存失败，请重试');
-                return;
-            }
+        try {
+            await settleSaves();
+        } catch (error) {
+            showToast('当前修改尚未保存，请先解决保存失败');
+            return;
         }
         // 先切到队列页并给出加载状态：加载要读完全部项目，项目多时不是瞬间完成。
         projectsView.classList.remove('active');
@@ -4445,6 +4926,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 today: Number(totals.today) || 0,
                 overdue: Number(totals.overdue) || 0
             };
+            if (stored && stored.serverToday && stored.serverToday !== todayStr() && !timezoneWarned) {
+                timezoneWarned = true;
+                showToast(`本机日期 ${todayStr()} 与服务端 ${stored.serverToday} 不一致，复习计数以本机日期为准`);
+            }
         } catch (error) {
             console.warn('刷新复习计数失败', error);
         }
@@ -4653,30 +5138,19 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     function renderTrashItems(items) {
         utilityBody.innerHTML = '';
+        const selected = new Set();
         const toolbar = document.createElement('div');
         toolbar.className = 'utility-toolbar';
         const count = document.createElement('span');
-        count.textContent = `共 ${items.length} 条最近删除记录`;
+        const retention = items.length > 0 && items[0].expiresAt
+            ? `（最近一条将于 ${items[0].expiresAt.slice(0, 16).replace('T', ' ')} 自动清理）` : '';
+        count.textContent = `共 ${items.length} 条最近删除记录${retention}`;
         toolbar.appendChild(count);
-        if (items.length > 0) {
-            const clearBtn = document.createElement('button');
-            clearBtn.type = 'button';
-            clearBtn.className = 'utility-secondary-btn';
-            clearBtn.textContent = '清空记录';
-            clearBtn.addEventListener('click', async () => {
-                if (!window.confirm('确认清空全部回收站记录？')) return;
-                try {
-                    for (const item of [...items]) {
-                        await deleteTrashItemById(item.id);
-                    }
-                    renderTrashItems(trashItems);
-                } catch (error) {
-                    showToast(error.message || '清空回收站失败，请重试');
-                }
-            });
-            toolbar.appendChild(clearBtn);
-        }
         utilityBody.appendChild(toolbar);
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = '删除的项目和任务会在这里保留 7 天；恢复或删除都可以逐条操作，也可以勾选后批量处理。';
+        utilityBody.appendChild(hint);
         if (items.length === 0) {
             const empty = document.createElement('p');
             empty.className = 'utility-empty';
@@ -4684,16 +5158,113 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             utilityBody.appendChild(empty);
             return;
         }
+        const actionBar = document.createElement('div');
+        actionBar.className = 'utility-actions trash-action-bar';
+        const selectAll = document.createElement('button');
+        selectAll.type = 'button';
+        selectAll.className = 'utility-secondary-btn';
+        selectAll.textContent = '全选';
+        const restoreMany = document.createElement('button');
+        restoreMany.type = 'button';
+        restoreMany.className = 'utility-primary-btn';
+        restoreMany.textContent = '批量恢复';
+        restoreMany.disabled = true;
+        const deleteMany = document.createElement('button');
+        deleteMany.type = 'button';
+        deleteMany.className = 'utility-secondary-btn';
+        deleteMany.textContent = '批量删除';
+        deleteMany.disabled = true;
+        const purgeAll = document.createElement('button');
+        purgeAll.type = 'button';
+        purgeAll.className = 'utility-secondary-btn';
+        purgeAll.textContent = '立即清空回收站';
+        actionBar.append(selectAll, restoreMany, deleteMany, purgeAll);
+        utilityBody.appendChild(actionBar);
+
+        const updateSelectionUi = () => {
+            restoreMany.disabled = selected.size === 0;
+            deleteMany.disabled = selected.size === 0;
+            selectAll.textContent = selected.size === items.length ? '取消全选' : '全选';
+        };
+        selectAll.addEventListener('click', () => {
+            if (selected.size === items.length) selected.clear();
+            else items.forEach(item => selected.add(item.id));
+            list.querySelectorAll('input[type="checkbox"]').forEach(box => { box.checked = selected.has(box.dataset.id); });
+            updateSelectionUi();
+        });
+
+        const runBatch = async (action, confirmText, successText) => {
+            if (selected.size === 0) return;
+            if (!window.confirm(`${confirmText}（共 ${selected.size} 条）`)) return;
+            if (action === 'delete-many' || action === 'purge') {
+                await createSnapshot('before-trash-purge');
+            }
+            try {
+                const response = await apiFetch('/api/trash', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, ids: [...selected] })
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(payload.error || '批量操作失败，请重试');
+                trashItems = payload.items || [];
+                const failed = payload.failed || [];
+                if (Array.isArray(payload.projects)) {
+                    projects = payload.projects.map(normalizeProjectSummary);
+                    renderProjects();
+                }
+                renderTrashItems(trashItems);
+                showToast(failed.length > 0
+                    ? `${successText} ${selected.size - failed.length} 条，${failed.length} 条失败：${failed[0].error}`
+                    : `${successText} ${selected.size} 条`);
+            } catch (error) {
+                showToast(error.message || '批量操作失败，请重试');
+            }
+        };
+        restoreMany.addEventListener('click', () => runBatch('restore-many', '确认恢复选中的记录？', '已恢复'));
+        deleteMany.addEventListener('click', () => runBatch('delete-many', '确认永久删除选中的记录？此操作不可撤销', '已永久删除'));
+        purgeAll.addEventListener('click', async () => {
+            if (!window.confirm('确认立即清空回收站？所有记录将被永久删除，无法恢复（会先自动生成完整快照）。')) return;
+            await createSnapshot('before-trash-purge');
+            try {
+                const response = await apiFetch('/api/trash', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'purge' })
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(payload.error || '清空回收站失败，请重试');
+                trashItems = payload.items || [];
+                renderTrashItems(trashItems);
+                showToast(`已清空回收站（${payload.purged || 0} 条）`);
+            } catch (error) {
+                showToast(error.message || '清空回收站失败，请重试');
+            }
+        });
+
         const list = document.createElement('div');
         list.className = 'trash-list';
         const trashFragment = document.createDocumentFragment();
         items.forEach(item => {
             const card = document.createElement('div');
             card.className = 'trash-item';
+            const head = document.createElement('label');
+            head.className = 'trash-head';
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.dataset.id = item.id;
+            box.checked = selected.has(item.id);
+            box.addEventListener('change', () => {
+                if (box.checked) selected.add(item.id);
+                else selected.delete(item.id);
+                updateSelectionUi();
+            });
             const title = document.createElement('strong');
             title.textContent = item.title || '未命名条目';
+            head.append(box, title);
             const meta = document.createElement('small');
-            meta.textContent = `${item.kind === 'project' ? '项目' : '任务'} · ${item.deletedAt || ''}`;
+            meta.textContent = `${item.kind === 'project' ? '项目' : '任务'} · 删除于 ${(item.deletedAt || '').slice(0, 16).replace('T', ' ')}`
+                + (item.expiresAt ? ` · ${item.expiresAt.slice(0, 10)} 自动清理` : '');
             const context = document.createElement('div');
             context.className = 'trash-context';
             context.textContent = item.context || item.projectId || '';
@@ -4704,6 +5275,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             restoreBtn.className = 'utility-primary-btn';
             restoreBtn.textContent = '恢复';
             restoreBtn.addEventListener('click', async () => {
+                if (!window.confirm(`确认恢复“${item.title || '未命名条目'}”？`)) return;
                 try {
                     await restoreTrashItem(item.id);
                     renderTrashItems(trashItems);
@@ -4717,7 +5289,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             deleteBtn.className = 'utility-secondary-btn';
             deleteBtn.textContent = '删除';
             deleteBtn.addEventListener('click', async () => {
-                if (!window.confirm('确认永久删除这条记录？')) return;
+                if (!window.confirm('确认永久删除这条记录？此操作不可撤销（会先自动生成完整快照）。')) return;
+                await createSnapshot('before-trash-purge');
                 try {
                     await deleteTrashItemById(item.id);
                     renderTrashItems(trashItems);
@@ -4726,11 +5299,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 }
             });
             actions.append(restoreBtn, deleteBtn);
-            card.append(title, meta, context, actions);
+            card.append(head, meta, context, actions);
             trashFragment.appendChild(card);
         });
         list.replaceChildren(trashFragment);
         utilityBody.appendChild(list);
+        updateSelectionUi();
     }
 
     async function openTrashBin() {
@@ -5115,6 +5689,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         });
         exportBtn.addEventListener('click', exportBackup);
         downloadDatabaseBackupBtn.addEventListener('click', downloadDatabaseBackup);
+        inspectDatabaseBackupBtn.addEventListener('click', inspectDatabaseBackupFromUi);
         importInput.addEventListener('change', () => {
             importBackup(importInput.files && importInput.files[0]);
         });

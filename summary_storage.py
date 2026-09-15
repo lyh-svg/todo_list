@@ -16,7 +16,25 @@ SUMMARY_DATABASE_FILE = Path(
     os.environ.get("TODO_SUMMARY_SQLITE_FILE", str(APP_DIR / "data" / "summary.sqlite3"))
 ).expanduser()
 SUMMARY_SCHEMA_VERSION = 1
+
+
+class SummarySchemaVersionError(RuntimeError):
+    """摘要库 schema 高于本程序支持：拒绝打开，绝不降级。"""
 MAX_SUMMARY_CONTENT_BYTES = 1024 * 1024
+class _ManagedConnection(sqlite3.Connection):
+    """with 块结束时真正关闭连接。
+
+    sqlite3 的上下文管理器只负责提交/回滚，不关闭连接；不关会留下未释放的句柄
+    （表现为 ResourceWarning）。这里统一在 __exit__ 里关闭。
+    """
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc, tb))
+        finally:
+            self.close()
+
+
 _summary_lock = threading.RLock()
 
 
@@ -30,7 +48,7 @@ def open_summary_database() -> sqlite3.Connection:
         SUMMARY_DATABASE_FILE.parent.chmod(0o700)
     except OSError:
         pass
-    connection = sqlite3.connect(SUMMARY_DATABASE_FILE, timeout=10)
+    connection = sqlite3.connect(SUMMARY_DATABASE_FILE, timeout=10, factory=_ManagedConnection)
     connection.row_factory = sqlite3.Row
     try:
         SUMMARY_DATABASE_FILE.chmod(0o600)
@@ -40,6 +58,12 @@ def open_summary_database() -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=10000")
+    stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if stored_version > SUMMARY_SCHEMA_VERSION:
+        connection.close()
+        raise SummarySchemaVersionError(
+            f"摘要库 schema 版本为 {stored_version}，高于本程序支持的 {SUMMARY_SCHEMA_VERSION}；请升级程序"
+        )
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS summaries (
@@ -129,10 +153,11 @@ def upsert_summary(question: str, content: str) -> dict[str, Any]:
                 (summary_id, key, question_text[:500], content_text, now, now, 1),
             )
         connection.commit()
-    return _row_to_summary(connection.execute(
-        "SELECT summary_id,question,content,created_at,updated_at,revision FROM summaries WHERE summary_id=?",
-        (summary_id,),
-    ).fetchone())
+        row = connection.execute(
+            "SELECT summary_id,question,content,created_at,updated_at,revision FROM summaries WHERE summary_id=?",
+            (summary_id,),
+        ).fetchone()
+    return _row_to_summary(row)
 
 
 def delete_summary(summary_id: Any) -> bool:
@@ -147,6 +172,11 @@ def clear_summaries() -> int:
         cursor = connection.execute("DELETE FROM summaries")
         connection.commit()
         return cursor.rowcount
+
+
+def checkpoint() -> None:
+    with _summary_lock, open_summary_database() as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def database_size() -> int:

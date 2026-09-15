@@ -20,6 +20,28 @@ MEMO_SCHEMA_VERSION = 1
 MAX_MEMO_CONTENT_BYTES = 50 * 1024 * 1024
 # 列表只回传前这么多字符做预览，全文由 GET /api/memo?id= 按需加载。
 MEMO_PREVIEW_CHARS = 200
+
+
+class MemoConflictError(RuntimeError):
+    """备忘录版本冲突：另一个页面已经改过它。"""
+
+
+class MemoSchemaVersionError(RuntimeError):
+    """备忘录库 schema 高于本程序支持：拒绝打开，绝不降级。"""
+class _ManagedConnection(sqlite3.Connection):
+    """with 块结束时真正关闭连接。
+
+    sqlite3 的上下文管理器只负责提交/回滚，不关闭连接；不关会留下未释放的句柄
+    （表现为 ResourceWarning）。这里统一在 __exit__ 里关闭。
+    """
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc, tb))
+        finally:
+            self.close()
+
+
 _memo_lock = threading.RLock()
 
 
@@ -37,7 +59,7 @@ def open_memo_database() -> sqlite3.Connection:
         MEMO_DATABASE_FILE.parent.chmod(0o700)
     except OSError:
         pass
-    connection = sqlite3.connect(MEMO_DATABASE_FILE, timeout=10)
+    connection = sqlite3.connect(MEMO_DATABASE_FILE, timeout=10, factory=_ManagedConnection)
     connection.row_factory = sqlite3.Row
     try:
         MEMO_DATABASE_FILE.chmod(0o600)
@@ -47,6 +69,12 @@ def open_memo_database() -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=10000")
+    stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if stored_version > MEMO_SCHEMA_VERSION:
+        connection.close()
+        raise MemoSchemaVersionError(
+            f"备忘录库 schema 版本为 {stored_version}，高于本程序支持的 {MEMO_SCHEMA_VERSION}；请升级程序"
+        )
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS memos (
@@ -163,7 +191,7 @@ def write_memo(payload: dict[str, Any]) -> dict[str, Any]:
         if row:
             current_revision = int(row["revision"])
             if expected != current_revision:
-                raise RuntimeError(f"备忘录已被其他页面更新（当前版本 {current_revision}）")
+                raise MemoConflictError(f"备忘录已被其他页面更新（当前版本 {current_revision}）")
             revision = current_revision + 1
             created_at = row["created_at"]
         else:
@@ -190,7 +218,7 @@ def delete_memo(memo_id: Any, expected_revision: int) -> None:
     with _memo_lock, open_memo_database() as connection:
         row = connection.execute("SELECT revision FROM memos WHERE memo_id=?", (str(memo_id),)).fetchone()
         if not row or int(row["revision"]) != int(expected_revision):
-            raise RuntimeError("备忘录已被修改或不存在")
+            raise MemoConflictError("备忘录已被修改或不存在")
         connection.execute("DELETE FROM memos WHERE memo_id=?", (str(memo_id),))
         if connection.execute("SELECT 1 FROM memos LIMIT 1").fetchone() is None:
             now = _now()
