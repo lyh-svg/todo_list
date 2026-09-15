@@ -153,10 +153,23 @@ class FrontendReferenceTests(unittest.TestCase):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
     def test_every_get_element_by_id_target_exists_in_html(self) -> None:
+        # 注意：必须用 raw，不能用 strip_comments_and_strings 之后的 source——
+        # 那个版本把字符串字面量换成 ` 0 `，getElementById('x') 永远匹配不到，断言会变成空转。
         html_ids = set(re.findall(r'id="([^"]+)"', self.html))
-        missing = sorted({element_id for element_id in get_element_ids(self.source)
+        missing = sorted({element_id for element_id in get_element_ids(self.raw)
                           if element_id not in html_ids})
         self.assertEqual(missing, [], f"app.js 引用了 index.html 里不存在的 id：{missing}")
+
+    def test_element_id_check_would_catch_a_missing_id(self) -> None:
+        """自测：这个检查必须真的能抓到"绑定到不存在的元素"（之前用 stripped 源是空转的）。"""
+        sample = "const missing = document.getElementById('thisIdDoesNotExist123');\n"
+        # 旧的错误做法（stripped 源）匹配不到任何东西——这正是它空转的原因。
+        self.assertEqual(get_element_ids(strip_comments_and_strings(sample)), [])
+        self.assertEqual(get_element_ids(sample), ["thisIdDoesNotExist123"])
+
+    @staticmethod
+    def source_of(text: str) -> str:
+        return strip_comments_and_strings(text)
 
     def test_no_undeclared_identifiers(self) -> None:
         undeclared = undeclared_identifiers(self.source)
@@ -172,6 +185,29 @@ class FrontendReferenceTests(unittest.TestCase):
             "}\n"
         )
         self.assertIn("quickAddBtn", undeclared_identifiers(sample))
+
+    def test_frontend_api_paths_exist_in_backend(self) -> None:
+        """前端调用的每个 /api 路径都必须在 local_server.py 里声明过。"""
+        server = (APP_DIR / "local_server.py").read_text(encoding="utf-8")
+        declared = set(re.findall(r'"(/api/[a-zA-Z0-9_\-/]+)"', server))
+        used = set(re.findall(r"/api/[a-zA-Z0-9_\-/]+", self.raw))
+        missing = sorted(path for path in used if path not in declared)
+        self.assertEqual(missing, [], "前端调用了后端没有的接口：" + ", ".join(missing))
+
+    def test_view_switching_is_centralized(self) -> None:
+        """视图切换必须只走 activateView：新增视图后忘记移除 active 会让两个视图同时显示且退不出去。"""
+        self.assertIn("function activateView(activeView)", self.source, "缺少统一的视图切换函数")
+        helper = re.search(r"function activateView\(activeView\) \{(.*?)\n    \}", self.source, re.S)
+        self.assertIsNotNone(helper, "找不到 activateView 的实现")
+        body = helper.group(1)
+        view_ids = re.findall(r'id="(\w*View)"', self.html)
+        for view_id in view_ids:
+            name = view_id[0].lower() + view_id[1:]
+            self.assertIn(name, body, f"{view_id} 没有出现在 activateView 的视图列表里（会退不出去）")
+        # 除了 helper 内部，不应再有别处直接 add/remove active
+        stray = [line for line in self.source.splitlines()
+                 if "classList.add('active')" in line or "classList.remove('active')" in line]
+        self.assertEqual(stray, [], "视图 active 只允许在 activateView 里切换：" + " | ".join(stray))
 
     def test_dom_references_are_declared_once(self) -> None:
         for element_id in sorted(set(get_element_ids(self.source))):

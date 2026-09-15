@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import threading
 import uuid
+from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -135,7 +136,7 @@ def clean_repeat(value: Any) -> dict[str, Any] | None:
             weekday = int(value.get("weekday"))
         except (TypeError, ValueError):
             return None
-        if not 0 <= weekday <= 6:
+        if not 0 <= weekday <= 6:   # 0=周日（JS getDay()，见 next_repeat_due）
             return None
         rule["weekday"] = weekday
     if freq == "monthly":
@@ -173,9 +174,11 @@ def next_repeat_due(rule: Any, from_date: str) -> str:
         while candidate.weekday() >= 5:
             candidate += timedelta(days=1)
     elif freq == "weekly":
+        # weekday 的取值与前端（也是唯一客户端）统一用 JS getDay()：0=周日 … 6=周六。
+        # 历史上前端按 getDay() 写、后端按 date.weekday() 读，同一个规则会差一天。
         target = cleaned["weekday"]
         candidate = start + timedelta(days=1)
-        while candidate.weekday() != target:
+        while (candidate.weekday() + 1) % 7 != target:
             candidate += timedelta(days=1)
     else:  # monthly
         day = cleaned["day"]
@@ -229,10 +232,8 @@ def open_state_database() -> sqlite3.Connection:
     except OSError:
         pass
     connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("PRAGMA busy_timeout=10000")
-    connection.execute("PRAGMA wal_autocheckpoint=1000")
+    # 版本守卫必须在任何"会写文件"的 PRAGMA 之前：journal_mode=WAL 会改写数据库文件头，
+    # 对一个未来版本的库执行它，等于在被拒绝打开的同时动了别人的文件。
     stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if stored_version > SCHEMA_VERSION:
         connection.close()
@@ -240,6 +241,10 @@ def open_state_database() -> sqlite3.Connection:
             f"数据库 schema 版本为 {stored_version}，高于本程序支持的 {SCHEMA_VERSION}；"
             "请升级程序后再打开（已拒绝打开，避免降级损坏数据）"
         )
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA synchronous=NORMAL")
+    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute("PRAGMA wal_autocheckpoint=1000")
     connection.execute(
         "CREATE TABLE IF NOT EXISTS app_state ("
         "key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL, "
@@ -524,7 +529,13 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
             assessment_enabled=excluded.assessment_enabled,
             revision=excluded.revision, updated_at=excluded.updated_at,
             summary_json=excluded.summary_json, review_enabled=excluded.review_enabled,
-            archived=excluded.archived, last_opened_at=excluded.last_opened_at""",
+            archived=excluded.archived,
+            -- 前端不会回传 lastOpenedAt（它由 touch_project_opened 维护）。
+            -- 直接赋值会让每次保存都把"最近打开"时间清空，等于丢掉最近记录。
+            last_opened_at=CASE
+                WHEN excluded.last_opened_at <> '' THEN excluded.last_opened_at
+                ELSE projects.last_opened_at
+            END""",
         (project_id, _json(project["id"]), position, str(project.get("name", "未命名项目")),
          str(project.get("description", "")), str(project.get("createdAt", "")),
          int(bool(project.get("assessmentEnabled"))), revision, updated_at, _json(summary),
@@ -601,7 +612,7 @@ def _write_assessment(connection: sqlite3.Connection, node: dict[str, Any], upda
         (project_id, node_id, payload, updated_at),
     )
     valid_keys: set[tuple[int, int]] = set()
-    if isinstance(conversations, list):
+    if conversations_present and isinstance(conversations, list):
         for question_index, messages in enumerate(conversations):
             if not isinstance(messages, list):
                 continue
@@ -620,16 +631,19 @@ def _write_assessment(connection: sqlite3.Connection, node: dict[str, Any], upda
                     (project_id, node_id, question_index, message_index,
                      message["role"], str(message.get("content", ""))),
                 )
-    for row in connection.execute(
-        "SELECT question_index,message_index FROM conversations WHERE project_id=? AND node_id=?",
-        (project_id, node_id),
-    ):
-        key = (int(row[0]), int(row[1]))
-        if key not in valid_keys:
-            connection.execute(
-                "DELETE FROM conversations WHERE project_id=? AND node_id=? AND question_index=? AND message_index=?",
-                (project_id, node_id, *key),
-            )
+    # 只有 payload 真的带了 questionConversations 键时才做差集删除。
+    # 否则（例如客户端只发 {"passed": true}）valid_keys 为空，会把该节点已有的逐题对话全部删掉。
+    if conversations_present:
+        for row in connection.execute(
+            "SELECT question_index,message_index FROM conversations WHERE project_id=? AND node_id=?",
+            (project_id, node_id),
+        ):
+            key = (int(row[0]), int(row[1]))
+            if key not in valid_keys:
+                connection.execute(
+                    "DELETE FROM conversations WHERE project_id=? AND node_id=? AND question_index=? AND message_index=?",
+                    (project_id, node_id, *key),
+                )
 
 
 def _read_project_from_connection(connection: sqlite3.Connection, project_id: str) -> tuple[dict[str, Any], int] | None:
@@ -874,10 +888,6 @@ def _project_title(project: dict[str, Any]) -> str:
     return str(project.get("name") or "未命名项目")
 
 
-def _node_title(node: dict[str, Any]) -> str:
-    return str(node.get("text") or "未命名任务")
-
-
 def store_trash_item(
     kind: str,
     project_id: Any,
@@ -971,21 +981,29 @@ def delete_trash_item(trash_id: Any) -> None:
         connection.execute("DELETE FROM trash_items WHERE trash_id=?", (str(trash_id),))
 
 
+def _find_children_list(tree: list[dict[str, Any]], parent_id: str | None) -> list[dict[str, Any]] | None:
+    """返回 parent_id 对应节点的 children 列表；找不到返回 None。"""
+    if parent_id is None:
+        return tree
+    def walk(nodes: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        for current in nodes or []:
+            if str(current.get("id")) == str(parent_id):
+                return current.setdefault("children", [])
+            found = walk(current.get("children") or [])
+            if found is not None:
+                return found
+        return None
+    return walk(tree)
+
+
 def _find_parent_and_insert(tree: list[dict[str, Any]], parent_id: str | None, node: dict[str, Any], position: int) -> None:
     if parent_id is None:
         tree.insert(max(0, min(position, len(tree))), node)
         return
-    def walk(nodes: list[dict[str, Any]]) -> bool:
-        for current in nodes:
-            if str(current.get("id")) == parent_id:
-                children = current.setdefault("children", [])
-                children.insert(max(0, min(position, len(children))), node)
-                return True
-            if walk(current.get("children") or []):
-                return True
-        return False
-    if not walk(tree):
+    children = _find_children_list(tree, parent_id)
+    if children is None:
         raise ValueError("找不到原父节点，无法恢复任务")
+    children.insert(max(0, min(position, len(children))), node)
 
 
 def clear_trash_items() -> int:
@@ -1108,12 +1126,18 @@ def export_projects_snapshot() -> dict[str, Any]:
 
     刻意逐个读取完整项目，而不是复用 read_project_summaries() 的摘要：
     摘要里的 tree 是空的，直接导出会让未打开的项目变成空壳，导入后丢数据。
+    整个导出必须在一把锁、一个连接里完成：分成两次加锁的话，中间新建的项目不会出现在
+    导出结果里，而导入是"整体替换"语义，用这份 JSON 恢复就会把它删掉。
     """
     projects: list[dict[str, Any]] = []
-    for summary in read_project_summaries():
-        result = read_project(summary.get("id"))
-        if result:
-            projects.append(result[0])
+    with _database_lock, open_state_database() as connection:
+        rows = connection.execute(
+            "SELECT project_id FROM projects ORDER BY position,project_id"
+        ).fetchall()
+        for row in rows:
+            result = _read_project_from_connection(connection, str(row["project_id"]))
+            if result:
+                projects.append(result[0])
     return {
         "schemaVersion": EXPORT_SCHEMA_VERSION,
         "exportedAt": datetime.now().isoformat(timespec="seconds"),
@@ -1243,11 +1267,13 @@ def harden_storage_permissions() -> None:
 
 
 def _validated_backup(source: Path, target: Path) -> None:
-    with sqlite3.connect(source, timeout=10) as source_connection:
-        with sqlite3.connect(target) as destination:
+    # 注意：`with sqlite3.connect(...)` 只提交/回滚事务，并不关闭连接（会一直留到 GC）。
+    # 备份路径连接多，必须用 closing() 显式关闭。
+    with closing(sqlite3.connect(source, timeout=10)) as source_connection:
+        with closing(sqlite3.connect(target)) as destination:
             source_connection.backup(destination)
     target.chmod(0o600)
-    with sqlite3.connect(f"file:{target}?mode=ro&immutable=1", uri=True) as connection:
+    with closing(sqlite3.connect(f"file:{target}?mode=ro&immutable=1", uri=True)) as connection:
         result = connection.execute("PRAGMA quick_check").fetchone()
     if not result or result[0] != "ok":
         target.unlink(missing_ok=True)
@@ -1266,6 +1292,9 @@ def create_manual_database_backup(prefix: str = "manual") -> str:
 def list_database_backups() -> list[dict[str, Any]]:
     backups = []
     for path in sorted(BACKUP_DIR.glob("*.sqlite3"), key=lambda item: item.stat().st_mtime, reverse=True):
+        if path.name.startswith("."):
+            # 恢复/回滚过程用的临时文件（.restore-* / .rollback-*）不是可恢复的备份。
+            continue
         try:
             stat = path.stat()
             backups.append({"name": path.name, "bytes": stat.st_size,
@@ -1283,7 +1312,7 @@ def restore_database_backup(name: str) -> None:
     if not source.is_file():
         raise ValueError("备份不存在")
     with _database_lock:
-        with sqlite3.connect(f"file:{source}?mode=ro&immutable=1", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{source}?mode=ro&immutable=1", uri=True)) as connection:
             result = connection.execute("PRAGMA quick_check").fetchone()
         if not result or result[0] != "ok":
             raise RuntimeError("备份完整性检查失败，不能恢复")
@@ -1301,8 +1330,8 @@ def restore_database_backup(name: str) -> None:
 
 def _restore_database_file(source: Path) -> None:
     source_uri = f"file:{source}?mode=ro&immutable=1"
-    with sqlite3.connect(source_uri, uri=True) as backup:
-        with sqlite3.connect(DATABASE_FILE, timeout=10) as destination:
+    with closing(sqlite3.connect(source_uri, uri=True)) as backup:
+        with closing(sqlite3.connect(DATABASE_FILE, timeout=10)) as destination:
             backup.backup(destination)
 
 
@@ -1447,6 +1476,10 @@ def _apply_batch_action(node: dict[str, Any], action: str, value: Any, today: st
         return True
     if action == "set-due":
         cleaned = clean_due_date(value)
+        # 非空但清洗后为空 = 日期格式不合法。绝不能当成"清除"：
+        # 用户输错格式时会静默抹掉所有选中任务的截止日期。
+        if str(value or "").strip() and not cleaned:
+            raise ValueError("日期格式不正确，请用 YYYY-MM-DD（要清除截止日期请留空）")
         if node.get("dueDate", "") == cleaned:
             return False
         node["dueDate"] = cleaned
@@ -1530,10 +1563,21 @@ def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[
         clone["dueDate"] = next_due
         clone["assessment"] = None
         clone["assessmentHistory"] = 0
+        # 不能连 children 一起深拷贝：子节点 id 会重复，_flatten_nodes 会抛
+        # "节点 ID 重复" 让整批事务回滚。周期任务的下一次只复制任务本身。
+        clone["children"] = []
         clone.pop("review", None)
         siblings.append(clone)
         spawned += 1
     return spawned
+
+
+def _project_auto_review(project: dict[str, Any]) -> bool:
+    """与前端 projectAutoReview 一致：reviewEnabled 显式布尔优先，否则看 assessmentEnabled。"""
+    enabled = project.get("reviewEnabled")
+    if isinstance(enabled, bool):
+        return enabled
+    return bool(project.get("assessmentEnabled"))
 
 
 def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str, Any]:
@@ -1582,6 +1626,13 @@ def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str
                     stack.extend(node.get("children") or [])
                 if applied == 0:
                     continue
+                # 批量完成也要安排复习，否则和逐条完成的行为不一致
+                # （同一批任务，逐条点会排进复习队列，批量点却永远不进）。
+                if marks and action == "complete" and _project_auto_review(project):
+                    review_due = (date.today() + timedelta(days=1)).isoformat()
+                    for node in marks:
+                        if not node.get("optional") and not node.get("review"):
+                            node["review"] = {"due": review_due, "learning": False, "log": []}
                 spawned = _spawn_next_occurrences(project, marks)
                 _upsert_project(connection, project, position(connection, project_id), revision + 1, now)
                 projects_touched.append(project_id)
@@ -1663,8 +1714,12 @@ def add_project_item(project_id: str, node: dict[str, Any],
         "repeat": clean_repeat(node.get("repeat")),
     }
     if parent_id:
-        _find_parent_and_insert(project.setdefault("tree", []), str(parent_id), item,
-                                len(project.get("tree") or []))
+        # 追加到目标父节点的末尾。position 是"父节点 children 里的下标"，
+        # 以前传顶层节点数，父节点下任务多的时候会插到中间。
+        children = _find_children_list(project.setdefault("tree", []), str(parent_id))
+        if children is None:
+            raise ValueError("找不到父节点，任务未创建")
+        children.append(item)
     else:
         project["tree"] = list(project.get("tree") or []) + [item]
     revision_after, _summary = write_project(project, revision)
@@ -1781,7 +1836,7 @@ def workbench(today: str | None = None) -> dict[str, Any]:
         locations = _node_locations(connection)
         rows = connection.execute(
             """SELECT project_id,node_id,text,completed,priority,due_date,estimate_minutes,tags,
-                      review_due,completed_at
+                      note,links,repeat,review_due,completed_at
                FROM nodes WHERE type='item'"""
         ).fetchall()
     for row in rows:
@@ -1797,6 +1852,10 @@ def workbench(today: str | None = None) -> dict[str, Any]:
             "dueDate": str(row["due_date"] or ""),
             "estimateMinutes": int(row["estimate_minutes"] or 0),
             "tags": json.loads(row["tags"]) if row["tags"] else [],
+            # 徽标（备注 / 链接 / 周期）需要这三个字段，否则工作台的行看起来"没设过"。
+            "note": str(row["note"] or ""),
+            "links": json.loads(row["links"]) if row["links"] else [],
+            "repeat": json.loads(row["repeat"]) if row["repeat"] else None,
             "path": (locations.get((project_id, str(row["node_id"]))) or {}).get("path", ""),
             "ancestorIds": (locations.get((project_id, str(row["node_id"]))) or {}).get("ancestorIds", []),
         }

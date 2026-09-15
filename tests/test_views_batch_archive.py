@@ -177,6 +177,34 @@ class BatchUpdateTests(unittest.TestCase):
         self.assertEqual(result["changed"], 0)
         self.assertEqual(len(result["failed"]), 1)
 
+    def test_invalid_set_due_is_rejected_instead_of_clearing(self) -> None:
+        """格式不对的日期不能当成"清除"：旧行为会把选中任务的截止日期静默抹掉。"""
+        storage.batch_update_nodes(self.targets(("p1", "p1-a")), "set-due", TOMORROW)
+        self.assertEqual(read_items("p1")[0]["dueDate"], TOMORROW)
+        result = storage.batch_update_nodes(self.targets(("p1", "p1-a")), "set-due", "2026-9-5")
+        self.assertEqual(result["changed"], 0)
+        self.assertEqual(len(result["failed"]), 1)
+        self.assertIn("格式", result["failed"][0]["error"])
+        self.assertEqual(read_items("p1")[0]["dueDate"], TOMORROW, "非法输入不能改动截止日期")
+        # 真正的空串仍然表示清除
+        storage.batch_update_nodes(self.targets(("p1", "p1-a")), "set-due", "")
+        self.assertEqual(read_items("p1")[0].get("dueDate", ""), "")
+
+    def test_batch_complete_schedules_review_like_single_complete(self) -> None:
+        """批量完成要和逐条完成一致：开启复习的项目要排进复习队列。"""
+        storage.replace_projects([
+            make_project("p1", [item("p1-a", "任务A"), item("p1-b", "任务B")]),
+        ])
+        with storage.open_state_database() as connection:
+            connection.execute("UPDATE projects SET review_enabled=1 WHERE project_id='p1'")
+        storage.batch_update_nodes(self.targets(("p1", "p1-a")), "complete")
+        node = read_items("p1")[0]
+        self.assertTrue(node["completed"])
+        self.assertEqual(node.get("review", {}).get("due"), TOMORROW)
+        # 取消完成要把复习计划一起撤掉
+        storage.batch_update_nodes(self.targets(("p1", "p1-a")), "uncomplete")
+        self.assertNotIn("review", read_items("p1")[0])
+
     def test_batch_touches_only_latest_revision_once_per_project(self) -> None:
         before = storage.read_project("p1")[1]
         storage.batch_update_nodes(self.targets(("p1", "p1-a"), ("p1", "p1-b")), "set-priority", "mid")

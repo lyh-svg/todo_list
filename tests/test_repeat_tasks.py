@@ -64,8 +64,13 @@ class RepeatRuleMathTests(unittest.TestCase):
         self.assertEqual(storage.next_repeat_due({"freq": "weekday"}, "2026-09-17"), "2026-09-18")
 
     def test_weekly_targets_weekday(self) -> None:
-        # 从周二 2026-09-15 起，每周一（weekday=0）
-        self.assertEqual(storage.next_repeat_due({"freq": "weekly", "weekday": 0}, "2026-09-15"), "2026-09-21")
+        # weekday 用 JS getDay()：0=周日，1=周一，…，6=周六（与前端一致）。
+        # 从周二 2026-09-15 起：下一个周日是 09-20，下一个周一是 09-21。
+        self.assertEqual(storage.next_repeat_due({"freq": "weekly", "weekday": 0}, "2026-09-15"), "2026-09-20")
+        self.assertEqual(storage.next_repeat_due({"freq": "weekly", "weekday": 1}, "2026-09-15"), "2026-09-21")
+        # 周二自己：下一次是下周二
+        self.assertEqual(storage.next_repeat_due({"freq": "weekly", "weekday": 2}, "2026-09-15"), "2026-09-22")
+        self.assertEqual(storage.next_repeat_due({"freq": "weekly", "weekday": 6}, "2026-09-15"), "2026-09-19")
 
     def test_monthly_handles_short_months(self) -> None:
         # 9 月没有 31 号 → 顺到 10-31
@@ -144,6 +149,19 @@ class RepeatStorageTests(unittest.TestCase):
         result = storage.batch_update_nodes([{"projectId": "p1", "nodeId": "i1"}], "complete")
         self.assertEqual(result["changed"], 1)
         self.assertEqual(result["spawned"], 0, "超过 until 就不再生成")
+
+    def test_spawn_drops_children_to_avoid_duplicate_ids(self) -> None:
+        """周期任务带子节点时，克隆出来的下一次不能连子节点一起复制（否则节点 ID 重复、整批 500）。"""
+        parent = item("i1", "每周例会", dueDate=TODAY, repeat={"freq": "daily"})
+        parent["children"] = [item("i1-c1", "会前准备")]
+        storage.replace_projects([make_project([parent])])
+        result = storage.batch_update_nodes([{"projectId": "p1", "nodeId": "i1"}], "complete")
+        self.assertEqual(result["spawned"], 1)
+        nodes = storage.read_project("p1")[0]["tree"][0]["children"][0]["children"]
+        spawned = next(node for node in nodes if not node["completed"])
+        self.assertEqual(spawned["children"], [], "克隆出来的下一次不应带子节点")
+        # 读回项目本身也要能通过（说明没有重复 ID）
+        self.assertEqual(len(nodes), 2)
 
 
 if __name__ == "__main__":

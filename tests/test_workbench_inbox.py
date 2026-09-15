@@ -123,6 +123,19 @@ class InboxTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             storage.move_node(created["node"]["id"], "inbox", "不存在项目")
 
+    def test_add_item_with_parent_appends_to_the_end(self) -> None:
+        """指定 parentId 时要追加到父节点末尾，而不是按顶层节点数插到中间。"""
+        storage.replace_projects([make_project("p1", "项目一", [
+            item("i1", "已有1"), item("i2", "已有2"), item("i3", "已有3"), item("i4", "已有4"),
+        ])])
+        created = storage.add_project_item("p1", {"text": "新加的"}, parent_id="p1-d")
+        self.assertEqual(created["node"]["text"], "新加的")
+        items = storage.read_project("p1")[0]["tree"][0]["children"][0]["children"]
+        self.assertEqual([node["text"] for node in items],
+                         ["已有1", "已有2", "已有3", "已有4", "新加的"])
+        with self.assertRaises(ValueError):
+            storage.add_project_item("p1", {"text": "孤儿"}, parent_id="不存在的父节点")
+
 
 class WorkbenchTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -169,6 +182,20 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(today_item["priority"], "high")
         self.assertIn("第1周", today_item["path"], "要能看出任务在哪一周/单元")
         self.assertIn("单元1", today_item["path"])
+
+    def test_workbench_items_carry_meta_badges(self) -> None:
+        """工作台的行要能渲染备注/链接/周期徽标，所以这三个字段必须返回。"""
+        storage.write_project(make_project("p3", "项目三", [
+            item("i-meta", "带元数据的任务", dueDate=TODAY, note="记得先看文档",
+                 links=[{"label": "文档", "url": "https://example.com/doc"}],
+                 repeat={"freq": "daily"}),
+        ]), None)
+        board = storage.workbench(TODAY)
+        entry = next(entry for group in board["groups"].values() for entry in group
+                     if entry["nodeId"] == "i-meta")
+        self.assertEqual(entry["note"], "记得先看文档")
+        self.assertEqual(entry["links"][0]["url"], "https://example.com/doc")
+        self.assertEqual(entry["repeat"], {"freq": "daily", "interval": 1})
 
     def test_workbench_sorts_high_priority_first(self) -> None:
         board = storage.workbench(TODAY)
@@ -218,6 +245,19 @@ class RecentTests(unittest.TestCase):
         self.assertEqual(recent["completed"][0]["text"], "任务一")
         self.assertEqual(recent["completed"][0]["projectName"], "项目一")
         self.assertEqual(recent["completed"][0]["nodeId"], "i1")
+
+    def test_saving_project_keeps_last_opened_at(self) -> None:
+        """前端的保存 payload 里没有 lastOpenedAt，保存不能把"最近打开"清空。"""
+        storage.touch_project_opened("p1")
+        self.assertEqual([entry["id"] for entry in storage.recent_overview()["opened"]], ["p1"])
+
+        project, revision = storage.read_project("p1")
+        project["name"] = "项目一（改名）"
+        storage.write_project(project, revision)
+
+        opened = [entry["id"] for entry in storage.recent_overview()["opened"]]
+        self.assertEqual(opened, ["p1"], "普通保存不能清掉最近打开时间")
+        self.assertEqual(storage.read_project_summaries()[0]["name"], "项目一（改名）")
 
 
 if __name__ == "__main__":

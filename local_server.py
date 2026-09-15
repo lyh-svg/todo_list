@@ -34,6 +34,9 @@ IDLE_SHUTDOWN_SECONDS = max(1, int(os.environ.get("TODO_IDLE_SHUTDOWN_SECONDS", 
 # Supports several small source files plus a short per-question conversation.
 MAX_AI_REQUEST_BYTES = 5 * 1024 * 1024
 MAX_STATE_REQUEST_BYTES = 110 * 1024 * 1024
+# 备忘录正文本身允许到 50 MB（memo_storage.MAX_MEMO_CONTENT_BYTES），HTTP 上限必须不低于它，
+# 否则 5–50 MB 的备忘录会永远存不进去（旧上限只给了 5 MB）。
+MAX_MEMO_REQUEST_BYTES = 60 * 1024 * 1024
 SESSION_TOKEN = os.environ.get("TODO_SESSION_TOKEN", "") or secrets.token_urlsafe(32)
 SESSION_TOKEN_FILE = Path(
     os.environ.get("TODO_SESSION_TOKEN_FILE", f"/tmp/todo-list-ai-{PORT}.token")
@@ -57,7 +60,6 @@ StateConflictError = storage_service.StateConflictError
 migrate_legacy_state = storage_service.migrate_legacy_state
 ensure_schema = storage_service.ensure_schema
 ensure_inbox_project = storage_service.ensure_inbox_project
-add_inbox_item = storage_service.add_inbox_item
 add_project_item = storage_service.add_project_item
 move_node = storage_service.move_node
 touch_project_opened = storage_service.touch_project_opened
@@ -240,12 +242,26 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.close_connection = True
 
     def read_body(self, length: int) -> bytes | None:
-        """读请求体；客户端中途断开时不要抛异常打堆栈。"""
+        """读请求体；客户端中途断开时不要抛异常打堆栈。
+
+        注意：返回的字节数可能少于 length（客户端声明了 Content-Length 却提前关闭连接）。
+        调用方必须自己比对长度（尤其是二进制上传），否则会把半截数据当完整数据入库。
+        """
         try:
-            return self.rfile.read(length)
+            payload = self.rfile.read(length)
         except (ConnectionError, OSError):
             self.close_connection = True
             return None
+        if len(payload) != length:
+            self.close_connection = True
+        return payload
+
+    def request_length(self) -> int:
+        """请求体长度（错误路径上也要用它把 body 读干净，否则客户端收到的是连接重置）。"""
+        try:
+            return max(0, int(self.headers.get("Content-Length", "0") or 0))
+        except (TypeError, ValueError):
+            return 0
 
     def discard_body(self, length: int, *, limit: int = 64 * 1024) -> None:
         """错误响应前把请求体读掉。
@@ -297,6 +313,11 @@ class TodoHandler(SimpleHTTPRequestHandler):
         if path == "/api/health":
             self.send_json(200, {"ok": True})
             return
+        # GET 也可能有副作用（例如 /api/project 会更新"最近打开"），来源校验必须和 POST/DELETE 一致。
+        if path.startswith("/api/") and not allowed_origin(self.headers.get("Origin")):
+            self.discard_body(self.request_length())
+            self.send_json(403, {"error": "不允许的请求来源"})
+            return
         if path == "/api/backup/download":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             supplied = self.headers.get("X-Todo-Session", "") or query.get("token", [""])[0]
@@ -323,7 +344,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 snapshot = export_projects_snapshot()
-            except (OSError, sqlite3.Error, RuntimeError) as error:
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
                 self.send_json(500, {"error": f"导出项目失败：{error}"})
                 return
             body = json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")
@@ -338,9 +359,11 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path.startswith("/api/") and path not in {"/api/config"} and not valid_session(self):
+            self.discard_body(self.request_length())
             self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
             return
         if path == "/api/config" and not valid_session(self):
+            self.discard_body(self.request_length())
             self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
             return
         if path == "/api/projects":
@@ -441,7 +464,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         "backupDirectory": str(BACKUP_DIR),
                     },
                 )
-            except (OSError, sqlite3.Error, RuntimeError) as error:
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
                 self.send_json(500, {"error": f"读取 SQLite 信息失败：{error}"})
             return
         if path == "/api/backups":
@@ -453,6 +476,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
         if path == "/api/backup/inspect":
             try:
                 name = required_param(query_params(self), "name")
+                if Path(name).name != name or not (name.endswith(".sqlite3") or name.endswith(".zip")):
+                    raise ValueError("备份文件名不正确")
+                # 名字非法 → 400；名字合法但文件不存在 → 404（与其它资源接口一致）。
+                if not (BACKUP_DIR / name).is_file():
+                    self.send_json(404, {"error": "备份不存在"})
+                    return
                 self.send_json(200, {"backup": describe_backup(name)})
             except ValueError as error:
                 self.send_json(400, {"error": str(error)})
@@ -504,8 +533,13 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 self.send_json(500, {"error": f"读取备忘录失败：{error}"})
             return
         if path == "/api/memos/database-download":
-            memo_storage.checkpoint()
-            self.send_file(memo_storage.MEMO_DATABASE_FILE, "application/vnd.sqlite3", "memo.sqlite3")
+            # 和别的 GET 分支一样必须有兜底：checkpoint()/send_file() 都可能抛异常，
+            # 抛出去就是"空回复"（客户端看到连接直接断开，没有任何 JSON）。
+            try:
+                memo_storage.checkpoint()
+                self.send_file(memo_storage.MEMO_DATABASE_FILE, "application/vnd.sqlite3", "memo.sqlite3")
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"导出备忘录数据库失败：{error}"})
             return
         if path not in PUBLIC_PATHS:
             self.send_json(404, {"error": "资源不存在"})
@@ -521,6 +555,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        length = self.request_length()
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
                         "/api/inbox/add", "/api/inbox/move", "/api/views", "/api/batch",
                         "/api/background",
@@ -528,22 +563,27 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         "/api/trash",
                         "/api/summary",
                         "/api/project/plan"}:
+            self.discard_body(length)
             self.send_json(404, {"error": "接口不存在"})
             return
         if not valid_session(self):
+            self.discard_body(length)
             self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
             return
         if not allowed_origin(self.headers.get("Origin")):
+            self.discard_body(length)
             self.send_json(403, {"error": "不允许的请求来源"})
             return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        request_limit = 110 * 1024 * 1024 if path == "/api/memos/database-import" else (
-            30 * 1024 * 1024 if path == "/api/background" else (
-                MAX_STATE_REQUEST_BYTES if path in {"/api/project", "/api/import"} else MAX_AI_REQUEST_BYTES
-            ))
+        if path == "/api/memos/database-import":
+            request_limit = 110 * 1024 * 1024
+        elif path == "/api/background":
+            request_limit = 30 * 1024 * 1024
+        elif path == "/api/memo":
+            request_limit = MAX_MEMO_REQUEST_BYTES
+        elif path in {"/api/project", "/api/import"}:
+            request_limit = MAX_STATE_REQUEST_BYTES
+        else:
+            request_limit = MAX_AI_REQUEST_BYTES
         if length <= 0 or length > request_limit:
             self.discard_body(length)
             self.send_json(413, {"error": "请求内容为空或过大"})
@@ -552,6 +592,10 @@ class TodoHandler(SimpleHTTPRequestHandler):
             # 先把 body 读完：任何校验失败都不会留下未读数据（否则客户端看到的是空回复/连接重置）。
             blob = self.read_body(length)
             if blob is None:
+                return
+            if len(blob) != length:
+                # 客户端声明了长度却提前断开：半截数据绝不能当完整图片入库。
+                self.send_json(400, {"error": "请求体不完整，背景图片未保存"})
                 return
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             file_name = query.get("name", ["background"])[0][:200]
@@ -582,6 +626,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
             raw_body = self.read_body(length)
             if raw_body is None:
                 return
+            if len(raw_body) != length:
+                raise ValueError("请求体不完整，请重试")
             payload = json.loads(raw_body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须是 JSON 对象")
@@ -744,10 +790,17 @@ class TodoHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path not in {"/api/project", "/api/background", "/api/memo", "/api/summary", "/api/summaries",
                         "/api/views"}:
+            self.discard_body(self.request_length())
             self.send_json(404, {"error": "接口不存在"})
             return
-        if not valid_session(self) or not allowed_origin(self.headers.get("Origin")):
+        # 会话失效(401) 与 来源不允许(403) 是两回事，不能都报"会话已失效"。
+        if not valid_session(self):
+            self.discard_body(self.request_length())
             self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
+            return
+        if not allowed_origin(self.headers.get("Origin")):
+            self.discard_body(self.request_length())
+            self.send_json(403, {"error": "不允许的请求来源"})
             return
         # 所有分支都在 try 里：参数缺失/非法 → 400，资源不存在 → 404，版本冲突 → 409，
         # 绝不把异常抛到 HTTP 层（那会变成"空回复"）。

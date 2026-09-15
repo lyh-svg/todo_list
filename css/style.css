@@ -26,6 +26,9 @@
     margin: 0;
     padding: 0;
 }
+/* hidden 属性必须永远生效：很多组件类显式写了 display:flex/grid，
+   它们的优先级高于 UA 的 [hidden]{display:none}，会让隐藏元素照样显示出来。 */
+[hidden] { display: none !important; }
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
     background: #e8edf5;
@@ -471,12 +474,13 @@ body {
 }
 .archive-proj-btn:hover { color: var(--primary, #4d6ff0); }
 /* 今日工作台快捷添加（批次 2） */
-.workbench-quick { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.workbench-quick { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; min-width: 0; }
 .workbench-quick input {
-    min-width: 240px; padding: 7px 10px; border: 1px solid #d8e0f0;
+    flex: 1 1 200px; min-width: 0; max-width: 320px;
+    padding: 7px 10px; border: 1px solid #d8e0f0;
     border-radius: 8px; font-size: 13px; font-family: inherit;
 }
-.workbench-quick button { min-height: 32px; }
+.workbench-quick button { min-height: 32px; white-space: nowrap; }
 /* 任务元数据徽标与编辑弹窗（第四阶段 1~4、6） */
 .node-meta { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; cursor: pointer; }
 .meta-badge {
@@ -510,11 +514,26 @@ body {
 .meta-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
 .meta-shortcuts button { min-height: 26px; padding: 2px 10px; font-size: 11px; }
 .meta-links { display: grid; gap: 6px; }
-.meta-link-row { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; align-items: center; }
+.meta-link-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 6px; align-items: center; }
+.meta-link-row input { min-width: 0; }
+/* 模板管理弹窗（评估答案模板） */
+.template-editor {
+    display: flex; flex-direction: column; gap: 7px;
+    margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+/* 复用备忘录输入框的样式，但要矮一些（模板只有几行，390px 高会顶出弹窗） */
+.template-editor .memo-title-input { min-height: 30px; font-size: 13px; }
+.template-editor .memo-content-input {
+    min-height: 130px; margin-top: 0; padding: 7px 9px;
+    border: 1px solid #d8e0f0; border-radius: 8px; font-size: 13px;
+}
+.template-editor button { align-self: flex-start; }
+.template-custom { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 回收站批量操作（⑩） */
 .trash-head { display: flex; align-items: center; gap: 8px; }
 .trash-head input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); }
-.trash-action-bar { justify-content: flex-start; flex-wrap: wrap; }
+/* 必须比后面的 .utility-actions（同样是 0,1,0 但出现更晚）更具体，否则会被 justify-content:flex-end 覆盖 */
+.utility-actions.trash-action-bar { justify-content: flex-start; flex-wrap: wrap; }
 .trash-action-bar button { min-height: 32px; }
 /* 版本冲突面板（①）：差异列表 + 三个动作 */
 .conflict-list { display: grid; gap: 6px; margin: 10px 0; max-height: 320px; overflow-y: auto; }
@@ -2121,6 +2140,11 @@ body.modal-open { overflow: hidden; }
     .memo-save-status { flex-basis: 100%; text-align: right; }
     .memo-database-tools { flex-wrap: wrap; }
     .memo-database-tools > * { flex: 1; }
+    /* 窄屏下工具条/快捷添加必须能换行，否则会横向溢出 */
+    .workbench-quick { width: 100%; margin-left: 0; }
+    .workbench-quick input { flex-basis: 100%; max-width: none; }
+    .meta-link-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .meta-link-row input[type="url"] { grid-column: 1 / -1; }
 }
 /* ===== 间隔复习 v1 ===== */
 .review-pill {
@@ -2141,6 +2165,7 @@ body.modal-open { overflow: hidden; }
 .review-pill:hover { border-color: var(--primary); color: var(--primary); box-shadow: var(--shadow); }
 .review-pill.empty { opacity: 0.62; cursor: default; }
 .review-pill-icon { font-size: 14px; }
+.review-pill-label { white-space: nowrap; }
 .review-pill-count {
     min-width: 22px;
     height: 22px;
@@ -2169,6 +2194,9 @@ body.modal-open { overflow: hidden; }
 }
 .review-card-badge.overdue { color: #d9480f; background: rgba(217, 72, 15, 0.1); }
 
+/* 复习队列和今日工作台共用同一套头部结构；这些规则不能只挂在 #reviewView 下，
+   否则工作台头部没有布局（返回按钮/标题/快速添加会挤成一团）。 */
+.review-header,
 #reviewView .review-header {
     display: flex;
     align-items: center;
@@ -2177,8 +2205,12 @@ body.modal-open { overflow: hidden; }
     max-width: 980px;
     margin: 0 auto;
     width: 100%;
+    flex-wrap: wrap;
 }
+.review-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.review-heading h2,
 #reviewView .review-heading h2 { font-size: 20px; color: var(--text); }
+.review-subline,
 #reviewView .review-subline { color: var(--text-light); font-size: 12px; }
 .review-body {
     max-width: 980px;

@@ -18,7 +18,9 @@ import hashlib
 import json
 import os
 import sqlite3
+import uuid
 import zipfile
+from contextlib import ExitStack, closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -61,8 +63,9 @@ def sha256_of(path: Path) -> str:
 def _snapshot_database(source: Path, target: Path) -> None:
     """用 SQLite Online Backup API 复制（比直接 copy 文件安全）。"""
     target.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(source, timeout=10) as source_connection:
-        with sqlite3.connect(target) as destination:
+    # `with sqlite3.connect(...)` 不会关闭连接（只提交事务），这里显式关闭。
+    with closing(sqlite3.connect(source, timeout=10)) as source_connection:
+        with closing(sqlite3.connect(target)) as destination:
             source_connection.backup(destination)
     try:
         target.chmod(0o600)
@@ -72,7 +75,7 @@ def _snapshot_database(source: Path, target: Path) -> None:
 
 def _integrity_ok(path: Path) -> bool:
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as connection:
             result = connection.execute("PRAGMA quick_check").fetchone()
         return bool(result and result[0] == "ok")
     except sqlite3.Error:
@@ -216,6 +219,22 @@ def describe_backup(name: str) -> dict[str, Any]:
     }
 
 
+def _all_database_locks() -> ExitStack:
+    """恢复会整文件替换三个库，必须同时挡住三边的并发写。
+
+    只加 state 库的锁是不够的：恢复期间进来的 memo/summary 写会提交到被 os.replace 换掉的
+    旧 inode 上，静默丢数据（.restore-*/.rollback-* 这些固定名临时文件也会互相覆盖）。
+    """
+    stack = ExitStack()
+    for module in (storage_service, memo_storage, summary_storage):
+        lock = (getattr(module, "_database_lock", None)
+                or getattr(module, "_memo_lock", None)
+                or getattr(module, "_summary_lock", None))
+        if lock is not None:
+            stack.enter_context(lock)
+    return stack
+
+
 def restore_full_backup(name: str, *, progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     """恢复完整备份：校验 → 应急备份 → 原子替换三个库 → 完整性检查，失败回滚。"""
     if str(name or "").endswith(".sqlite3"):
@@ -229,14 +248,21 @@ def restore_full_backup(name: str, *, progress: Callable[[str], None] | None = N
     if not preview["checksumOk"]:
         raise ValueError("备份校验和不匹配，已拒绝恢复（备份可能损坏）")
 
+    with _all_database_locks():
+        return _restore_full_backup_locked(path, progress=progress)
+
+
+def _restore_full_backup_locked(path: Path, *, progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     _checkpoint_all()
     emergency = create_full_backup("before-restore")
+    # 临时文件名带唯一后缀：两个并发恢复不能互相覆盖对方的暂存文件。
+    token = uuid.uuid4().hex[:12]
     staging: dict[str, Path] = {}
     try:
         with zipfile.ZipFile(path) as archive:
             for file_name in DATABASE_FILES:
                 if file_name in archive.namelist():
-                    staged = BACKUP_DIR / f".restore-{file_name}"
+                    staged = BACKUP_DIR / f".restore-{token}-{file_name}"
                     staged.write_bytes(archive.read(file_name))
                     staged.chmod(0o600)
                     staging[file_name] = staged
@@ -258,7 +284,7 @@ def restore_full_backup(name: str, *, progress: Callable[[str], None] | None = N
     except Exception:
         if progress:
             progress("恢复失败，正在回滚到恢复前的应急备份…")
-        _restore_from_backup_file(BACKUP_DIR / emergency)
+        _restore_from_backup_file(BACKUP_DIR / emergency, token=token)
         raise
     finally:
         for staged in staging.values():
@@ -266,14 +292,15 @@ def restore_full_backup(name: str, *, progress: Callable[[str], None] | None = N
     return {"name": path.name, "kind": "full", "restored": sorted(staging), "emergency": emergency}
 
 
-def _restore_from_backup_file(backup_path: Path) -> None:
+def _restore_from_backup_file(backup_path: Path, *, token: str | None = None) -> None:
     """把应急备份（zip）里的库写回去，用于恢复失败时的回滚。"""
+    suffix_token = token or uuid.uuid4().hex[:12]
     with zipfile.ZipFile(backup_path) as archive:
         for file_name in DATABASE_FILES:
             if file_name not in archive.namelist():
                 continue
             destination = Path(DATABASE_FILES[file_name])
-            staged = destination.parent / f".rollback-{file_name}"
+            staged = destination.parent / f".rollback-{suffix_token}-{file_name}"
             staged.write_bytes(archive.read(file_name))
             for suffix in ("-wal", "-shm"):
                 Path(f"{destination}{suffix}").unlink(missing_ok=True)

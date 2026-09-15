@@ -54,6 +54,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const reminderToggleBtn = document.getElementById('reminderToggleBtn');
     const reminderPermissionBtn = document.getElementById('reminderPermissionBtn');
     const reminderStatus = document.getElementById('reminderStatus');
+
+    // 所有视图切换都走这里：避免新增视图后忘记在别处移除 active
+    function activateView(activeView) {
+        [projectsView, detailView, reviewView, workbenchView].forEach(view => {
+            if (view) view.classList.toggle('active', view === activeView);
+        });
+    }
     const importInput = document.getElementById('importInput');
     const backgroundInput = document.getElementById('backgroundInput');
     const resetBackgroundBtn = document.getElementById('resetBackgroundBtn');
@@ -164,6 +171,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const nodeFilters = { query: '', status: 'all', priority: 'all', due: 'all', tag: '' };
     const batchState = { active: false, selected: new Set() };
     let savedViews = [];
+    let savedViewsError = '';
 
     function initializeSessionToken() {
         const tokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
@@ -218,16 +226,18 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function setNodeCompleted(node, completed) {
+        // 记住原状态：只有"未完成 → 完成"这一次才生成下一次周期任务。
+        // 否则对已完成的周期任务反复点（分组复选框会把整棵子树再标一遍）会指数级复制。
+        const wasCompleted = Boolean(node.completed);
         node.completed = Boolean(completed);
         node.completedAt = node.completed ? new Date().toISOString() : null;
         if (!node || node.type !== 'item') return;
-        if (node.completed && node.repeat) {
-            const repeatProject = getCurrentProject();
-            const spawned = repeatProject ? spawnNextOccurrence(repeatProject, node) : null;
+        const project = owningProjectOfNode(node);
+        if (node.completed && !wasCompleted && node.repeat) {
+            const spawned = project ? spawnNextOccurrence(project, node) : null;
             if (spawned) showToast(`周期任务：已生成下一次（${spawned.dueDate}）`);
         }
         if (node.completed) {
-            const project = getCurrentProject();
             if (project && projectAutoReview(project) && !node.optional && !node.review) {
                 node.review = { due: addDaysToIso(todayStr(), 1), learning: false,
                     log: (node.review && Array.isArray(node.review.log)) ? node.review.log : [] };
@@ -235,7 +245,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         } else if (node.review) {
             delete node.review;
         }
-        markProjectDirty(getCurrentProject());
+        markProjectDirty(project);
     }
 
     function addDaysToIso(baseIso, days) {
@@ -962,6 +972,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 reviewEnabled: typeof project.reviewEnabled === 'boolean'
                     ? project.reviewEnabled
                     : undefined,
+                // 保留归档标记：丢掉它以后任何一次保存都会把服务端的 archived=1 写成 0。
+                archived: Boolean(project.archived),
                 tree
             };
             // 加载时只同步"是否需要验收"标记；重置完成态只发生在用户手动切换开关时。
@@ -978,6 +990,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             description: String(project.description || ''),
             createdAt: String(project.createdAt || todayStr()),
             assessmentEnabled: Boolean(project.assessmentEnabled),
+            // archived / reviewEnabled 必须原样带过来：后端 project_summary() 会返回它们，
+            // 丢掉的话刷新后"已归档"筛选恒为空、归档按钮永远显示"归档"。
+            archived: Boolean(project.archived),
+            reviewEnabled: typeof project.reviewEnabled === 'boolean' ? project.reviewEnabled : undefined,
             stats: {
                 total: Math.max(0, Number(stats.total) || 0),
                 remaining: Math.max(0, Number(stats.remaining) || 0),
@@ -1080,7 +1096,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
         const waiters = saveWaiters.splice(0);
         const operation = saveQueue.catch(() => undefined).then(async () => {
-            if (saveConflict) throw new Error('存在未解决的版本冲突，请先解决冲突再保存');
+            if (saveConflict) {
+                // 打标记：调用方（含 beforeunload 守卫与提示文案）要能区分"版本冲突"和"服务不可用"。
+                const conflictError = new Error('存在未解决的版本冲突，请先解决冲突再保存');
+                conflictError.conflict = true;
+                // 冲突期间还有本地改动没落库，离开守卫必须挂着（savePending() 也认这两个条件）。
+                if (dirtyProjectIds.size > 0) armLeaveGuard();
+                throw conflictError;
+            }
             const snapshot = projects
                 .filter(project => Array.isArray(project.tree))
                 .map(project => cloneData(project));
@@ -1127,7 +1150,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         saveQueue = operation.catch(() => undefined);
         operation.catch(error => {
             console.error('保存项目失败', error);
-            if (error.status === 409) {
+            if (error && error.conflict) {
+                // 冲突已经由 beginProjectConflict 提示过，这里只维持状态，不再每次防抖刷屏。
+                saveConflict = true;
+                setSaveStatus('版本冲突', 'error');
+            } else if (error.status === 409) {
                 saveConflict = true;
                 setSaveStatus('版本冲突', 'error');
                 showToast('检测到其他页面已修改数据，请先解决冲突');
@@ -1260,6 +1287,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             createdAt: base.createdAt,
             assessmentEnabled: Boolean(base.assessmentEnabled),
             reviewEnabled: base.reviewEnabled,
+            // 合并结果必须带上归档标记，否则解决冲突后已归档项目会被写成未归档。
+            archived: Boolean(projectChoice === 'remote' ? remote.archived : local.archived),
             tree: build(base.tree, other.tree),
         };
     }
@@ -1462,8 +1491,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return completion;
     }
 
+    // "还有没落库的东西"：排队中的防抖、在飞的请求，以及"冲突挂起 / 已标脏但没写成功"的本地改动。
+    // 后两种以前被漏掉，导致冲突或保存失败期间关页不会提示，静默丢改动。
     function savePending() {
-        return Boolean(saveTimer) || inFlightSaves > 0;
+        return Boolean(saveTimer) || inFlightSaves > 0 || Boolean(saveConflict) || dirtyProjectIds.size > 0;
     }
 
     function warnBeforeUnload(event) {
@@ -1636,8 +1667,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function findNodeById(nodes, id) {
+        // 用字符串比较：服务端返回的 nodeId 一律是字符串，而默认项目里的 ID 是数字字面量，
+        // 严格相等会让"首次运行、还没刷新的默认项目"在工作台里查不到任何任务。
+        const wanted = String(id);
         for (const node of nodes) {
-            if (node.id === id) return node;
+            if (String(node.id) === wanted) return node;
             if (node.children && node.children.length > 0) {
                 const found = findNodeById(node.children, id);
                 if (found) return found;
@@ -1678,7 +1712,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     function toggleAllChildren(node, completed) {
         if (node.type === 'item' && node.optional) return;
-        setNodeCompleted(node, completed);
+        // 已经是目标状态的节点不要再走一遍 setNodeCompleted：
+        // 对已完成的周期任务重复"完成"会再克隆出下一次（连点分组复选框会指数级复制）。
+        if (Boolean(node.completed) !== Boolean(completed)) {
+            setNodeCompleted(node, completed);
+        }
         if (node.children && node.children.length > 0) {
             node.children.forEach(child => toggleAllChildren(child, completed));
         }
@@ -2921,7 +2959,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 if (!(due < today)) return false;
             } else if (nodeFilters.due === 'today') {
                 if (due !== today) return false;
-            } else if (nodeFilters.due === 'week' || nodeFilters.due === 'soon') {
+            } else if (nodeFilters.due === 'week') {
+                // "未来 1-7 天"：今天到期另有单独的筛选项。
+                const days = daysBetween(today, due);
+                if (days === null || days < 1 || days > 7) return false;
+            } else if (nodeFilters.due === 'soon') {
+                // "7 天内到期（含今天）"
                 const days = daysBetween(today, due);
                 if (days === null || days < 0 || days > 7) return false;
             }
@@ -2942,7 +2985,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function isNodeFiltering() {
-        return Boolean(nodeFilters.query.trim()) || nodeFilters.status !== 'all';
+        // 元数据筛选（优先级/截止/标签）也算"正在筛选"：
+        // 漏掉它们时 renderDetail 会走"整棵树原样渲染"的分支，筛选条件被完全忽略。
+        return Boolean(nodeFilters.query.trim())
+            || nodeFilters.status !== 'all'
+            || nodeFilters.priority !== 'all'
+            || nodeFilters.due !== 'all'
+            || Boolean(nodeFilters.tag.trim());
     }
 
     function projectMatchesFilter(project) {
@@ -4070,7 +4119,12 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     function renderDetail() {
         const project = getCurrentProject();
         if (!project) {
-            showProjectsView();
+            // 没有"当前项目"时不要擅自切视图：工作台/复习队列里保存任务详情也会走到这里，
+            // 切回项目列表等于把用户踢出当前视图。只有"当前项目已被删掉"才回列表。
+            if (currentProjectId) {
+                currentProjectId = null;
+                showProjectsView();
+            }
             return;
         }
         ensureProjectCaches(project);
@@ -4379,6 +4433,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return wrap;
     }
 
+    // 任务详情弹窗对"当前项目"和"工作台/搜索结果里的项目"都要标脏：
+    // 工作台打开时 currentProjectId 为 null，只靠最后保存时的 JSON 差集兜底太脆弱。
+    function owningProjectOfNode(node) {
+        const current = getCurrentProject();
+        if (current && Array.isArray(current.tree) && findNodeById(current.tree, node.id)) return current;
+        return projects.find(project => Array.isArray(project.tree) && findNodeById(project.tree, node.id)) || current;
+    }
+
     function applyNodeMeta(node, meta) {
         const cleaned = normalizeNodeMeta(meta);
         node.priority = cleaned.priority;
@@ -4388,10 +4450,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         node.note = cleaned.note;
         node.links = cleaned.links;
         node.repeat = cleaned.repeat;
-        markProjectDirty(getCurrentProject());
+        markProjectDirty(owningProjectOfNode(node));
     }
 
-    function openNodeMeta(node) {
+    function openNodeMeta(node, options) {
         if (!node || node.type !== 'item') return;
         const draft = normalizeNodeMeta(node);
         showUtilityModal('任务详情', '优先级 · 截止 · 标签 · 耗时 · 备注 · 链接');
@@ -4482,20 +4544,20 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         intervalInput.placeholder = '每几天';
         const repeatHint = document.createElement('span');
         repeatHint.className = 'utility-hint';
+        const initialDueDate = dueInput.value;
+        const repeatAnchorChanged = () => dueInput.value !== initialDueDate;
+        const currentRepeatRule = () => buildRepeatRule(
+            repeatSelect.value, dueInput.value, draft.repeat,
+            { interval: intervalInput.value, anchorChanged: repeatAnchorChanged() }
+        );
         const updateRepeatHint = () => {
             if (!repeatSelect.value) {
                 repeatHint.textContent = '设为周期后，完成后会自动生成下一次';
                 return;
             }
+            const rule = currentRepeatRule();
             const base = dueInput.value || todayStr();
-            const rule = repeatSelect.value === 'daily'
-                ? { freq: 'daily', interval: Math.max(1, Number(intervalInput.value) || 1) }
-                : repeatSelect.value === 'weekly'
-                    ? { freq: 'weekly', weekday: new Date(`${base}T00:00:00`).getDay() }
-                    : repeatSelect.value === 'monthly'
-                        ? { freq: 'monthly', day: new Date(`${base}T00:00:00`).getDate() }
-                        : { freq: 'weekday' };
-            const next = nextRepeatDue(rule, base);
+            const next = rule ? nextRepeatDue(rule, base) : '';
             repeatHint.textContent = next
                 ? `下一次：${next}（${describeRepeat(rule)}）`
                 : '按这个规则不会有下一次（已超过结束时间）';
@@ -4576,19 +4638,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         save.type = 'button';
         save.className = 'utility-primary-btn';
         save.textContent = '保存';
-        save.addEventListener('click', () => {
+        save.addEventListener('click', async () => {
             const tags = tagsInput.value.split(/[,，\s]+/).map(item => item.trim()).filter(Boolean);
-            const repeatBase = dueInput.value || todayStr();
-            let repeat = null;
-            if (repeatSelect.value === 'daily') {
-                repeat = { freq: 'daily', interval: Math.max(1, Number(intervalInput.value) || 1) };
-            } else if (repeatSelect.value === 'weekday') {
-                repeat = { freq: 'weekday' };
-            } else if (repeatSelect.value === 'weekly') {
-                repeat = { freq: 'weekly', weekday: new Date(`${repeatBase}T00:00:00`).getDay() };
-            } else if (repeatSelect.value === 'monthly') {
-                repeat = { freq: 'monthly', day: new Date(`${repeatBase}T00:00:00`).getDate() };
-            }
+            // 保留原规则的锚点（每周几 / 每月几号）和结束时间，只有改了截止日期才重算。
+            const repeat = currentRepeatRule();
             try {
                 applyNodeMeta(node, {
                     priority: prioritySelect.value,
@@ -4604,9 +4657,21 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 return;
             }
             saveProjects();
-            renderDetail();
+            // 只在真正处于某个项目的详情页时重画详情；工作台里打开这个弹窗时
+            // renderDetail() 会把视图切回项目列表（退不出工作台的同类 bug）。
+            if (getCurrentProject()) renderDetail();
             closeUtilityModal();
             showToast('已保存任务信息');
+            const refreshAfterSave = options && options.onSaved;
+            if (typeof refreshAfterSave === 'function') {
+                try {
+                    await saveProjects();
+                } catch (error) {
+                    // 保存失败/冲突由保存管线提示，这里不刷新，改动仍留在内存里。
+                    return;
+                }
+                refreshAfterSave();
+            }
         });
         const cancel = document.createElement('button');
         cancel.type = 'button';
@@ -4639,10 +4704,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             }
             toggleAllChildren(node, getNodeCompletionState(node) !== 'completed');
         }
-        markProjectDirty(getCurrentProject());
+        const owner = owningProjectOfNode(node);
+        markProjectDirty(owner);
         saveProjects();
         if (node.type === 'item') {
-            refreshAfterToggle(getCurrentProject(), node);
+            refreshAfterToggle(owner, node);
         } else {
             renderDetail();
         }
@@ -4828,12 +4894,27 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }, totalDelay);
     }
 
-    async function showProjectsView() {
-        try {
-            await settleSaves();
-        } catch (error) {
-            showToast('当前修改尚未保存，请先解决保存失败');
-            return;
+    async function showProjectsView(options) {
+        // 从详情页回到列表时会把项目对象换成"列表摘要"（tree: null）。
+        // 所以没保存成功就绝不能走这一步，否则内存里那份改好的树会被摘要覆盖掉（=丢改动）。
+        const force = Boolean(options && options.force === true);
+        if (!force) {
+            try {
+                await settleSaves();
+            } catch (error) {
+                const conflict = Boolean(saveConflict || pendingConflict);
+                showToast(
+                    conflict ? '有未解决的版本冲突，请先解决冲突再返回' : '当前修改尚未保存，请先处理保存失败',
+                    conflict
+                        ? { label: '解决冲突', onClick: () => openConflictPanel() }
+                        : { label: '放弃改动并返回', onClick: () => showProjectsView({ force: true }) }
+                );
+                return;
+            }
+        } else {
+            // 用户明确选择"放弃这次没存进去的改动"，避免被永久困在详情页。
+            if (currentProjectId) dirtyProjectIds.delete(String(currentProjectId));
+            setSaveStatus('已保存');
         }
         const current = getCurrentProject();
         if (current && Array.isArray(current.tree)) {
@@ -4852,9 +4933,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             });
             savedProjectJsonById.delete(String(current.id));
         }
-        projectsView.classList.add('active');
-        detailView.classList.remove('active');
-        reviewView.classList.remove('active');
+        activateView(projectsView);
         currentProjectId = null;
         renderProjects();
         loadReviewCounts();
@@ -4862,9 +4941,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     function showDetailView(projectId) {
         currentProjectId = projectId;
-        projectsView.classList.remove('active');
-        reviewView.classList.remove('active');
-        detailView.classList.add('active');
+        activateView(detailView);
         renderDetail();
     }
 
@@ -4977,9 +5054,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             return;
         }
         // 先切到队列页并给出加载状态：加载要读完全部项目，项目多时不是瞬间完成。
-        projectsView.classList.remove('active');
-        detailView.classList.remove('active');
-        reviewView.classList.add('active');
+        activateView(reviewView);
         reviewSubline.textContent = '';
         renderReviewMessage(listStatusText('review', 'loading'), false);
         try {
@@ -5056,6 +5131,37 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return `每月 ${cleaned.day} 日`;
     }
 
+    // 表单（任务详情 / 快速添加预览）构造周期规则。
+    // 关键点：weekly.weekday / monthly.day 是规则的锚点，不能每次保存都按当时选中的
+    // 截止日期重算——那样"每周三"的任务只要截止日期不是周三就会在保存时被改成别的星期。
+    // 只有用户改了基准日期（anchorChanged）或换了频率时，才按基准日期重新推算锚点。
+    // weekday 用 JS getDay()：0=周日（与 storage.next_repeat_due 的约定一致）。
+    function buildRepeatRule(freq, baseDate, previous, options) {
+        const opts = options || {};
+        const prev = cleanRepeat(previous) || null;
+        if (!freq) return null;
+        const until = prev && prev.until ? { until: prev.until } : {};
+        if (freq === 'daily') {
+            const interval = Number(opts.interval);
+            const safe = Number.isInteger(interval) && interval >= 1 ? Math.min(365, interval) : 1;
+            return { freq: 'daily', interval: safe, ...until };
+        }
+        if (freq === 'weekday') return { freq: 'weekday', ...until };
+        const base = /^\d{4}-\d{2}-\d{2}$/.test(String(baseDate || '')) ? String(baseDate) : todayStr();
+        const parsed = new Date(`${base}T00:00:00`);
+        const valid = !Number.isNaN(parsed.getTime());
+        const keep = !opts.anchorChanged && prev && prev.freq === freq;
+        if (freq === 'weekly') {
+            const weekday = keep && Number.isInteger(prev.weekday) ? prev.weekday : (valid ? parsed.getDay() : 1);
+            return { freq: 'weekly', weekday, ...until };
+        }
+        if (freq === 'monthly') {
+            const day = keep && Number.isInteger(prev.day) ? prev.day : (valid ? parsed.getDate() : 1);
+            return { freq: 'monthly', day, ...until };
+        }
+        return null;
+    }
+
     // 纯函数：按周期规则算下一次到期日（与服务端 storage.next_repeat_due 同规则）
     function nextRepeatDue(rule, fromDate) {
         const cleaned = cleanRepeat(rule);
@@ -5118,8 +5224,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         eat(/(!{2,3})(?=\s|$)/g, all => {
             draft.priority = all.length === 2 ? 'high' : 'mid';
         });
-        // 标签 #tag（中英文都收）
-        eat(/#([^\s#@!]+)/g, (all, tag) => {
+        // 标签 #tag：只认"行首或空白/分隔符之后"的 #，并且标签本身不放标点，
+        // 否则 "学习C#语言基础" 会被吃成标题"学习C"+标签"语言基础"。
+        eat(/(^|[\s，。！？、；：,;:!?（()【】\[\]])#([A-Za-z0-9_\u4e00-\u9fa5-]{1,20})/g, (all, _lead, tag) => {
             const cleaned = String(tag).trim().slice(0, MAX_TAG_CHARS);
             if (cleaned && !draft.tags.includes(cleaned)) draft.tags.push(cleaned);
         });
@@ -5136,22 +5243,43 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             draft.projectId = found.id;
             draft.projectName = found.name;
         });
-        // 周期
-        eat(/每(个)?工作日/g, () => { draft.repeat = cleanRepeat({ freq: 'weekday' }); });
-        eat(/每(天|日)/g, () => { if (!draft.repeat) draft.repeat = cleanRepeat({ freq: 'daily' }); });
-        eat(/每(周|星期|礼拜)([一二三四五六日天])/g, (all, _unit, dayName) => {
+        // 周期。多条规则同时出现时只保留最后匹配到的那一条，
+        // 并且 matched 里也只留对应的那一条（否则"识别到"和实际写入会不一致）。
+        let repeatMatchIndex = -1;
+        const eatRepeat = (pattern, build) => {
+            rest = rest.replace(pattern, (...args) => {
+                const rule = cleanRepeat(build(...args));
+                if (!rule) return args[0];
+                if (repeatMatchIndex >= 0) matched.splice(repeatMatchIndex, 1);
+                draft.repeat = rule;
+                matched.push(args[0]);
+                repeatMatchIndex = matched.length - 1;
+                return ' ';
+            });
+        };
+        eatRepeat(/每(个)?工作日/g, () => ({ freq: 'weekday' }));
+        eatRepeat(/每(天|日)/g, () => (draft.repeat ? null : { freq: 'daily' }));
+        eatRepeat(/每(周|星期|礼拜)([一二三四五六日天])/g, (all, _unit, dayName) => {
             const index = '一二三四五六日天'.indexOf(dayName);
-            draft.repeat = cleanRepeat({ freq: 'weekly', weekday: index === 6 ? 0 : index + 1 });
+            // 天 在下标 7，和 日 一样表示周日，不能只特判 6。
+            return { freq: 'weekly', weekday: index >= 6 ? 0 : index + 1 };
         });
-        eat(/每(个)?月(\d{1,2})[号日]/g, (all, _unit, day) => {
-            draft.repeat = cleanRepeat({ freq: 'monthly', day: Number(day) });
-        });
+        eatRepeat(/每(个)?月(\d{1,2})[号日]/g, (all, _unit, day) => ({ freq: 'monthly', day: Number(day) }));
         // 耗时：30分钟 / 2小时 / 1.5h / 90m
-        eat(/(\d+(?:\.\d+)?)\s*(小时|h|H)/g, (all, value) => {
+        // 中文单位不能用词边界排除数字（"1小时2分钟"很常见），英文缩写必须排除紧跟的字母/数字
+        // （否则 "1h2o" 会被吃成 1 小时、"3hours" 会剩下 "ours"）。
+        eat(/(\d+(?:\.\d+)?)\s*小时/g, (all, value) => {
             draft.estimateMinutes = Math.round(Number(value) * 60);
             if (!draft.estimateMinutes) return false;
         });
-        eat(/(\d+)\s*(分钟|分|m|M)(?!\w)/g, (all, value) => {
+        eat(/(\d+(?:\.\d+)?)\s*[hH](?![\w\u4e00-\u9fa5])/g, (all, value) => {
+            draft.estimateMinutes = Math.round(Number(value) * 60);
+            if (!draft.estimateMinutes) return false;
+        });
+        eat(/(\d+)\s*(分钟|分(?![\u4e00-\u9fa5]))/g, (all, value) => {
+            draft.estimateMinutes = Number(value);
+        });
+        eat(/(\d+)\s*[mM](?![\w\u4e00-\u9fa5])/g, (all, value) => {
             draft.estimateMinutes = Number(value);
         });
         // 日期
@@ -5167,7 +5295,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (candidate < today) candidate = `${now.getFullYear() + 1}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
             draft.dueDate = candidate;
         });
-        eat(/(\d{1,2})-(\d{1,2})(?!\d)/g, (all, month, day) => {
+        // 日期。1-2 这种要前面是行首/空白/分隔符才算日期，
+        // 否则 "第1-2章的习题"、"买3-5个苹果" 会被吃成日期加标题残渣。
+        eat(/(^|[\s，。！？、；：,;:!?（()【】\[\]])(\d{1,2})-(\d{1,2})(?!\d)/g, (all, _lead, month, day) => {
             const now = new Date(`${today}T00:00:00`);
             let candidate = `${now.getFullYear()}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
             if (!isValidIsoDate(candidate)) return false;
@@ -5184,7 +5314,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         // 周X / 下周X / 本周X
         eat(/(下|本|这)?(周|星期|礼拜)([一二三四五六日天])/g, (all, prefix, _unit, dayName) => {
             const index = '一二三四五六日天'.indexOf(dayName);
-            const target = index === 6 ? 0 : index + 1;
+            const target = index >= 6 ? 0 : index + 1;   // "天" 在下标 7，和 "日" 一样是周日
             const baseDate = new Date(`${today}T00:00:00`);
             const currentAdj = baseDate.getDay() === 0 ? 7 : baseDate.getDay();   // 周一=1 … 周日=7
             const targetAdj = target === 0 ? 7 : target;
@@ -5198,10 +5328,6 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         draft.matched = matched;
         draft.warnings = warnings;
         return draft;
-    }
-
-    function repeatSummary(rule) {
-        return describeRepeat(rule);
     }
 
     function findParentList(nodes, targetId, parent = null) {
@@ -5308,7 +5434,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         addButton('设截止…', () => {
             const input = window.prompt('截止日期（YYYY-MM-DD，留空=清除）：', todayStr());
             if (input === null) return;
-            runBatch('set-due', input.trim());
+            const value = input.trim();
+            // 非空但格式不对不能当成"清除"：那会把所有选中任务的截止日期静默抹掉。
+            if (value && !isValidIsoDate(value)) {
+                showToast('日期格式不对，请用 YYYY-MM-DD（要清除截止日期请留空）');
+                return;
+            }
+            runBatch('set-due', value);
         });
         addButton('延期 +1 天', () => runBatch('shift-due', 1));
         addButton('延期 +7 天', () => runBatch('shift-due', 7));
@@ -5344,6 +5476,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             project.stats = projects[index].stats;
             projects[index] = project;
         }
+        // 批量操作改的是服务端数据，统计缓存必须失效，
+        // 否则"主线剩余 N 项"和父节点完成态会停在旧值（要重进项目才对）。
+        refreshProjectCaches(project);
         savedProjectJsonById.set(String(projectId), JSON.stringify(serializeProject(project)));
         dirtyProjectIds.delete(String(projectId));
         return project;
@@ -5534,8 +5669,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(payload.error || '读取筛选视图失败');
             savedViews = payload.views || [];
+            savedViewsError = '';
         } catch (error) {
             savedViews = [];
+            savedViewsError = (error && error.message) || '读取筛选视图失败';
             console.warn('读取筛选视图失败', error);
         }
         renderViewChips();
@@ -5544,6 +5681,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     function renderViewChips() {
         if (!viewChips) return;
         viewChips.replaceChildren();
+        if (savedViewsError) {
+            const failed = document.createElement('span');
+            failed.className = 'view-empty';
+            failed.textContent = `读取筛选视图失败：${savedViewsError}`;
+            viewChips.appendChild(failed);
+            viewChips.appendChild(createRetryButton('重试', () => loadSavedViews()));
+            return;
+        }
         if (savedViews.length === 0) {
             const empty = document.createElement('span');
             empty.className = 'view-empty';
@@ -5650,10 +5795,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     };
 
     async function showWorkbench() {
-        projectsView.classList.remove('active');
-        detailView.classList.remove('active');
-        reviewView.classList.remove('active');
-        workbenchView.classList.add('active');
+        activateView(workbenchView);
         workbenchSubline.textContent = '';
         renderReviewMessageInto(workbenchBody, listStatusText('review', 'loading').replace('复习队列', '今日工作台'), false);
         try {
@@ -5790,10 +5932,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     async function completeWorkbenchItem(item) {
         try {
-            await withWorkbenchNode(item, (node) => {
+            await withWorkbenchNode(item, async (node) => {
                 const before = node.completed;
                 toggleNodeCompleted(node);
-                if (node.completed !== before) showWorkbench();
+                if (node.completed === before) return;
+                // 必须先等这次改动真正落库再重画看板：saveProjects() 只是排 250ms 防抖，
+                // 立刻 GET /api/workbench 拿到的还是旧数据，看起来像"点了没反应"。
+                await saveProjects();
+                showWorkbench();
             });
         } catch (error) {
             showToast(error.message || '完成任务失败，请重试');
@@ -5816,7 +5962,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     async function openWorkbenchItemMeta(item) {
         try {
-            await withWorkbenchNode(item, (node) => openNodeMeta(node));
+            await withWorkbenchNode(item, (node) => openNodeMeta(node, { onSaved: () => showWorkbench() }));
         } catch (error) {
             showToast(error.message || '打开任务详情失败，请重试');
         }
@@ -5938,6 +6084,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const dueInput = document.createElement('input');
         dueInput.type = 'date';
         dueInput.value = parsed.dueDate;
+        // 用户没改截止日期时，周期规则的锚点要沿用解析结果
+        // （否则 "每周三交周报" 会被写成"每周<今天星期几>"）。
+        const initialDueDate = dueInput.value;
         addField('截止日期', dueInput);
 
         const tagsInput = document.createElement('input');
@@ -5971,12 +6120,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         confirm.textContent = '确认添加';
         confirm.addEventListener('click', async () => {
             confirm.disabled = true;
-            const base = dueInput.value || todayStr();
-            let repeat = null;
-            if (repeatSelect.value === 'daily') repeat = { freq: 'daily' };
-            else if (repeatSelect.value === 'weekday') repeat = { freq: 'weekday' };
-            else if (repeatSelect.value === 'weekly') repeat = { freq: 'weekly', weekday: new Date(`${base}T00:00:00`).getDay() };
-            else if (repeatSelect.value === 'monthly') repeat = { freq: 'monthly', day: new Date(`${base}T00:00:00`).getDate() };
+            // 解析出来的"每周三 / 每月15号"是规则的锚点，不能按截止日期重算丢掉。
+            const repeat = buildRepeatRule(
+                repeatSelect.value, dueInput.value, parsed.repeat,
+                { anchorChanged: dueInput.value !== initialDueDate }
+            );
             try {
                 await submitQuickAdd({
                     text: textInput.value.trim() || '未命名任务',
@@ -7332,7 +7480,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
     function refreshItemCompletion(project, node) {
         if (!project || !node || node.type !== 'item' || isNodeFiltering()) {
-            renderDetail();
+            // 没有打开项目时（例如从今日工作台直接完成任务）不要顺手切回列表页
+            if (project) renderDetail();
             return;
         }
         let li = null;
@@ -7447,6 +7596,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         projectArchiveBtn.addEventListener('click', () => {
             if (currentProjectId) toggleProjectArchived(currentProjectId);
         });
+        saveStatus.addEventListener('click', () => {
+            if (saveConflict) openConflictPanel();
+        });
+        saveStatus.title = '有版本冲突时点这里解决';
         exportBtn.addEventListener('click', exportBackup);
         downloadDatabaseBackupBtn.addEventListener('click', downloadDatabaseBackup);
         inspectDatabaseBackupBtn.addEventListener('click', inspectDatabaseBackupFromUi);
@@ -7505,6 +7658,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             createProjectBtn.disabled = true;
             const label = createProjectBtn.textContent;
             createProjectBtn.textContent = '规划中…';
+            let plannedProject = null;
             try {
                 const response = await apiFetch('/api/project/plan', {
                     method: 'POST',
@@ -7513,7 +7667,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok || !payload.plan) throw new Error(payload.error || 'AI 规划失败，请重试');
-                const project = {
+                plannedProject = {
                     id: generateId(),
                     name: name,
                     description: String(payload.plan.description || ''),
@@ -7521,15 +7675,26 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     assessmentEnabled: Boolean(newProjectAiToggle.checked),
                     tree: buildPlanTree(payload.plan.tree || [])
                 };
-                projects.push(project);
-                markProjectDirty(project);
+                projects.push(plannedProject);
+                markProjectDirty(plannedProject);
+            } catch (planError) {
+                // 只有"规划请求本身"失败才退化成空项目；
+                // 之后的保存/打开失败不能再建一个同名项目（会出现两个同名项目）。
+                plainCreate();
+                showToast('AI 规划失败，已创建空项目：' + (planError.message || ''));
+                createProjectBtn.disabled = false;
+                createProjectBtn.textContent = label;
+                return;
+            }
+            clearInputs();
+            try {
                 await saveProjects();
-                clearInputs();
-                await openProjectDetail(project.id);
+                await openProjectDetail(plannedProject.id);
                 showToast('已按 AI 规划创建项目');
             } catch (error) {
-                plainCreate();
-                showToast('AI 规划失败，已创建空项目：' + (error.message || ''));
+                // 项目已经建好并留在内存里（dirty 未清、离开守卫仍生效），只是这次没存进去。
+                renderProjects();
+                showToast('项目已创建，但保存失败：' + (error.message || '请检查本地服务'));
             } finally {
                 createProjectBtn.disabled = false;
                 createProjectBtn.textContent = label;
