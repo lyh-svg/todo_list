@@ -57,8 +57,12 @@ jobs:
       - name: ESLint
         run: npx eslint .
 
-      - name: 全量测试（单测 + HTTP 层 + 前端脚本 + 端到端）
+      - name: 全量测试（单测 + HTTP 层 + AI 层 + 前端脚本 + 端到端）
         run: python -m unittest discover -s tests -v
+
+      - name: 反向验证（把产品改回旧行为，测试必须失败）
+        if: matrix.python == '3.14'
+        run: python scripts/verify-tests-catch.py
 
   browser:
     name: Playwright 浏览器流程

@@ -143,7 +143,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com            # 官方地址，通常不
 一条命令跑完全部检查（语法 + 静态检查 + 全量测试 + 端到端 + 行尾约定）：
 
 ```bash
-./scripts/check.sh            # 全部；./scripts/check.sh quick 跳过端到端与浏览器
+./scripts/check.sh            # 全部（含真浏览器与反向验证）；quick 只跑语法+静态+单测+前端冒烟
 ```
 
 也可以单独跑某一层：
@@ -164,14 +164,26 @@ ruff check . && npx eslint .            # 静态检查
 需要一次性准备：
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
-sudo python3 -m playwright install-deps chromium   # 缺系统库时执行（WSL/Ubuntu 需要）
-python3 -m playwright install chromium
-python3 -m unittest tests.test_browser_flows -v
+./scripts/browser-test.sh          # 一条命令：没系统库时自动本地解包（不需要 sudo）
+python3 -m unittest tests.test_browser_flows -v   # 库齐全时也可以直接跑
 ```
+
+`scripts/browser-test.sh` 会先确认 Chromium 已下载；如果缺 `libnspr4/libnss3`，它把对应的 deb
+下载并解包到 `.playwright-libs/`，用 `LD_LIBRARY_PATH` 指过去——**不需要 root，也不改系统目录**。
+机器上已有系统库（或你跑过 `sudo python3 -m playwright install-deps chromium`）时会跳过这一步。
 
 没装或浏览器不可用时这些用例会**自动跳过**（`TODO_SKIP_BROWSER=1` 可强制跳过），不影响其它测试；
 CI 里有独立的浏览器任务会真正执行它们。
+
+### 反向验证（测试是不是空转）
+
+```bash
+python3 scripts/verify-tests-catch.py
+```
+
+把 12 条关键修复逐条改回旧行为，确认对应测试**立刻失败**，然后原样还原：
+任何一条"改坏了测试还是通过"就说明那条断言不可信，脚本以非 0 退出。
+`./scripts/check.sh` 与 CI 都会跑它。
 
 ### 持续集成
 

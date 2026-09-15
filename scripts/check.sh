@@ -70,7 +70,23 @@ else
     run "tests/e2e-verify.sh" bash tests/e2e-verify.sh
 fi
 
-step "7) 行尾约定（代码文件必须 CRLF，*.sh 用 LF）"
+step "7) 真浏览器流程（Playwright；缺库时本地解包，不需要 sudo）"
+if [ "$MODE" = "quick" ]; then
+    printf '   - quick 模式跳过\n'
+elif python3 -c "import playwright" 2>/dev/null; then
+    run "tests/test_browser_flows.py" bash scripts/browser-test.sh
+else
+    printf '   - 没装 playwright，跳过（pip install -r requirements-dev.txt）\n'
+fi
+
+step "8) 反向验证：把产品改回旧行为，测试必须失败"
+if [ "$MODE" = "quick" ]; then
+    printf '   - quick 模式跳过\n'
+else
+    run "verify-tests-catch.py（12 条）" python3 scripts/verify-tests-catch.py
+fi
+
+step "9) 行尾约定（代码文件必须 CRLF，*.sh 用 LF）"
 crlf_bad=0
 while IFS= read -r file; do
     case "$file" in

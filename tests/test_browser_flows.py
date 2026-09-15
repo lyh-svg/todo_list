@@ -247,7 +247,7 @@ class BrowserFlowTests(unittest.TestCase):
         self.assertIn("写周报", body)
         self.assertIn("明天", body, "预览里要显示识别出的截止日期")
         self.page.click("#utilityBody .utility-primary-btn")
-        self.page.wait_for_selector("#utilityModal[hidden]")
+        self.page.wait_for_selector("#utilityModal", state="hidden")   # 预览关掉了（hidden 属性）
         self.wait_for_text("#workbenchBody", "写周报")
 
     def test_03_reload_keeps_data(self) -> None:

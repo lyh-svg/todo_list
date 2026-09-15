@@ -15,6 +15,9 @@ dist/
 # ===== Node（只用于开发期 ESLint 与前端断言脚本）=====
 node_modules/
 
+# ===== 真浏览器测试：缺系统库时本地解包的 NSS/NSPR（scripts/browser-test.sh）=====
+.playwright-libs/
+
 # ===== 个人数据与数据库(勿提交) =====
 data/
 *.sqlite3
