@@ -173,6 +173,13 @@ class TodoHandler(SimpleHTTPRequestHandler):
             return
         super().log_message(format, *args)
 
+    def handle_one_request(self) -> None:
+        # _cache_control 是实例属性，必须在每个请求开始时重置：
+        # 万一同一个连接被复用（keep-alive），静态资源的 max-age 会漏到 API 响应上，
+        # 让浏览器把接口结果缓存一天。默认永远是 no-store，只有明确的静态资源才改。
+        self._cache_control = NO_STORE
+        super().handle_one_request()
+
     def end_headers(self) -> None:
         origin = self.headers.get("Origin")
         if allowed_origin(origin):

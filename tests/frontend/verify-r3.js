@@ -73,7 +73,18 @@ check('① 冲突挂起时不再误报"SQLite 保存失败"', src.includes('if (
 check('① 冲突挂起时离开守卫仍然生效', /savePending\(\)[\s\S]{0,200}saveConflict[\s\S]{0,200}dirtyProjectIds\.size > 0/.test(src));
 
 check('⑥ settleSaves 同时等待防抖与在飞请求',
-    /async function settleSaves\(\)[\s\S]{0,220}await saveQueue\.catch/.test(src));
+    /async function settleSaves\(\)[\s\S]{0,600}await saveQueue\.catch/.test(src));
+// 单次等待会在"await 期间用户又改了东西、排了新的防抖"时提前返回，必须循环到真的干净
+check('⑥ settleSaves 循环直到既无防抖也无在飞请求',
+    /async function settleSaves\(\)[\s\S]{0,600}for \(let round = 0; round < 50; round \+= 1\)[\s\S]{0,600}if \(!saveTimer && inFlightSaves === 0\)[\s\S]{0,200}return;/.test(src));
+// 复习队列/工作台里没有"当前项目"，评分/改期/清除也必须按节点所属项目标脏
+for (const name of ['applyReviewResult', 'scheduleReview', 'clearReview']) {
+    check(`⑥ ${name} 用 owningProjectOfNode 标脏`,
+        new RegExp(`function ${name}\\(node[^)]*\\) \\{[\\s\\S]{0,400}markProjectDirty\\(owningProjectOfNode\\(node\\)\\)`).test(src));
+}
+check('⑥ 安排复习弹窗按节点找所属项目',
+    /function openScheduleReview\(node\)[\s\S]{0,400}owningProjectOfNode\(node\)/.test(src));
+
 check('⑥ 四处离开路径都用 settleSaves', (src.match(/await settleSaves\(\);/g) || []).length === 4, String((src.match(/await settleSaves\(\);/g) || []).length));
 check('⑥ 小项目写入带 keepalive', src.includes('keepalive: body.length <= 60000'));
 check('⑥ 有未完成保存时才拦关闭', src.includes('function savePending()') && src.includes("window.addEventListener('beforeunload', warnBeforeUnload)"));

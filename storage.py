@@ -1769,6 +1769,10 @@ def move_node(node_id: str, from_project_id: str, to_project_id: str,
                 raise ValueError("目标项目不存在")
             source_project, source_revision = source
             target_project, target_revision = target
+            # 前端的目标项目下拉本来就把已归档项目过滤掉了；接口也要一致，
+            # 否则能把任务归类进一个在工作台/列表里都看不见的项目。
+            if bool(target_project.get("archived")) and str(to_project_id) != INBOX_PROJECT_ID:
+                raise ValueError("目标项目已归档，请先取消归档再归类")
             if str(target_project.get("id")) == INBOX_PROJECT_ID and parent_id is None:
                 parent_id = None  # 收集箱允许平铺任务
             moved = _detach_node(source_project.get("tree") or [], node_id)
@@ -1829,9 +1833,13 @@ def workbench(today: str | None = None) -> dict[str, Any]:
     horizon = (date.fromisoformat(reference) + timedelta(days=WORKBENCH_HORIZON_DAYS)).isoformat()
     groups: dict[str, list[dict[str, Any]]] = {"overdue": [], "today": [], "next7": [], "reviewToday": [], "inbox": []}
     with _database_lock, open_state_database() as connection:
+        # 收集箱即使被归档也要显示：快速添加永远写进它，看不见就等于任务消失。
         project_names = {
             str(row["project_id"]): str(row["name"])
-            for row in connection.execute("SELECT project_id,name FROM projects WHERE archived=0")
+            for row in connection.execute(
+                "SELECT project_id,name FROM projects WHERE archived=0 OR project_id=?",
+                (INBOX_PROJECT_ID,),
+            )
         }
         locations = _node_locations(connection)
         rows = connection.execute(
@@ -1863,14 +1871,20 @@ def workbench(today: str | None = None) -> dict[str, Any]:
         review_due = str(row["review_due"] or "")
         if not completed:
             due = str(row["due_date"] or "")
+            bucketed = False
             if due:
                 if due < reference:
                     groups["overdue"].append(dict(item, daysOverdue=_days_between(due, reference)))
+                    bucketed = True
                 elif due == reference:
                     groups["today"].append(item)
+                    bucketed = True
                 elif due <= horizon:
                     groups["next7"].append(dict(item, daysUntil=_days_between(reference, due)))
-            if project_id == INBOX_PROJECT_ID:
+                    bucketed = True
+            # 收集箱分组只放"没被日期分组收走"的任务，否则同一条任务会在
+            # "今天到期"和"收集箱"里各出现一次，两个计数也重复。
+            if project_id == INBOX_PROJECT_ID and not bucketed:
                 groups["inbox"].append(item)
         if completed and review_due and review_due <= reference:
             groups["reviewToday"].append(dict(item, reviewDue=review_due,

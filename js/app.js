@@ -122,6 +122,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const assessmentRestoreBtn = document.getElementById('assessmentRestoreBtn');
     const studyTools = window.TodoStudyTools;
     const DATA_SCHEMA_VERSION = 2;
+    // 收集箱是系统保留项目（服务端 INBOX_PROJECT_ID），不能归档：归档后工作台里
+    // 看不到它，可快速添加仍然往里写，等于把任务丢进看不见的地方。
+    const INBOX_PROJECT_ID = 'inbox';
     const MAX_BACKGROUND_FILE_SIZE = 25 * 1024 * 1024;
     const MAX_BACKGROUND_DIMENSION = 2560;
     const HEARTBEAT_INTERVAL_MS = 30 * 1000;
@@ -303,7 +306,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             learning: result === 'again',
             log: reviewLogPush(node, result)
         };
-        markProjectDirty(getCurrentProject());
+        markProjectDirty(owningProjectOfNode(node));
     }
 
     function scheduleReview(node, dueIso) {
@@ -314,13 +317,13 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             learning: false,
             log: (node.review && Array.isArray(node.review.log)) ? node.review.log.slice(-50) : []
         };
-        markProjectDirty(getCurrentProject());
+        markProjectDirty(owningProjectOfNode(node));
     }
 
     function clearReview(node) {
         if (!node) return;
         delete node.review;
-        markProjectDirty(getCurrentProject());
+        markProjectDirty(owningProjectOfNode(node));
     }
 
     function getCurrentProject() {
@@ -1517,10 +1520,20 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     // 统一等待"所有保存"：既有排队中的（saveTimer），也有已经在飞的（saveQueue/inFlightSaves）。
-    // 只判断 saveTimer 会漏掉"防抖已触发、请求还没落地"的那一段窗口。
+    // 只判断 saveTimer 会漏掉"防抖已触发、请求还没落地"的那一段窗口；
+    // 单次等待又会漏掉"await 期间用户又改了东西、排了新的防抖"的情况，所以循环到真的干净为止。
     async function settleSaves() {
-        if (saveTimer) await flushProjectsSave();
-        await saveQueue.catch(() => undefined);
+        for (let round = 0; round < 50; round += 1) {
+            if (saveTimer) {
+                await flushProjectsSave();     // 有排队中的就立刻发出去（冲突时会 reject，交给调用方处理）
+            } else {
+                await saveQueue.catch(() => undefined);
+            }
+            if (!saveTimer && inFlightSaves === 0) {
+                await saveQueue.catch(() => undefined);
+                if (!saveTimer && inFlightSaves === 0) return;
+            }
+        }
     }
 
     function setSaveStatus(text, state = '') {
@@ -2176,7 +2189,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     content: (await file.text()).slice(0, 120000)
                 })))
             };
-            markProjectDirty(getCurrentProject());
+            markProjectDirty(owningProjectOfNode(assessmentNode));
             saveProjects();
         }
         renderAssessmentFiles();
@@ -2293,7 +2306,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 uploadedFiles: await getAssessmentFilePayload(),
                 model: assessmentModel.value
             };
-            markProjectDirty(getCurrentProject());
+            markProjectDirty(owningProjectOfNode(assessmentNode));
             await saveProjects();
             assessmentServiceStatus.textContent = '题目已生成，请回答当前题';
         } catch (error) {
@@ -2559,7 +2572,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 model: assessmentModel.value
             };
         }
-        markProjectDirty(getCurrentProject());
+        markProjectDirty(owningProjectOfNode(assessmentNode));
         saveProjects();
     }
 
@@ -2844,7 +2857,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     model: assessmentModel.value
                 };
                 if (!result.passed) {
-                    markProjectDirty(getCurrentProject());
+                    markProjectDirty(owningProjectOfNode(assessmentNode));
                     await saveProjects();
                     showAssessmentResult(result);
                     renderAssessmentConversation();
@@ -2869,7 +2882,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 assessmentAnswer.value = '';
                 assessmentCodeFiles = [];
                 renderAssessmentFiles();
-                markProjectDirty(getCurrentProject());
+                markProjectDirty(owningProjectOfNode(assessmentNode));
                 await saveProjects();
                 showAssessmentResult({ ...result, summary: '三道题全部通过。第二阶段可留空提交；填写内容则继续由 AI 验收。' });
                 assessmentServiceStatus.textContent = '第一阶段已通过；第二阶段可留空提交';
@@ -2882,7 +2895,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 uploadedFiles: await getAssessmentFilePayload()
             };
             setNodeCompleted(assessmentNode, assessmentStageName === 'implementation' && result.passed);
-            markProjectDirty(getCurrentProject());
+            markProjectDirty(owningProjectOfNode(assessmentNode));
             await saveProjects();
             if (result.passed) {
                 assessmentModal.setAttribute('hidden', '');
@@ -4008,7 +4021,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 toggleProjectArchived(project.id);
             });
             actions.appendChild(editBtn);
-            actions.appendChild(archiveBtn);
+            if (String(project.id) !== INBOX_PROJECT_ID) {
+                // 收集箱不给归档入口（保留项目，快速添加永远写进它）
+                actions.appendChild(archiveBtn);
+            }
             actions.appendChild(delBtn);
             top.appendChild(icon);
             top.appendChild(info);
@@ -4169,8 +4185,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const allExpanded = (project.tree || []).every(w => w.expanded);
         expandAllBtn.textContent = allExpanded ? '收起全部' : '展开全部';
         if (projectArchiveBtn) {
+            const isInbox = String(project.id) === INBOX_PROJECT_ID;
             projectArchiveBtn.textContent = project.archived ? '取消归档' : '归档';
             projectArchiveBtn.classList.toggle('active', Boolean(project.archived));
+            projectArchiveBtn.disabled = isInbox;
+            projectArchiveBtn.title = isInbox ? '收集箱是快速添加的落点，不能归档' : '';
         }
         renderBatchToolbar();
     }
@@ -4438,8 +4457,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     // 任务详情弹窗对"当前项目"和"工作台/搜索结果里的项目"都要标脏：
-    // 工作台打开时 currentProjectId 为 null，只靠最后保存时的 JSON 差集兜底太脆弱。
+    // 工作台/复习队列打开时 currentProjectId 为 null，只靠最后保存时的 JSON 差集兜底太脆弱。
     function owningProjectOfNode(node) {
+        if (!node || node.id == null) return getCurrentProject();
         const current = getCurrentProject();
         if (current && Array.isArray(current.tree) && findNodeById(current.tree, node.id)) return current;
         return projects.find(project => Array.isArray(project.tree) && findNodeById(project.tree, node.id)) || current;
@@ -4730,7 +4750,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const newText = input.value.trim();
             if (newText) {
                 node.text = newText;
-                markProjectDirty(getCurrentProject());
+                markProjectDirty(owningProjectOfNode(node));
                 saveProjects();
             }
             renderDetail();
@@ -4790,7 +4810,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 }
                 if (!parentNode.children) parentNode.children = [];
                 parentNode.children.push(child);
-                markProjectDirty(getCurrentProject());
+                markProjectDirty(owningProjectOfNode(parentNode));
                 saveProjects();
             }
             renderDetail();
@@ -5651,6 +5671,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     async function toggleProjectArchived(projectId) {
+        if (String(projectId) === INBOX_PROJECT_ID) {
+            // 收集箱是快速添加的落点，归档后工作台里看不到它，任务会像丢了一样。
+            showToast('收集箱是快速添加的落点，不能归档');
+            return;
+        }
         try {
             const project = await ensureProjectLoaded(projectId);
             project.archived = !project.archived;
@@ -5954,7 +5979,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         try {
             await withWorkbenchNode(item, async (node) => {
                 node.dueDate = addDaysToIso(todayStr(), 1);
-                markProjectDirty(getCurrentProject());
+                markProjectDirty(owningProjectOfNode(node));
                 await saveProjects();
                 showToast('已延期到明天');
                 showWorkbench();
@@ -6737,7 +6762,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast('请先完成任务，再安排复习');
             return;
         }
-        const project = getCurrentProject();
+        // 复习队列/工作台里也可能点到"安排复习"（那时没有当前项目），按节点找所属项目。
+        const project = owningProjectOfNode(node);
         if (!project) return;
         showUtilityModal('安排复习', '间隔复习');
         utilityBody.innerHTML = '';

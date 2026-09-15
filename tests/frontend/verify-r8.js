@@ -87,6 +87,13 @@ check('归档：normalizeProjects 保留 archived 字段', /archived:\s*Boolean\
 check('归档：normalizeProjectSummary 保留 archived 字段',
     /archived:\s*Boolean\(project\.archived\)/.test(extract('normalizeProjectSummary')));
 check('归档：冲突合并结果也带 archived', /archived:\s*Boolean\(projectChoice === 'remote'/.test(extract('mergeProjects')));
+// 收集箱是快速添加的落点：归档后工作台看不见它、任务像丢了，所以三处都要拦住
+check('归档：收集箱不能归档（切换函数直接拦下并提示）',
+    /async function toggleProjectArchived\(projectId\) \{[\s\S]{0,300}INBOX_PROJECT_ID[\s\S]{0,300}return;/.test(src));
+check('归档：收集箱卡片不显示归档按钮',
+    /String\(project\.id\) !== INBOX_PROJECT_ID[\s\S]{0,120}actions\.appendChild\(archiveBtn\)/.test(src));
+check('归档：收集箱详情页归档按钮置灰',
+    /projectArchiveBtn\.disabled = isInbox/.test(src));
 check('视图：页面有视图栏与保存按钮', html.includes('id="viewBar"') && html.includes('id="saveViewBtn"'));
 check('视图：三个接口都接了',
     src.includes("apiFetch('/api/views', { cache: 'no-store' })")

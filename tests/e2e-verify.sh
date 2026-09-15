@@ -536,8 +536,17 @@ check("批次2 工作台分组齐全",
       str(list((board.get("groups") or {}).keys())))
 check("批次2 工作台今天包含刚加的任务（dueDate=今天）",
       any(entry["text"] == "工作台测试任务" for entry in board["groups"]["today"]), json.dumps(board["totals"]))
-check("批次2 工作台收集箱分组有它",
-      any(entry["nodeId"] == inbox_node for entry in board["groups"]["inbox"]), str(board["totals"]))
+check("批次2 排了日期的收集箱任务不再重复出现在收集箱分组",
+      not any(entry["nodeId"] == inbox_node for entry in board["groups"]["inbox"]), str(board["totals"]))
+all_ids = [entry["nodeId"] for group in board["groups"].values() for entry in group]
+check("批次2 工作台同一条任务不会被两个分组重复统计", len(all_ids) == len(set(all_ids)),
+      f"{len(all_ids)} 条 / {len(set(all_ids))} 个唯一 id")
+status, headers, data = call("/api/inbox/add", method="POST", body={"node": {"text": "没排期的收集箱任务"}})
+loose_inbox_node = json.loads(data)["node"]["id"]
+status, headers, data = call("/api/workbench?today=" + TODAY_STR)
+board = json.loads(data)
+check("批次2 没排期的收集箱任务仍在收集箱分组",
+      any(entry["nodeId"] == loose_inbox_node for entry in board["groups"]["inbox"]), str(board["totals"]))
 check("批次2 工作台条目带路径与祖先 id",
       all("path" in entry and "ancestorIds" in entry for group in board["groups"].values() for entry in group))
 

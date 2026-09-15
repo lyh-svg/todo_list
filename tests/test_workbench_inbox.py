@@ -136,6 +136,17 @@ class InboxTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             storage.add_project_item("p1", {"text": "孤儿"}, parent_id="不存在的父节点")
 
+    def test_move_rejects_archived_target_project(self) -> None:
+        """前端的目标下拉已经过滤掉归档项目，接口也要拒绝，否则任务会被归类进看不见的项目。"""
+        storage.replace_projects([make_project("p1", "归档项目", [], archived=True)])
+        created = storage.add_inbox_item({"text": "要归类"})
+        with self.assertRaises(ValueError) as ctx:
+            storage.move_node(created["node"]["id"], "inbox", "p1", parent_id="p1-d", position=0)
+        self.assertIn("归档", str(ctx.exception))
+        # 任务必须还在收集箱里（事务回滚，没被搬走）
+        inbox = storage.read_project("inbox")[0]
+        self.assertEqual([node["text"] for node in inbox["tree"]], ["要归类"])
+
 
 class WorkbenchTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -173,6 +184,30 @@ class WorkbenchTests(unittest.TestCase):
         board = storage.workbench(TODAY)
         texts = [entry["text"] for group in board["groups"].values() for entry in group]
         self.assertNotIn("归档里的任务", texts)
+
+    def test_archived_inbox_is_still_listed(self) -> None:
+        """收集箱即使被归档也必须显示：快速添加永远写进它，看不见就等于任务丢了。"""
+        with storage.open_state_database() as connection:
+            connection.execute("UPDATE projects SET archived=1 WHERE project_id='inbox'")
+        board = storage.workbench(TODAY)
+        self.assertEqual([entry["text"] for entry in board["groups"]["inbox"]], ["收集箱里的"])
+
+    def test_inbox_items_are_not_counted_twice(self) -> None:
+        """收集箱里排了日期的任务只出现在日期分组，两个分组/计数不能重复。"""
+        near = storage.add_inbox_item({"text": "收集箱里今天到期", "dueDate": TODAY})
+        far = storage.add_inbox_item({"text": "收集箱里很久以后", "dueDate": IN_10_DAYS})
+        board = storage.workbench(TODAY)
+        inbox_ids = [entry["nodeId"] for entry in board["groups"]["inbox"]]
+        today_ids = [entry["nodeId"] for entry in board["groups"]["today"]]
+        next7_ids = [entry["nodeId"] for entry in board["groups"]["next7"]]
+        self.assertIn(near["node"]["id"], today_ids, "排了今天到期的收集箱任务要进'今天到期'")
+        self.assertNotIn(near["node"]["id"], inbox_ids, "不能同时出现在收集箱分组里")
+        # 超出 7 天视野的收集箱任务没有别的去处，仍然显示在收集箱
+        self.assertIn(far["node"]["id"], inbox_ids)
+        self.assertNotIn(far["node"]["id"], next7_ids)
+        all_ids = [entry["nodeId"] for group in board["groups"].values() for entry in group]
+        self.assertEqual(len(all_ids), len(set(all_ids)), "同一条任务不能被两个分组同时统计")
+        self.assertEqual(board["totals"]["inbox"], len(inbox_ids))
 
     def test_workbench_items_carry_context(self) -> None:
         board = storage.workbench(TODAY)

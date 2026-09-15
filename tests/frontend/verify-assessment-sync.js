@@ -89,6 +89,16 @@ check('② normalizeProjects 调用 applyAssessmentRequirements',
 check('② normalizeProjects 不再调用 setProjectAssessmentEnabled',
     !normalizeBody.includes('setProjectAssessmentEnabled'));
 
+// 场景 5：验收弹窗可以从工作台打开（那时 currentProjectId 为 null），
+// 所有保存都必须按"节点所属项目"标脏，否则统计缓存不失效、保存只能靠 JSON 差集兜底
+for (const [name, argument] of [['验收草稿', 'assessmentNode'], ['生成题目', 'assessmentNode'],
+                                ['补题结果', 'assessmentNode'], ['提交结果', 'assessmentNode']]) {
+    check(`② ${name} 用 owningProjectOfNode 标脏`,
+        new RegExp(`markProjectDirty\\(owningProjectOfNode\\(${argument}\\)\\)`).test(src));
+}
+check('② 标记脏项目的函数按节点找所属项目',
+    /function owningProjectOfNode\(node\) \{[\s\S]{0,300}findNodeById\(project\.tree, node\.id\)/.test(src));
+
 const failed = results.filter(r => !r.ok);
 console.log(`\n   通过 ${results.length - failed.length} 项，失败 ${failed.length} 项`);
 process.exit(failed.length ? 1 : 0);
