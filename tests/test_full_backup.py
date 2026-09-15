@@ -166,6 +166,24 @@ class FullBackupTests(unittest.TestCase):
         result = backup_service.restore_full_backup(legacy_name)
         self.assertEqual(result["restored"], ["todo.sqlite3"])
 
+    def test_hidden_temp_files_cannot_be_used_as_backups(self) -> None:
+        """恢复/回滚的临时文件（.restore-* / .rollback-*）不能当备份恢复：可能是半个库。"""
+        hidden_db = BACKUP_DIR / ".restore-deadbeef-todo.sqlite3"
+        hidden_db.write_bytes(b"not a real database")
+        hidden_zip = BACKUP_DIR / ".rollback-deadbeef.zip"
+        hidden_zip.write_bytes(b"PK\x03\x04fake")
+        for name in (hidden_db.name, hidden_zip.name):
+            with self.assertRaises(ValueError, msg=f"{name} 不该被接受"):
+                backup_service.describe_backup(name)
+        with self.assertRaises(ValueError):
+            backup_service.restore_full_backup(hidden_db.name)
+        with self.assertRaises(ValueError):
+            storage.restore_database_backup(hidden_db.name)
+        # 也不该出现在任何列表里
+        names = [entry["name"] for entry in backup_service.list_backups()]
+        self.assertNotIn(hidden_db.name, names)
+        self.assertNotIn(hidden_zip.name, names)
+
 
 class RetentionTests(unittest.TestCase):
     def setUp(self) -> None:

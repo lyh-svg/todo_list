@@ -145,7 +145,9 @@ def create_full_backup(prefix: str = "manual", *, include_databases: dict[str, P
 
 def _valid_name(name: str, suffix: str = ".zip") -> str:
     text = str(name or "")
-    if Path(text).name != text or not text.endswith(suffix):
+    # 以点开头的是恢复/回滚过程用的临时文件（.restore-* / .rollback-*），
+    # 不能当成用户备份：它们可能是被中断的、内容过期的半个库。
+    if Path(text).name != text or text.startswith(".") or not text.endswith(suffix):
         raise ValueError("备份文件名不正确")
     return text
 

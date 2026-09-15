@@ -1306,7 +1306,8 @@ def list_database_backups() -> list[dict[str, Any]]:
 
 
 def restore_database_backup(name: str) -> None:
-    if Path(name).name != name or not name.endswith(".sqlite3"):
+    # 点开头的隐藏文件是恢复/回滚的临时文件，不能当备份恢复（可能是半个库）。
+    if Path(name).name != name or name.startswith(".") or not name.endswith(".sqlite3"):
         raise ValueError("备份文件名不正确")
     source = BACKUP_DIR / name
     if not source.is_file():
