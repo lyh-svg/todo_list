@@ -4109,6 +4109,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }, 50);
         setTimeout(() => {
             projects.splice(projectIndex, 1);
+            // 删除前可能还留着"脏"标记/旧 JSON 基准：不清掉的话 savePending() 会一直为真，
+            // 每次关页面都弹"未保存"提示（而且那个项目已经不存在了）。
+            dirtyProjectIds.delete(String(projectId));
+            savedProjectJsonById.delete(String(projectId));
             if (currentProjectId === projectId) currentProjectId = null;
             renderProjects();
             setSaveStatus('已保存');
