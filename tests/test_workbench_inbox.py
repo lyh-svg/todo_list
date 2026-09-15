@@ -147,6 +147,17 @@ class InboxTests(unittest.TestCase):
         inbox = storage.read_project("inbox")[0]
         self.assertEqual([node["text"] for node in inbox["tree"]], ["要归类"])
 
+    def test_add_item_rejects_archived_project(self) -> None:
+        """往已归档项目里加任务也一样：前端选择器过滤了，接口也要拦。"""
+        storage.replace_projects([make_project("p1", "归档项目", [], archived=True)])
+        with self.assertRaises(ValueError) as ctx:
+            storage.add_project_item("p1", {"text": "加进归档项目"})
+        self.assertIn("归档", str(ctx.exception))
+        self.assertEqual(storage.read_project("p1")[0]["tree"][0]["children"][0]["children"], [])
+        # 收集箱例外：它是快速添加的落点，永远可写
+        created = storage.add_inbox_item({"text": "收集箱任务"})
+        self.assertEqual(created["node"]["text"], "收集箱任务")
+
 
 class WorkbenchTests(unittest.TestCase):
     def setUp(self) -> None:

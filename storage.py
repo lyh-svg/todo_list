@@ -1693,6 +1693,10 @@ def add_project_item(project_id: str, node: dict[str, Any],
         if not found:
             raise ValueError("目标项目不存在")
         project, revision = found
+        # 前端的选择器已经过滤掉归档项目；接口也要一致，
+        # 否则能往一个在列表/工作台里都看不见的项目里加任务。
+        if bool(project.get("archived")):
+            raise ValueError("目标项目已归档，请先取消归档再添加")
     item_id = str(node.get("id") or uuid.uuid4())
     item = {
         "id": item_id,

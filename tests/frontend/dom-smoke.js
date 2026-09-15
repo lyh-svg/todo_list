@@ -310,9 +310,14 @@ function step(name, fn) {
     // ③ 再次进入工作台并完成一条任务（没有打开项目的情况）
     elementsById.get('openWorkbenchBtn').dispatch('click');
     await sleep(40);
+    const workbenchText = textOf(elementsById.get('workbenchBody'));
     const doneButtons = findAll(elementsById.get('workbenchBody'), el => el.textContent === '完成');
     check('工作台里有「完成」按钮', doneButtons.length > 0,
-        '工作台内容：' + textOf(elementsById.get('workbenchBody')).slice(0, 160));
+        '工作台内容：' + workbenchText.slice(0, 160));
+    // 服务端现在会返回 note/links/repeat，工作台行必须把它们渲染成徽标
+    check('工作台行显示备注 / 链接 / 周期徽标',
+        workbenchText.includes('备注') && workbenchText.includes('链接') && workbenchText.includes('↻'),
+        '工作台内容：' + workbenchText.slice(0, 200));
     if (doneButtons[0]) step('点击工作台「完成」不抛异常', () => doneButtons[0].dispatch('click'));
     await sleep(40);
     check('完成后视图没有错乱', activeViews().length === 1, JSON.stringify(activeViews()));

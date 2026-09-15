@@ -469,6 +469,9 @@ body {
 .tree-node.batch-mode .checkbox { opacity: 0.35; }
 .tree-node.batch-selected > .node-row { background: #eaf1ff; box-shadow: inset 2px 0 0 var(--primary, #4d6ff0); }
 #batchToggleBtn.active, #projectArchiveBtn.active { border-color: var(--primary, #4d6ff0); color: var(--primary, #4d6ff0); }
+/* 收集箱不能归档：按钮置灰，别让人以为点了没反应 */
+#projectArchiveBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+#projectArchiveBtn:disabled:hover { border-color: var(--border); color: var(--text-light); }
 .archive-proj-btn {
     border: 0; background: transparent; color: #7d8798; cursor: pointer; font-size: 13px; padding: 2px 4px;
 }
