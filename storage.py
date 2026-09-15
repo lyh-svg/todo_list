@@ -119,6 +119,84 @@ def clean_links(value: Any) -> list[dict[str, str]]:
     return links
 
 
+REPEAT_FREQUENCIES = ("daily", "weekday", "weekly", "monthly")
+
+
+def clean_repeat(value: Any) -> dict[str, Any] | None:
+    """周期规则：{freq, interval?, weekday?, day?, until?}；非法返回 None。"""
+    if not isinstance(value, dict):
+        return None
+    freq = str(value.get("freq") or "").strip().lower()
+    if freq not in REPEAT_FREQUENCIES:
+        return None
+    rule: dict[str, Any] = {"freq": freq}
+    if freq == "weekly":
+        try:
+            weekday = int(value.get("weekday"))
+        except (TypeError, ValueError):
+            return None
+        if not 0 <= weekday <= 6:
+            return None
+        rule["weekday"] = weekday
+    if freq == "monthly":
+        try:
+            day = int(value.get("day"))
+        except (TypeError, ValueError):
+            return None
+        if not 1 <= day <= 31:
+            return None
+        rule["day"] = day
+    if freq == "daily":
+        try:
+            interval = int(value.get("interval") or 1)
+        except (TypeError, ValueError):
+            return None
+        rule["interval"] = max(1, min(365, interval))
+    until = clean_due_date(value.get("until"))
+    if until:
+        rule["until"] = until
+    return rule
+
+
+def next_repeat_due(rule: Any, from_date: str) -> str:
+    """按周期规则算出下一次到期日；无效规则或超过 until 返回空串。"""
+    cleaned = clean_repeat(rule)
+    if not cleaned:
+        return ""
+    base = clean_due_date(from_date) or date.today().isoformat()
+    start = date.fromisoformat(base)
+    freq = cleaned["freq"]
+    if freq == "daily":
+        candidate = start + timedelta(days=cleaned.get("interval", 1))
+    elif freq == "weekday":
+        candidate = start + timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate += timedelta(days=1)
+    elif freq == "weekly":
+        target = cleaned["weekday"]
+        candidate = start + timedelta(days=1)
+        while candidate.weekday() != target:
+            candidate += timedelta(days=1)
+    else:  # monthly
+        day = cleaned["day"]
+        year, month = start.year, start.month
+        for _ in range(24):
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+            last_day = (date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)).day
+            if day <= last_day:
+                candidate = date(year, month, day)
+                break
+        else:
+            return ""
+    until = cleaned.get("until")
+    if until and candidate.isoformat() > until:
+        return ""
+    return candidate.isoformat()
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
@@ -243,6 +321,14 @@ def open_state_database() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_trash_deleted_at
             ON trash_items(deleted_at DESC, trash_id);
+        CREATE TABLE IF NOT EXISTS saved_views (
+            view_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_views_name ON saved_views(name);
         """
     )
     node_columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
@@ -261,6 +347,7 @@ def open_state_database() -> sqlite3.Connection:
         ("tags", "TEXT NOT NULL DEFAULT ''"),
         ("note", "TEXT NOT NULL DEFAULT ''"),
         ("links", "TEXT NOT NULL DEFAULT ''"),
+        ("repeat", "TEXT NOT NULL DEFAULT ''"),
     ):
         if column not in node_columns:
             connection.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")
@@ -351,6 +438,7 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None,
             "tags": "",
             "note": "",
             "links": "",
+            "repeat": "",
         }
         if node_type == "item":
             metadata["priority"] = clean_priority(raw.get("priority"))
@@ -361,6 +449,8 @@ def _flatten_nodes(project_id: str, nodes: Any, parent_id: str | None = None,
             metadata["note"] = str(raw.get("note") or "")[:MAX_NOTE_CHARS]
             links = clean_links(raw.get("links"))
             metadata["links"] = _json(links) if links else ""
+            repeat = clean_repeat(raw.get("repeat"))
+            metadata["repeat"] = _json(repeat) if repeat else ""
         review_due = ""
         review_learning = 0
         review_log = ""
@@ -450,8 +540,8 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
                 project_id,node_id,id_json,parent_id,position,type,text,completed,
                 optional,assessment_required,assessment_history,expanded,created_at,completed_at,
                 review_due,review_learning,review_log,
-                priority,due_date,estimate_minutes,tags,note,links
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                priority,due_date,estimate_minutes,tags,note,links,repeat
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(project_id,node_id) DO UPDATE SET
                 id_json=excluded.id_json,parent_id=excluded.parent_id,position=excluded.position,
                 type=excluded.type,text=excluded.text,completed=excluded.completed,
@@ -462,7 +552,7 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
                 review_log=excluded.review_log,
                 priority=excluded.priority,due_date=excluded.due_date,
                 estimate_minutes=excluded.estimate_minutes,tags=excluded.tags,
-                note=excluded.note,links=excluded.links
+                note=excluded.note,links=excluded.links,repeat=excluded.repeat
             WHERE id_json<>excluded.id_json OR parent_id IS NOT excluded.parent_id
                 OR position<>excluded.position OR type<>excluded.type OR text<>excluded.text
                 OR completed<>excluded.completed OR optional<>excluded.optional
@@ -474,12 +564,12 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
                 OR review_log<>excluded.review_log
                 OR priority<>excluded.priority OR due_date<>excluded.due_date
                 OR estimate_minutes<>excluded.estimate_minutes OR tags<>excluded.tags
-                OR note<>excluded.note OR links<>excluded.links""",
+                OR note<>excluded.note OR links<>excluded.links OR repeat<>excluded.repeat""",
             tuple(node[key] for key in (
                 "project_id", "node_id", "id_json", "parent_id", "position", "type", "text",
                 "completed", "optional", "assessment_required", "assessment_history", "expanded", "created_at",
                 "completed_at", "review_due", "review_learning", "review_log",
-                "priority", "due_date", "estimate_minutes", "tags", "note", "links"
+                "priority", "due_date", "estimate_minutes", "tags", "note", "links", "repeat"
             )),
         )
         _write_assessment(connection, node, updated_at)
@@ -596,6 +686,15 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
                     node["tags"] = [str(item)[:MAX_TAG_CHARS] for item in parsed_tags[:MAX_TAGS]]
             if node_row["note"]:
                 node["note"] = str(node_row["note"])
+            repeat_raw = str(node_row["repeat"] or "")
+            if repeat_raw:
+                try:
+                    parsed_repeat = json.loads(repeat_raw)
+                except (TypeError, json.JSONDecodeError):
+                    parsed_repeat = None
+                cleaned_repeat = clean_repeat(parsed_repeat)
+                if cleaned_repeat:
+                    node["repeat"] = cleaned_repeat
             links_raw = str(node_row["links"] or "")
             if links_raw:
                 try:
@@ -1248,6 +1347,255 @@ def delete_asset(key: str) -> None:
             connection.execute("DELETE FROM app_asset WHERE key=?", (key,))
 
 
+BATCH_ACTIONS = {
+    "set-priority", "add-tags", "remove-tags", "set-due", "shift-due",
+    "set-estimate", "complete", "uncomplete",
+}
+
+
+def _row_to_view(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    return {
+        "id": str(row["view_id"]),
+        "name": str(row["name"]),
+        "payload": payload if isinstance(payload, dict) else {},
+        "createdAt": str(row["created_at"]),
+        "updatedAt": str(row["updated_at"]),
+    }
+
+
+def list_saved_views() -> list[dict[str, Any]]:
+    with _database_lock, open_state_database() as connection:
+        rows = connection.execute(
+            "SELECT view_id,name,payload,created_at,updated_at FROM saved_views ORDER BY name"
+        ).fetchall()
+    return [_row_to_view(row) for row in rows]
+
+
+def save_saved_view(name: Any, payload: Any) -> dict[str, Any]:
+    """按名称 upsert：同名视图直接覆盖，避免存出一堆重复项。"""
+    view_name = str(name or "").strip()[:60]
+    if not view_name:
+        raise ValueError("视图名称不能为空")
+    if not isinstance(payload, dict):
+        raise ValueError("视图内容格式不正确")
+    encoded = _json(payload)
+    if len(encoded.encode("utf-8")) > 64 * 1024:
+        raise ValueError("视图内容过大")
+    now = _now()
+    with _database_lock, open_state_database() as connection:
+        row = connection.execute("SELECT view_id FROM saved_views WHERE name=?", (view_name,)).fetchone()
+        if row:
+            connection.execute(
+                "UPDATE saved_views SET payload=?, updated_at=? WHERE view_id=?",
+                (encoded, now, row["view_id"]),
+            )
+            view_id = str(row["view_id"])
+        else:
+            view_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO saved_views(view_id,name,payload,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (view_id, view_name, encoded, now, now),
+            )
+        saved = connection.execute(
+            "SELECT view_id,name,payload,created_at,updated_at FROM saved_views WHERE view_id=?", (view_id,)
+        ).fetchone()
+    return _row_to_view(saved)
+
+
+def delete_saved_view(view_id: Any) -> bool:
+    with _database_lock, open_state_database() as connection:
+        cursor = connection.execute("DELETE FROM saved_views WHERE view_id=?", (str(view_id),))
+    return cursor.rowcount > 0
+
+
+def _shift_iso_date(base_iso: str, days: int) -> str:
+    try:
+        return (date.fromisoformat(base_iso) + timedelta(days=int(days))).isoformat()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _apply_batch_action(node: dict[str, Any], action: str, value: Any, today: str,
+                        marks: list[dict[str, Any]] | None = None) -> bool:
+    """对单个节点应用批量动作，返回是否有变化。"""
+    if action == "set-priority":
+        cleaned = clean_priority(value)
+        if node.get("priority", "") == cleaned:
+            return False
+        node["priority"] = cleaned
+        return True
+    if action == "add-tags":
+        tags = list(node.get("tags") or [])
+        for tag in clean_tags(value):
+            if tag not in tags:
+                tags.append(tag)
+        tags = clean_tags(tags)
+        if tags == list(node.get("tags") or []):
+            return False
+        node["tags"] = tags
+        return True
+    if action == "remove-tags":
+        remove = set(clean_tags(value))
+        tags = [tag for tag in (node.get("tags") or []) if tag not in remove]
+        if tags == list(node.get("tags") or []):
+            return False
+        node["tags"] = tags
+        return True
+    if action == "set-due":
+        cleaned = clean_due_date(value)
+        if node.get("dueDate", "") == cleaned:
+            return False
+        node["dueDate"] = cleaned
+        return True
+    if action == "shift-due":
+        try:
+            days = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("延期天数必须是整数") from None
+        base = clean_due_date(node.get("dueDate")) or (today if days >= 0 else "")
+        if not base:
+            return False
+        shifted = _shift_iso_date(base, days)
+        if not shifted or node.get("dueDate", "") == shifted:
+            return False
+        node["dueDate"] = shifted
+        return True
+    if action == "set-estimate":
+        cleaned = clean_estimate_minutes(value)
+        if int(node.get("estimateMinutes") or 0) == cleaned:
+            return False
+        node["estimateMinutes"] = cleaned
+        return True
+    if action in {"complete", "uncomplete"}:
+        want = action == "complete"
+        if bool(node.get("completed")) == want:
+            return False
+        if want and node.get("assessmentRequired") and not (node.get("assessment") or {}).get("passed"):
+            raise ValueError("需要 AI 验收的任务不能批量完成")
+        node["completed"] = want
+        node["completedAt"] = datetime.now().isoformat(timespec="seconds") if want else None
+        if not want:
+            node.pop("review", None)
+        if want and marks is not None:
+            marks.append(node)
+        return True
+    raise ValueError("不支持的批量操作：" + str(action))
+
+
+def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[str, Any]]) -> int:
+    """批量完成周期任务时，在同一个父节点下生成下一次出现。"""
+    if not completed_nodes:
+        return 0
+    def find_parent(nodes: list[dict[str, Any]], target_id: str | None) -> list[dict[str, Any]] | None:
+        if target_id is None:
+            return nodes
+        for node in nodes or []:
+            if str(node.get("id")) == str(target_id):
+                return node.setdefault("children", [])
+            found = find_parent(node.get("children") or [], target_id)
+            if found is not None:
+                return found
+        return None
+
+    def locate_parent_id(nodes: list[dict[str, Any]], target_id: str, parent_id: str | None = None) -> str | None:
+        for node in nodes or []:
+            if str(node.get("id")) == str(target_id):
+                return parent_id
+            found = locate_parent_id(node.get("children") or [], target_id, str(node.get("id")))
+            if found is not None:
+                return found
+        return None
+
+    spawned = 0
+    tree = project.setdefault("tree", [])
+    for node in completed_nodes:
+        rule = clean_repeat(node.get("repeat"))
+        if not rule:
+            continue
+        next_due = next_repeat_due(rule, clean_due_date(node.get("dueDate")) or date.today().isoformat())
+        if not next_due:
+            continue
+        parent_id = locate_parent_id(tree, str(node.get("id")))
+        siblings = find_parent(tree, parent_id)
+        if siblings is None:
+            continue
+        clone = json.loads(json.dumps(node))
+        clone["id"] = str(uuid.uuid4())
+        clone["completed"] = False
+        clone["completedAt"] = None
+        clone["dueDate"] = next_due
+        clone["assessment"] = None
+        clone["assessmentHistory"] = 0
+        clone.pop("review", None)
+        siblings.append(clone)
+        spawned += 1
+    return spawned
+
+
+def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str, Any]:
+    """按项目分组批量修改节点：每个项目一次事务、revision 前进一次。"""
+    if action not in BATCH_ACTIONS:
+        raise ValueError("不支持的批量操作：" + str(action))
+    if not isinstance(targets, list) or not targets:
+        raise ValueError("请先选择要修改的任务")
+    grouped: dict[str, set[str]] = {}
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        project_id = str(target.get("projectId") or "")
+        node_id = str(target.get("nodeId") or "")
+        if project_id and node_id:
+            grouped.setdefault(project_id, set()).add(node_id)
+    if not grouped:
+        raise ValueError("请先选择要修改的任务")
+    today = date.today().isoformat()
+    changed = 0
+    spawned_total = 0
+    failed: list[dict[str, str]] = []
+    projects_touched: list[str] = []
+    with _database_lock:
+        with open_state_database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            now = datetime.now().isoformat(timespec="seconds")
+            position = _project_position
+            for project_id, node_ids in grouped.items():
+                result = _read_project_from_connection(connection, project_id)
+                if not result:
+                    failed.append({"projectId": project_id, "error": "项目不存在"})
+                    continue
+                project, revision = result
+                applied = 0
+                marks: list[dict[str, Any]] = []
+                stack = list(project.get("tree") or [])
+                while stack:
+                    node = stack.pop()
+                    if str(node.get("id")) in node_ids and node.get("type") == "item":
+                        try:
+                            if _apply_batch_action(node, action, value, today, marks):
+                                applied += 1
+                        except ValueError as error:
+                            failed.append({"projectId": project_id, "nodeId": str(node.get("id")), "error": str(error)})
+                    stack.extend(node.get("children") or [])
+                if applied == 0:
+                    continue
+                spawned = _spawn_next_occurrences(project, marks)
+                _upsert_project(connection, project, position(connection, project_id), revision + 1, now)
+                projects_touched.append(project_id)
+                changed += applied
+                spawned_total += spawned
+    summaries = read_project_summaries()
+    return {
+        "changed": changed,
+        "spawned": spawned_total,
+        "failed": failed,
+        "projects": [summary for summary in summaries if str(summary.get("id")) in set(projects_touched)],
+    }
+
+
 INBOX_PROJECT_ID = "inbox"
 INBOX_PROJECT_NAME = "收集箱"
 WORKBENCH_HORIZON_DAYS = 7
@@ -1280,8 +1628,19 @@ def ensure_inbox_project() -> tuple[dict[str, Any], int]:
 
 
 def add_inbox_item(node: dict[str, Any]) -> dict[str, Any]:
-    """把一个新任务快速放进收集箱，返回写入后的节点。"""
-    project, revision = ensure_inbox_project()
+    return add_project_item(INBOX_PROJECT_ID, node)
+
+
+def add_project_item(project_id: str, node: dict[str, Any],
+                     parent_id: str | None = None) -> dict[str, Any]:
+    """在指定项目下快速新建一个任务（收集箱就是 id=inbox 的那个项目）。"""
+    if str(project_id) == INBOX_PROJECT_ID:
+        project, revision = ensure_inbox_project()
+    else:
+        found = read_project(project_id)
+        if not found:
+            raise ValueError("目标项目不存在")
+        project, revision = found
     item_id = str(node.get("id") or uuid.uuid4())
     item = {
         "id": item_id,
@@ -1301,16 +1660,31 @@ def add_inbox_item(node: dict[str, Any]) -> dict[str, Any]:
         "tags": clean_tags(node.get("tags")),
         "note": str(node.get("note") or "")[:MAX_NOTE_CHARS],
         "links": clean_links(node.get("links")),
+        "repeat": clean_repeat(node.get("repeat")),
     }
-    project["tree"] = list(project.get("tree") or []) + [item]
+    if parent_id:
+        _find_parent_and_insert(project.setdefault("tree", []), str(parent_id), item,
+                                len(project.get("tree") or []))
+    else:
+        project["tree"] = list(project.get("tree") or []) + [item]
     revision_after, _summary = write_project(project, revision)
-    stored = read_project(INBOX_PROJECT_ID)
+    stored = read_project(str(project_id))
     created = None
     if stored:
-        created = next((child for child in stored[0].get("tree") or [] if str(child.get("id")) == item_id), None)
+        created = _find_node_by_id(stored[0].get("tree") or [], item_id)
     if created is None:
-        raise RuntimeError("收集箱写入后读不回该任务")
-    return {"node": created, "revision": revision_after}
+        raise RuntimeError("写入后读不回该任务")
+    return {"node": created, "revision": revision_after, "projectId": str(project_id)}
+
+
+def _find_node_by_id(nodes: list[dict[str, Any]], node_id: str) -> dict[str, Any] | None:
+    for node in nodes or []:
+        if str(node.get("id")) == str(node_id):
+            return node
+        found = _find_node_by_id(node.get("children") or [], node_id)
+        if found is not None:
+            return found
+    return None
 
 
 def _detach_node(tree: list[dict[str, Any]], node_id: str) -> dict[str, Any] | None:

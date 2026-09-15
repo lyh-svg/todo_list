@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>项目管理器 · 文件夹式清单</title>
-<link rel="stylesheet" href="css/style.css?v=30" />
+<link rel="stylesheet" href="css/style.css?v=32" />
 </head>
 <body>
 <div class="app" id="app">
@@ -38,6 +38,7 @@
 <option value="active">进行中</option>
 <option value="completed">已完成</option>
 <option value="empty">空项目</option>
+<option value="archived">已归档</option>
 </select>
 </div>
 <div class="create-project-area">
@@ -87,12 +88,25 @@
 <button id="resetBackgroundBtn" type="button"><span aria-hidden="true">↺</span>默认背景</button>
 </div>
 </section>
+<section class="tool-group" aria-labelledby="reminderToolsTitle">
+<h2 id="reminderToolsTitle">提醒</h2>
+<div class="backup-actions tool-button-row">
+<button id="reminderToggleBtn" type="button">开启提醒</button>
+<button id="reminderPermissionBtn" type="button">允许浏览器通知</button>
+</div>
+<p class="utility-hint" id="reminderStatus">提醒只在页面开着时生效（本机服务无法在页面关闭后推送）。</p>
+</section>
 <section class="tool-group memo-tools" aria-labelledby="memoToolsTitle">
 <h2 id="memoToolsTitle">个人记录</h2>
 <button class="memo-open-btn" id="openMemoBtn" type="button"><span aria-hidden="true">▤</span>打开备忘录</button>
 </section>
 </div>
 </details>
+<div class="view-bar" id="viewBar">
+<span class="view-bar-label">筛选视图</span>
+<div class="view-chips" id="viewChips"></div>
+<button id="saveViewBtn" type="button">保存当前筛选</button>
+</div>
 <div class="project-grid" id="projectGrid"></div>
 <div class="empty-projects" id="emptyProjects">正在加载项目…</div>
 </div>
@@ -105,6 +119,7 @@
 <input type="checkbox" id="projectAssessmentToggle" />
 <span>AI 验收</span>
 </label>
+<button class="shortcut-btn" id="projectArchiveBtn" type="button" title="归档后默认列表不再显示该项目"><span aria-hidden="true">▣</span>归档</button>
 <label class="detail-ai-toggle" id="reviewToggleWrap" title="开启后：本项目内完成任务会自动进入到期复习队列">
 <input type="checkbox" id="projectReviewToggle" />
 <span>间隔复习</span>
@@ -126,6 +141,22 @@
 <option value="active">未完成</option>
 <option value="completed">已完成</option>
 </select>
+<select id="nodePriorityFilter" aria-label="按优先级筛选">
+<option value="all">全部优先级</option>
+<option value="high">高优先级</option>
+<option value="mid">中优先级</option>
+<option value="low">低优先级</option>
+<option value="none">未设优先级</option>
+</select>
+<select id="nodeDueFilter" aria-label="按截止日期筛选">
+<option value="all">全部截止</option>
+<option value="overdue">已逾期</option>
+<option value="today">今天到期</option>
+<option value="week">未来 7 天</option>
+<option value="none">无截止日期</option>
+<option value="soon">7 天内到期</option>
+</select>
+<input type="search" id="nodeTagFilter" placeholder="按标签筛选" autocomplete="off" />
 </div>
 <div class="detail-input-area">
 <input type="text" id="newNodeInput" placeholder="输入新的一周主题，如：第9周：Web API 实践" />
@@ -133,9 +164,11 @@
 </div>
 <ul class="tree" id="treeRoot"></ul>
 <div class="empty-tree-tip" id="emptyTreeTip">还没有内容，添加第一周开始吧</div>
+<div class="batch-toolbar" id="batchToolbar" hidden></div>
 <div class="detail-footer">
 <span class="count" id="countDisplay">剩余 0 项未完成</span>
 <div class="footer-btns">
+<button class="expand-all-btn" id="batchToggleBtn">批量选择</button>
 <button class="expand-all-btn" id="expandAllBtn">展开全部</button>
 <button class="clear-btn" id="clearBtn">清空已完成</button>
 <button class="clear-history-btn" id="clearHistoryBtn">清理验收记录</button>
@@ -268,6 +301,6 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 
 <script src="js/api-client.js?v=1"></script>
 <script src="js/study-tools.js?v=1"></script>
-<script src="js/app.js?v=39"></script>
+<script src="js/app.js?v=41"></script>
 </body>
 </html>

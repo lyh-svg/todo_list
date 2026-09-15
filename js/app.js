@@ -33,6 +33,27 @@ const reviewBody = document.getElementById('reviewBody');
 const reviewSubline = document.getElementById('reviewSubline');
 const projectReviewToggle = document.getElementById('projectReviewToggle');
     const exportBtn = document.getElementById('exportBtn');
+    const viewBar = document.getElementById('viewBar');
+    const viewChips = document.getElementById('viewChips');
+    const saveViewBtn = document.getElementById('saveViewBtn');
+    const nodePriorityFilter = document.getElementById('nodePriorityFilter');
+    const nodeDueFilter = document.getElementById('nodeDueFilter');
+    const nodeTagFilter = document.getElementById('nodeTagFilter');
+    const batchToggleBtn = document.getElementById('batchToggleBtn');
+    const projectArchiveBtn = document.getElementById('projectArchiveBtn');
+    const batchToolbar = document.getElementById('batchToolbar');
+    const workbenchView = document.getElementById('workbenchView');
+    const workbenchBody = document.getElementById('workbenchBody');
+    const workbenchSubline = document.getElementById('workbenchSubline');
+    const workbenchBackBtn = document.getElementById('workbenchBackBtn');
+    const workbenchRefreshBtn = document.getElementById('workbenchRefreshBtn');
+    const openWorkbenchBtn = document.getElementById('openWorkbenchBtn');
+    const openRecentBtn = document.getElementById('openRecentBtn');
+    const quickAddInput = document.getElementById('quickAddInput');
+    const quickAddBtn = document.getElementById('quickAddBtn');
+    const reminderToggleBtn = document.getElementById('reminderToggleBtn');
+    const reminderPermissionBtn = document.getElementById('reminderPermissionBtn');
+    const reminderStatus = document.getElementById('reminderStatus');
     const importInput = document.getElementById('importInput');
     const backgroundInput = document.getElementById('backgroundInput');
     const resetBackgroundBtn = document.getElementById('resetBackgroundBtn');
@@ -140,7 +161,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     let memoState = { memos: [], selectedId: null, query: '', saveTimer: null, pendingMemoId: null,
         saveQueue: Promise.resolve() };
     const projectFilters = { query: '', status: 'all' };
-    const nodeFilters = { query: '', status: 'all' };
+    const nodeFilters = { query: '', status: 'all', priority: 'all', due: 'all', tag: '' };
+    const batchState = { active: false, selected: new Set() };
+    let savedViews = [];
 
     function initializeSessionToken() {
         const tokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
@@ -198,6 +221,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         node.completed = Boolean(completed);
         node.completedAt = node.completed ? new Date().toISOString() : null;
         if (!node || node.type !== 'item') return;
+        if (node.completed && node.repeat) {
+            const repeatProject = getCurrentProject();
+            const spawned = repeatProject ? spawnNextOccurrence(repeatProject, node) : null;
+            if (spawned) showToast(`周期任务：已生成下一次（${spawned.dueDate}）`);
+        }
         if (node.completed) {
             const project = getCurrentProject();
             if (project && projectAutoReview(project) && !node.optional && !node.review) {
@@ -866,7 +894,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (links.length >= MAX_LINKS) break;
         }
         const note = String(node.note || '').slice(0, MAX_NOTE_CHARS);
-        return { priority, dueDate, estimateMinutes, tags, links, note };
+        const repeat = cleanRepeat(node.repeat);
+        return { priority, dueDate, estimateMinutes, tags, links, note, repeat };
     }
 
     function normalizeNode(node, fallbackType) {
@@ -2871,7 +2900,37 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return stats.remaining > 0;
     }
 
+    function nodeMatchesMetaFilter(node) {
+        if (nodeFilters.priority !== 'all') {
+            const priority = node.priority || '';
+            if (nodeFilters.priority === 'none' ? Boolean(priority) : priority !== nodeFilters.priority) return false;
+        }
+        const tagQuery = nodeFilters.tag.trim().toLowerCase();
+        if (tagQuery) {
+            const tags = (node.tags || []).map(tag => String(tag).toLowerCase());
+            if (!tags.some(tag => tag.includes(tagQuery))) return false;
+        }
+        if (nodeFilters.due !== 'all') {
+            const due = node.dueDate || '';
+            const today = todayStr();
+            if (nodeFilters.due === 'none') {
+                if (due) return false;
+            } else if (!due) {
+                return false;
+            } else if (nodeFilters.due === 'overdue') {
+                if (!(due < today)) return false;
+            } else if (nodeFilters.due === 'today') {
+                if (due !== today) return false;
+            } else if (nodeFilters.due === 'week' || nodeFilters.due === 'soon') {
+                const days = daysBetween(today, due);
+                if (days === null || days < 0 || days > 7) return false;
+            }
+        }
+        return true;
+    }
+
     function nodeMatchesOwnFilter(node) {
+        if (!nodeMatchesMetaFilter(node)) return false;
         const query = nodeFilters.query.trim().toLowerCase();
         const textMatches = !query || node.text.toLowerCase().includes(query);
         return textMatches && nodeMatchesStatus(node, nodeFilters.status);
@@ -2892,6 +2951,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (!textMatches) return false;
         const total = getProjectTotal(project);
         const remaining = getProjectRemaining(project);
+        if (projectFilters.status === 'archived') return Boolean(project.archived);
+        if (project.archived) return false;
         if (projectFilters.status === 'active') return remaining > 0;
         if (projectFilters.status === 'completed') return total > 0 && remaining === 0;
         if (projectFilters.status === 'empty') return total === 0;
@@ -3887,7 +3948,18 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 e.stopPropagation();
                 deleteProject(project.id, card);
             });
+            const archiveBtn = document.createElement('button');
+            archiveBtn.type = 'button';
+            archiveBtn.classList.add('archive-proj-btn');
+            archiveBtn.textContent = project.archived ? '↩' : '▣';
+            archiveBtn.title = project.archived ? '取消归档' : '归档（默认列表不再显示）';
+            archiveBtn.setAttribute('aria-label', archiveBtn.title);
+            archiveBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleProjectArchived(project.id);
+            });
             actions.appendChild(editBtn);
+            actions.appendChild(archiveBtn);
             actions.appendChild(delBtn);
             top.appendChild(icon);
             top.appendChild(info);
@@ -4038,6 +4110,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         treeRoot.replaceChildren(treeFragment);
         const allExpanded = (project.tree || []).every(w => w.expanded);
         expandAllBtn.textContent = allExpanded ? '收起全部' : '展开全部';
+        if (projectArchiveBtn) {
+            projectArchiveBtn.textContent = project.archived ? '取消归档' : '归档';
+            projectArchiveBtn.classList.toggle('active', Boolean(project.archived));
+        }
+        renderBatchToolbar();
     }
 
     function renderNode(node, projectCreatedAt, filtering = false) {
@@ -4187,6 +4264,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
         row.appendChild(dateSpan);
         row.appendChild(actions);
+        if (batchState.active && node.type === 'item') {
+            const key = batchKey(getCurrentProject() ? getCurrentProject().id : '', node.id);
+            li.classList.add('batch-mode');
+            if (batchState.selected.has(key)) li.classList.add('batch-selected');
+        }
         li.appendChild(row);
         if (node.type !== 'item') {
             const childrenUl = document.createElement('ul');
@@ -4209,12 +4291,22 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             });
         } else {
             row.addEventListener('click', (e) => {
-                if (e.target.closest('.node-actions') || e.target.closest('.checkbox')) return;
+                if (e.target.closest('.node-actions')) return;
+                if (batchState.active) {
+                    e.stopPropagation();
+                    toggleBatchSelection(node, li);
+                    return;
+                }
+                if (e.target.closest('.checkbox')) return;
                 toggleNodeCompleted(node);
             });
         }
         checkbox.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (batchState.active) {
+                toggleBatchSelection(node, li);
+                return;
+            }
             toggleNodeCompleted(node);
         });
         checkbox.addEventListener('keydown', (e) => {
@@ -4263,6 +4355,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         if (due) badges.push({ text: due.text, className: `due-badge ${due.className}` });
         (node.tags || []).slice(0, 2).forEach(tag => badges.push({ text: `#${tag}`, className: 'tag-badge' }));
         if ((node.tags || []).length > 2) badges.push({ text: `+${node.tags.length - 2}`, className: 'tag-badge' });
+        const repeatText = describeRepeat(node.repeat);
+        if (repeatText) badges.push({ text: `↻ ${repeatText}`, className: 'repeat-badge' });
         const estimate = formatEstimate(node.estimateMinutes);
         if (estimate) badges.push({ text: estimate, className: 'estimate-badge' });
         if (node.note) badges.push({ text: '备注', className: 'note-badge', title: node.note.slice(0, 200) });
@@ -4293,6 +4387,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         node.tags = cleaned.tags;
         node.note = cleaned.note;
         node.links = cleaned.links;
+        node.repeat = cleaned.repeat;
         markProjectDirty(getCurrentProject());
     }
 
@@ -4366,6 +4461,58 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         });
         estimateField.appendChild(estimateShortcuts);
 
+        const repeatField = document.createElement('label');
+        repeatField.className = 'meta-field';
+        const repeatCaption = document.createElement('span');
+        repeatCaption.textContent = '周期';
+        const repeatSelect = document.createElement('select');
+        [['', '不重复'], ['daily', '每天'], ['weekday', '每个工作日'], ['weekly', '每周'], ['monthly', '每月']]
+            .forEach(([value, text]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                repeatSelect.appendChild(option);
+            });
+        repeatSelect.value = draft.repeat ? draft.repeat.freq : '';
+        const intervalInput = document.createElement('input');
+        intervalInput.type = 'number';
+        intervalInput.min = '1';
+        intervalInput.max = '365';
+        intervalInput.value = String((draft.repeat && draft.repeat.interval) || 1);
+        intervalInput.placeholder = '每几天';
+        const repeatHint = document.createElement('span');
+        repeatHint.className = 'utility-hint';
+        const updateRepeatHint = () => {
+            if (!repeatSelect.value) {
+                repeatHint.textContent = '设为周期后，完成后会自动生成下一次';
+                return;
+            }
+            const base = dueInput.value || todayStr();
+            const rule = repeatSelect.value === 'daily'
+                ? { freq: 'daily', interval: Math.max(1, Number(intervalInput.value) || 1) }
+                : repeatSelect.value === 'weekly'
+                    ? { freq: 'weekly', weekday: new Date(`${base}T00:00:00`).getDay() }
+                    : repeatSelect.value === 'monthly'
+                        ? { freq: 'monthly', day: new Date(`${base}T00:00:00`).getDate() }
+                        : { freq: 'weekday' };
+            const next = nextRepeatDue(rule, base);
+            repeatHint.textContent = next
+                ? `下一次：${next}（${describeRepeat(rule)}）`
+                : '按这个规则不会有下一次（已超过结束时间）';
+        };
+        repeatSelect.addEventListener('change', () => {
+            intervalInput.hidden = repeatSelect.value !== 'daily';
+            updateRepeatHint();
+        });
+        dueInput.addEventListener('change', updateRepeatHint);
+        intervalInput.hidden = repeatSelect.value !== 'daily';
+        intervalInput.addEventListener('input', updateRepeatHint);
+        const repeatRow = document.createElement('div');
+        repeatRow.className = 'meta-shortcuts';
+        repeatRow.append(intervalInput, repeatHint);
+        repeatField.append(repeatCaption, repeatSelect, repeatRow);
+        updateRepeatHint();
+
         const tagsInput = document.createElement('input');
         tagsInput.type = 'text';
         tagsInput.value = draft.tags.join(', ');
@@ -4431,6 +4578,17 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         save.textContent = '保存';
         save.addEventListener('click', () => {
             const tags = tagsInput.value.split(/[,，\s]+/).map(item => item.trim()).filter(Boolean);
+            const repeatBase = dueInput.value || todayStr();
+            let repeat = null;
+            if (repeatSelect.value === 'daily') {
+                repeat = { freq: 'daily', interval: Math.max(1, Number(intervalInput.value) || 1) };
+            } else if (repeatSelect.value === 'weekday') {
+                repeat = { freq: 'weekday' };
+            } else if (repeatSelect.value === 'weekly') {
+                repeat = { freq: 'weekly', weekday: new Date(`${repeatBase}T00:00:00`).getDay() };
+            } else if (repeatSelect.value === 'monthly') {
+                repeat = { freq: 'monthly', day: new Date(`${repeatBase}T00:00:00`).getDate() };
+            }
             try {
                 applyNodeMeta(node, {
                     priority: prioritySelect.value,
@@ -4439,6 +4597,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     tags,
                     note: noteInput.value,
                     links: draft.links.filter(link => String(link.url || '').trim()),
+                    repeat,
                 });
             } catch (error) {
                 showToast(error.message || '链接格式不正确');
@@ -4710,6 +4869,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     async function openProjectDetail(projectId) {
+        if (batchState.active) setBatchMode(false);
         await ensureProjectLoaded(projectId);
         showDetailView(projectId);
     }
@@ -4856,6 +5016,627 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         reviewQueueState = { dueItems: dueItems, futureItems: futureItems };
         renderReviewQueue();
         loadReviewCounts();
+    }
+
+    // ---------- 批次 4：周期任务 / 自然语言快速添加 / 提醒 ----------
+
+    const REPEAT_LABELS = { daily: '每天', weekday: '工作日', weekly: '每周', monthly: '每月' };
+    const WEEKDAY_NAMES = ['日', '一', '二', '三', '四', '五', '六'];
+
+    function cleanRepeat(value) {
+        if (!value || typeof value !== 'object') return null;
+        const freq = String(value.freq || '').trim().toLowerCase();
+        if (!['daily', 'weekday', 'weekly', 'monthly'].includes(freq)) return null;
+        const rule = { freq };
+        if (freq === 'weekly') {
+            const weekday = Number(value.weekday);
+            if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return null;
+            rule.weekday = weekday;
+        }
+        if (freq === 'monthly') {
+            const day = Number(value.day);
+            if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+            rule.day = day;
+        }
+        if (freq === 'daily') {
+            const interval = Number(value.interval);
+            rule.interval = Number.isInteger(interval) && interval >= 1 ? Math.min(365, interval) : 1;
+        }
+        const until = String(value.until || '').slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(until) && isValidIsoDate(until)) rule.until = until;
+        return rule;
+    }
+
+    function describeRepeat(rule) {
+        const cleaned = cleanRepeat(rule);
+        if (!cleaned) return '';
+        if (cleaned.freq === 'daily') return cleaned.interval > 1 ? `每 ${cleaned.interval} 天` : '每天';
+        if (cleaned.freq === 'weekday') return '每个工作日';
+        if (cleaned.freq === 'weekly') return `每周${WEEKDAY_NAMES[cleaned.weekday]}`;
+        return `每月 ${cleaned.day} 日`;
+    }
+
+    // 纯函数：按周期规则算下一次到期日（与服务端 storage.next_repeat_due 同规则）
+    function nextRepeatDue(rule, fromDate) {
+        const cleaned = cleanRepeat(rule);
+        if (!cleaned) return '';
+        const base = /^\d{4}-\d{2}-\d{2}$/.test(String(fromDate || '')) ? String(fromDate) : todayStr();
+        const start = new Date(`${base}T00:00:00`);
+        if (Number.isNaN(start.getTime())) return '';
+        let candidate = null;
+        if (cleaned.freq === 'daily') {
+            candidate = new Date(start.getTime());
+            candidate.setDate(candidate.getDate() + (cleaned.interval || 1));
+        } else if (cleaned.freq === 'weekday') {
+            candidate = new Date(start.getTime());
+            do { candidate.setDate(candidate.getDate() + 1); } while (candidate.getDay() === 0 || candidate.getDay() === 6);
+        } else if (cleaned.freq === 'weekly') {
+            candidate = new Date(start.getTime());
+            do { candidate.setDate(candidate.getDate() + 1); } while (candidate.getDay() !== cleaned.weekday);
+        } else {
+            const day = cleaned.day;
+            for (let step = 1; step <= 24 && !candidate; step += 1) {
+                const probe = new Date(start.getFullYear(), start.getMonth() + step, 1);
+                const lastDay = new Date(probe.getFullYear(), probe.getMonth() + 1, 0).getDate();
+                if (day <= lastDay) candidate = new Date(probe.getFullYear(), probe.getMonth(), day);
+            }
+        }
+        if (!candidate) return '';
+        const pad = value => String(value).padStart(2, '0');
+        const iso = `${candidate.getFullYear()}-${pad(candidate.getMonth() + 1)}-${pad(candidate.getDate())}`;
+        if (cleaned.until && iso > cleaned.until) return '';
+        return iso;
+    }
+
+    // 纯函数：把"明天复习 Python 装饰器 #Python !高 30分钟 @某项目 每天"解析成草稿
+    function parseQuickAdd(text, context) {
+        const source = String(text || '').trim();
+        const today = (context && context.today) || todayStr();
+        const projects = (context && context.projects) || [];
+        const matched = [];
+        const warnings = [];
+        const draft = {
+            text: '', dueDate: '', priority: '', tags: [], estimateMinutes: 0,
+            projectId: null, projectName: '', repeat: null, matched: [], warnings: [],
+        };
+        let rest = source;
+        const eat = (pattern, handler) => {
+            rest = rest.replace(pattern, (...args) => {
+                const result = handler(...args);
+                if (result === false) return args[0];
+                matched.push(args[0]);
+                return ' ';
+            });
+        };
+        // 优先级：!高 / !中 / !低 / !! / !!! / !1 !2 !3
+        eat(/!(高|中|低)/g, (all, level) => {
+            draft.priority = level === '高' ? 'high' : level === '中' ? 'mid' : 'low';
+        });
+        eat(/!(1|2|3)(?=\s|$)/g, (all, level) => {
+            draft.priority = ['high', 'mid', 'low'][Number(level) - 1];
+        });
+        eat(/(!{2,3})(?=\s|$)/g, all => {
+            draft.priority = all.length === 2 ? 'high' : 'mid';
+        });
+        // 标签 #tag（中英文都收）
+        eat(/#([^\s#@!]+)/g, (all, tag) => {
+            const cleaned = String(tag).trim().slice(0, MAX_TAG_CHARS);
+            if (cleaned && !draft.tags.includes(cleaned)) draft.tags.push(cleaned);
+        });
+        // 项目 @名称
+        eat(/@([^\s#@!]+)/g, (all, name) => {
+            const squeeze = value => String(value || '').toLowerCase().replace(/\s+/g, '');
+            const needle = squeeze(name);
+            const found = projects.find(entry => squeeze(entry.name) === needle)
+                || projects.find(entry => squeeze(entry.name).includes(needle));
+            if (!found) {
+                warnings.push(`没找到项目“${name}”，已留在标题里`);
+                return false;
+            }
+            draft.projectId = found.id;
+            draft.projectName = found.name;
+        });
+        // 周期
+        eat(/每(个)?工作日/g, () => { draft.repeat = cleanRepeat({ freq: 'weekday' }); });
+        eat(/每(天|日)/g, () => { if (!draft.repeat) draft.repeat = cleanRepeat({ freq: 'daily' }); });
+        eat(/每(周|星期|礼拜)([一二三四五六日天])/g, (all, _unit, dayName) => {
+            const index = '一二三四五六日天'.indexOf(dayName);
+            draft.repeat = cleanRepeat({ freq: 'weekly', weekday: index === 6 ? 0 : index + 1 });
+        });
+        eat(/每(个)?月(\d{1,2})[号日]/g, (all, _unit, day) => {
+            draft.repeat = cleanRepeat({ freq: 'monthly', day: Number(day) });
+        });
+        // 耗时：30分钟 / 2小时 / 1.5h / 90m
+        eat(/(\d+(?:\.\d+)?)\s*(小时|h|H)/g, (all, value) => {
+            draft.estimateMinutes = Math.round(Number(value) * 60);
+            if (!draft.estimateMinutes) return false;
+        });
+        eat(/(\d+)\s*(分钟|分|m|M)(?!\w)/g, (all, value) => {
+            draft.estimateMinutes = Number(value);
+        });
+        // 日期
+        eat(/(\d{4})-(\d{1,2})-(\d{1,2})/g, (all, year, month, day) => {
+            const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            if (!isValidIsoDate(iso)) return false;
+            draft.dueDate = iso;
+        });
+        eat(/(\d{1,2})月(\d{1,2})[日号]/g, (all, month, day) => {
+            const now = new Date(`${today}T00:00:00`);
+            let candidate = `${now.getFullYear()}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            if (!isValidIsoDate(candidate)) return false;
+            if (candidate < today) candidate = `${now.getFullYear() + 1}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            draft.dueDate = candidate;
+        });
+        eat(/(\d{1,2})-(\d{1,2})(?!\d)/g, (all, month, day) => {
+            const now = new Date(`${today}T00:00:00`);
+            let candidate = `${now.getFullYear()}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            if (!isValidIsoDate(candidate)) return false;
+            if (candidate < today) candidate = `${now.getFullYear() + 1}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            draft.dueDate = candidate;
+        });
+        eat(/(\d+)\s*天(后|之后)/g, (all, days) => {
+            draft.dueDate = addDaysToIso(today, Number(days));
+        });
+        eat(/大后天/g, () => { draft.dueDate = addDaysToIso(today, 3); });
+        eat(/后天/g, () => { draft.dueDate = addDaysToIso(today, 2); });
+        eat(/(明天|明日)/g, () => { draft.dueDate = addDaysToIso(today, 1); });
+        eat(/(今天|今日)/g, () => { draft.dueDate = today; });
+        // 周X / 下周X / 本周X
+        eat(/(下|本|这)?(周|星期|礼拜)([一二三四五六日天])/g, (all, prefix, _unit, dayName) => {
+            const index = '一二三四五六日天'.indexOf(dayName);
+            const target = index === 6 ? 0 : index + 1;
+            const baseDate = new Date(`${today}T00:00:00`);
+            const currentAdj = baseDate.getDay() === 0 ? 7 : baseDate.getDay();   // 周一=1 … 周日=7
+            const targetAdj = target === 0 ? 7 : target;
+            // 下周X = 下一个 ISO 周的 X；本周X/周X = 今天或之后最近的 X
+            const delta = prefix === '下'
+                ? (7 - currentAdj) + targetAdj
+                : ((targetAdj - currentAdj) + 7) % 7;
+            draft.dueDate = addDaysToIso(today, delta);
+        });
+        draft.text = rest.replace(/\s+/g, ' ').trim();
+        draft.matched = matched;
+        draft.warnings = warnings;
+        return draft;
+    }
+
+    function repeatSummary(rule) {
+        return describeRepeat(rule);
+    }
+
+    function findParentList(nodes, targetId, parent = null) {
+        for (const node of nodes || []) {
+            if (String(node.id) === String(targetId)) return parent || nodes;
+            const found = findParentList(node.children || [], targetId, node.children || []);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    function spawnNextOccurrence(project, node) {
+        const rule = cleanRepeat(node.repeat);
+        if (!rule) return null;
+        const nextDue = nextRepeatDue(rule, node.dueDate || todayStr());
+        if (!nextDue) return null;
+        const siblings = findParentList(project.tree || [], node.id);
+        if (!siblings) return null;
+        const clone = cloneData(node);
+        clone.id = generateId();
+        clone.completed = false;
+        clone.completedAt = null;
+        clone.dueDate = nextDue;
+        clone.assessment = null;
+        clone.assessmentHistory = 0;
+        delete clone.review;
+        clone.children = [];
+        siblings.push(clone);
+        return clone;
+    }
+
+    // ---------- 批次 3：归档 / 筛选视图 / 批量编辑 ----------
+
+    function batchKey(projectId, nodeId) {
+        return `${projectId}::${nodeId}`;
+    }
+
+    function toggleBatchSelection(node, li) {
+        const project = getCurrentProject();
+        if (!project) return;
+        const key = batchKey(project.id, node.id);
+        if (batchState.selected.has(key)) {
+            batchState.selected.delete(key);
+            li.classList.remove('batch-selected');
+        } else {
+            batchState.selected.add(key);
+            li.classList.add('batch-selected');
+        }
+        renderBatchToolbar();
+    }
+
+    function setBatchMode(active) {
+        batchState.active = Boolean(active);
+        if (!batchState.active) batchState.selected.clear();
+        batchToggleBtn.textContent = batchState.active ? '退出批量' : '批量选择';
+        batchToggleBtn.classList.toggle('active', batchState.active);
+        renderDetail();
+    }
+
+    function renderBatchToolbar() {
+        const toolbar = document.getElementById('batchToolbar');
+        if (!toolbar) return;
+        if (!batchState.active) {
+            toolbar.hidden = true;
+            toolbar.replaceChildren();
+            return;
+        }
+        toolbar.hidden = false;
+        toolbar.replaceChildren();
+        const count = document.createElement('span');
+        count.className = 'batch-count';
+        count.textContent = `已选 ${batchState.selected.size} 项`;
+        toolbar.appendChild(count);
+        const addButton = (label, handler, className = 'utility-secondary-btn') => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = className;
+            button.textContent = label;
+            button.addEventListener('click', handler);
+            toolbar.appendChild(button);
+            return button;
+        };
+        if (batchState.selected.size === 0) {
+            const hint = document.createElement('span');
+            hint.className = 'utility-hint';
+            hint.textContent = '点任务行选中；可一次设置优先级 / 标签 / 截止 / 完成 / 移动';
+            toolbar.appendChild(hint);
+            return;
+        }
+        addButton('高', () => runBatch('set-priority', 'high'), 'utility-secondary-btn batch-quick');
+        addButton('中', () => runBatch('set-priority', 'mid'), 'utility-secondary-btn batch-quick');
+        addButton('低', () => runBatch('set-priority', 'low'), 'utility-secondary-btn batch-quick');
+        addButton('清除优先级', () => runBatch('set-priority', ''));
+        addButton('加标签…', () => {
+            const input = window.prompt('要添加的标签（逗号分隔）：');
+            if (input === null) return;
+            runBatch('add-tags', input.split(/[,，\s]+/).filter(Boolean));
+        });
+        addButton('移标签…', () => {
+            const input = window.prompt('要移除的标签（逗号分隔）：');
+            if (input === null) return;
+            runBatch('remove-tags', input.split(/[,，\s]+/).filter(Boolean));
+        });
+        addButton('设截止…', () => {
+            const input = window.prompt('截止日期（YYYY-MM-DD，留空=清除）：', todayStr());
+            if (input === null) return;
+            runBatch('set-due', input.trim());
+        });
+        addButton('延期 +1 天', () => runBatch('shift-due', 1));
+        addButton('延期 +7 天', () => runBatch('shift-due', 7));
+        addButton('标为完成', () => {
+            if (!window.confirm(`确认把选中的 ${batchState.selected.size} 项标为完成？（需要 AI 验收的任务会被跳过）`)) return;
+            runBatch('complete', null);
+        }, 'utility-primary-btn');
+        addButton('取消完成', () => {
+            if (!window.confirm(`确认取消选中 ${batchState.selected.size} 项的完成状态？`)) return;
+            runBatch('uncomplete', null);
+        });
+        addButton('移动到项目…', openBatchMovePicker);
+        addButton('清除选择', () => {
+            batchState.selected.clear();
+            renderDetail();
+        });
+    }
+
+    function selectedTargets() {
+        return [...batchState.selected].map(key => {
+            const [projectId, nodeId] = key.split('::');
+            return { projectId, nodeId };
+        });
+    }
+
+    async function reloadProjectFromServer(projectId) {
+        const payload = await readStoredProject(projectId);
+        const project = normalizeProjects([payload.project])[0];
+        if (!project) return null;
+        project._revision = Math.max(0, Number(payload.revision) || 0);
+        const index = projects.findIndex(item => String(item.id) === String(projectId));
+        if (index >= 0) {
+            project.stats = projects[index].stats;
+            projects[index] = project;
+        }
+        savedProjectJsonById.set(String(projectId), JSON.stringify(serializeProject(project)));
+        dirtyProjectIds.delete(String(projectId));
+        return project;
+    }
+
+    async function runBatch(action, value) {
+        const targets = selectedTargets();
+        if (targets.length === 0) return;
+        const projectId = getCurrentProject() ? getCurrentProject().id : null;
+        try {
+            const response = await apiFetch('/api/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action, targets, value })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '批量修改失败，请重试');
+            if (Array.isArray(payload.projects)) {
+                for (const summary of payload.projects) {
+                    const index = projects.findIndex(item => String(item.id) === String(summary.id));
+                    if (index >= 0) projects[index].stats = summary.stats;
+                }
+            }
+            const failed = payload.failed || [];
+            const changed = Number(payload.changed) || 0;
+            batchState.selected.clear();
+            if (projectId) await reloadProjectFromServer(projectId);
+            renderDetail();
+            renderBatchToolbar();
+            if (failed.length > 0) {
+                showToast(`已修改 ${changed} 项，${failed.length} 项被跳过：${failed[0].error}`);
+            } else {
+                showToast(`已修改 ${changed} 项`);
+            }
+        } catch (error) {
+            showToast(error.message || '批量修改失败，请重试');
+        }
+    }
+
+    async function openBatchMovePicker() {
+        const targets = selectedTargets();
+        if (targets.length === 0) return;
+        const current = getCurrentProject();
+        if (!current) return;
+        showUtilityModal('批量移动', '移动到其他项目');
+        renderUtilityMessage('正在读取项目…');
+        let summaries = [];
+        try {
+            const response = await apiFetch('/api/projects', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取项目失败，请重试');
+            summaries = (payload.projects || []).filter(entry => String(entry.id) !== String(current.id) && !entry.archived);
+        } catch (error) {
+            renderUtilityMessage(error.message || '读取项目失败，请重试');
+            return;
+        }
+        if (summaries.length === 0) {
+            renderUtilityMessage('没有其他可移动到的项目');
+            return;
+        }
+        utilityBody.innerHTML = '';
+        const form = document.createElement('div');
+        form.className = 'meta-form';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = `把选中的 ${targets.length} 项移动到：`;
+        form.appendChild(hint);
+        const projectSelect = document.createElement('select');
+        summaries.forEach(entry => {
+            const option = document.createElement('option');
+            option.value = entry.id;
+            option.textContent = entry.name;
+            projectSelect.appendChild(option);
+        });
+        const parentSelect = document.createElement('select');
+        const projectField = document.createElement('label');
+        projectField.className = 'meta-field';
+        const projectCaption = document.createElement('span');
+        projectCaption.textContent = '目标项目';
+        projectField.append(projectCaption, projectSelect);
+        const parentField = document.createElement('label');
+        parentField.className = 'meta-field';
+        const parentCaption = document.createElement('span');
+        parentCaption.textContent = '放到哪一周 / 单元';
+        parentField.append(parentCaption, parentSelect);
+        form.append(projectField, parentField);
+        const loadParents = async () => {
+            parentSelect.replaceChildren();
+            try {
+                const project = await ensureProjectLoaded(projectSelect.value);
+                parentSelect.replaceChildren();
+                flattenParentOptions(project).forEach(entry => {
+                    const option = document.createElement('option');
+                    option.value = entry.id === null ? '' : String(entry.id);
+                    option.textContent = entry.label;
+                    parentSelect.appendChild(option);
+                });
+            } catch (error) {
+                parentSelect.replaceChildren();
+                const failed = document.createElement('option');
+                failed.textContent = '读取失败，请重试';
+                parentSelect.appendChild(failed);
+            }
+        };
+        projectSelect.addEventListener('change', loadParents);
+        await loadParents();
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.className = 'utility-primary-btn';
+        confirm.textContent = '确认移动';
+        confirm.addEventListener('click', async () => {
+            confirm.disabled = true;
+            const toProjectId = projectSelect.value;
+            const parentId = parentSelect.value || null;
+            let moved = 0;
+            const failures = [];
+            for (const target of targets) {
+                try {
+                    const response = await apiFetch('/api/inbox/move', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ nodeId: target.nodeId, fromProjectId: target.projectId,
+                                               toProjectId, parentId })
+                    });
+                    const payload = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(payload.error || '移动失败');
+                    moved += 1;
+                } catch (error) {
+                    failures.push(error.message || '移动失败');
+                }
+            }
+            batchState.selected.clear();
+            if (failures.length === 0) {
+                closeUtilityModal();
+                showToast(`已移动 ${moved} 项`);
+            } else {
+                showToast(`已移动 ${moved} 项，${failures.length} 项失败：${failures[0]}`);
+            }
+            try {
+                const response = await apiFetch('/api/projects', { cache: 'no-store' });
+                const payload = await response.json().catch(() => ({}));
+                if (Array.isArray(payload.projects)) projects = payload.projects.map(normalizeProjectSummary);
+            } catch (error) {
+                console.error('刷新项目列表失败', error);
+            }
+            savedProjectJsonById.clear();
+            if (moved > 0 && failures.length === 0) {
+                renderProjects();
+                await showProjectsView();
+            } else {
+                await reloadProjectFromServer(current.id);
+                renderDetail();
+                renderBatchToolbar();
+            }
+        });
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'utility-secondary-btn';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', closeUtilityModal);
+        actions.append(confirm, cancel);
+        form.appendChild(actions);
+        utilityBody.appendChild(form);
+    }
+
+    async function toggleProjectArchived(projectId) {
+        try {
+            const project = await ensureProjectLoaded(projectId);
+            project.archived = !project.archived;
+            markProjectDirty(project);
+            await saveProjects();
+            renderProjects();
+            if (currentProjectId && String(currentProjectId) === String(projectId)) {
+                projectArchiveBtn.textContent = project.archived ? '取消归档' : '归档';
+                projectArchiveBtn.classList.toggle('active', project.archived);
+            }
+            showToast(project.archived ? '已归档，默认列表不再显示（可用状态筛选查看）' : '已取消归档');
+        } catch (error) {
+            showToast(error.message || '归档失败，请重试');
+        }
+    }
+
+    async function loadSavedViews() {
+        try {
+            const response = await apiFetch('/api/views', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取筛选视图失败');
+            savedViews = payload.views || [];
+        } catch (error) {
+            savedViews = [];
+            console.warn('读取筛选视图失败', error);
+        }
+        renderViewChips();
+    }
+
+    function renderViewChips() {
+        if (!viewChips) return;
+        viewChips.replaceChildren();
+        if (savedViews.length === 0) {
+            const empty = document.createElement('span');
+            empty.className = 'view-empty';
+            empty.textContent = '还没有保存的视图：设置好筛选后点右侧保存';
+            viewChips.appendChild(empty);
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        savedViews.forEach(view => {
+            const chip = document.createElement('span');
+            chip.className = 'view-chip';
+            const apply = document.createElement('button');
+            apply.type = 'button';
+            apply.className = 'view-chip-apply';
+            apply.textContent = view.name;
+            apply.title = '应用这个筛选视图';
+            apply.addEventListener('click', () => applySavedView(view));
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'view-chip-remove';
+            remove.textContent = '×';
+            remove.title = `删除视图 ${view.name}`;
+            remove.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                if (!window.confirm(`确认删除筛选视图“${view.name}”？`)) return;
+                try {
+                    const response = await apiFetch(`/api/views?id=${encodeURIComponent(view.id)}`, { method: 'DELETE' });
+                    const payload = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(payload.error || '删除失败');
+                    savedViews = payload.views || [];
+                    renderViewChips();
+                    showToast('已删除视图');
+                } catch (error) {
+                    showToast(error.message || '删除视图失败，请重试');
+                }
+            });
+            chip.append(apply, remove);
+            fragment.appendChild(chip);
+        });
+        viewChips.appendChild(fragment);
+    }
+
+    function currentFilterSnapshot() {
+        return {
+            projectFilters: { query: projectFilters.query, status: projectFilters.status },
+            nodeFilters: {
+                query: nodeFilters.query, status: nodeFilters.status,
+                priority: nodeFilters.priority, due: nodeFilters.due, tag: nodeFilters.tag,
+            },
+        };
+    }
+
+    async function saveCurrentView() {
+        const suggested = projectFilters.query || nodeFilters.query || nodeFilters.tag || '我的筛选';
+        const name = window.prompt('给这个筛选视图起个名字：', suggested);
+        if (name === null || !name.trim()) return;
+        try {
+            const response = await apiFetch('/api/views', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name.trim(), payload: currentFilterSnapshot() })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '保存视图失败');
+            savedViews = payload.views || [];
+            renderViewChips();
+            showToast('已保存筛选视图');
+        } catch (error) {
+            showToast(error.message || '保存视图失败，请重试');
+        }
+    }
+
+    function applySavedView(view) {
+        const payload = view.payload || {};
+        const projectPart = payload.projectFilters || {};
+        const nodePart = payload.nodeFilters || {};
+        projectFilters.query = String(projectPart.query || '');
+        projectFilters.status = String(projectPart.status || 'all');
+        nodeFilters.query = String(nodePart.query || '');
+        nodeFilters.status = String(nodePart.status || 'all');
+        nodeFilters.priority = String(nodePart.priority || 'all');
+        nodeFilters.due = String(nodePart.due || 'all');
+        nodeFilters.tag = String(nodePart.tag || '');
+        projectSearchInput.value = projectFilters.query;
+        projectStatusFilter.value = projectFilters.status;
+        nodeSearchInput.value = nodeFilters.query;
+        nodeStatusFilter.value = nodeFilters.status;
+        nodePriorityFilter.value = nodeFilters.priority;
+        nodeDueFilter.value = nodeFilters.due;
+        nodeTagFilter.value = nodeFilters.tag;
+        renderProjects();
+        if (currentProjectId) renderDetail();
+        showToast(`已应用视图：${view.name}`);
     }
 
     // ---------- 批次 2：今日工作台 / 收集箱 / 最近入口 ----------
@@ -5059,31 +5840,298 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
     }
 
+    async function submitQuickAdd(node, projectId, parentId) {
+        const response = await apiFetch('/api/inbox/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ node, projectId: projectId || undefined, parentId: parentId || undefined })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '添加任务失败，请重试');
+        return payload;
+    }
+
     async function quickAddToInbox() {
-        const text = quickAddInput.value.trim();
-        if (!text) {
+        const raw = quickAddInput.value.trim();
+        if (!raw) {
             quickAddInput.focus();
             return;
         }
-        quickAddBtn.disabled = true;
-        try {
-            const response = await apiFetch('/api/inbox/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ node: { text } })
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '加入收集箱失败，请重试');
-            quickAddInput.value = '';
-            showToast('已加入收集箱');
-            await loadProjects();
-            showWorkbench();
-        } catch (error) {
-            showToast(error.message || '加入收集箱失败，请重试');
-        } finally {
-            quickAddBtn.disabled = false;
-            quickAddInput.focus();
+        const parsed = parseQuickAdd(raw, { today: todayStr(), projects });
+        const hasMeta = Boolean(parsed.dueDate || parsed.priority || parsed.tags.length || parsed.estimateMinutes
+            || parsed.projectId || parsed.repeat);
+        if (!hasMeta) {
+            // 没解析出任何信息：保持"一句话快速记录"的最短路径，不弹预览
+            quickAddBtn.disabled = true;
+            try {
+                await submitQuickAdd({ text: parsed.text || raw }, '');
+                quickAddInput.value = '';
+                showToast('已加入收集箱');
+                await loadProjects();
+                showWorkbench();
+            } catch (error) {
+                showToast(error.message || '加入收集箱失败，请重试');
+            } finally {
+                quickAddBtn.disabled = false;
+                quickAddInput.focus();
+            }
+            return;
         }
+        openQuickAddPreview(raw, parsed);
+    }
+
+    function openQuickAddPreview(raw, parsed) {
+        showUtilityModal('确认添加', '解析结果预览');
+        utilityBody.innerHTML = '';
+        const form = document.createElement('div');
+        form.className = 'meta-form';
+        const hint = document.createElement('p');
+        hint.className = 'utility-hint';
+        hint.textContent = parsed.matched.length > 0
+            ? `原文：${raw}　识别到：${parsed.matched.join(' ')}`
+            : `原文：${raw}`;
+        form.appendChild(hint);
+        if (parsed.warnings.length > 0) {
+            const warn = document.createElement('p');
+            warn.className = 'utility-hint';
+            warn.textContent = parsed.warnings.join('；');
+            form.appendChild(warn);
+        }
+        const addField = (label, control) => {
+            const field = document.createElement('label');
+            field.className = 'meta-field';
+            const caption = document.createElement('span');
+            caption.textContent = label;
+            field.append(caption, control);
+            form.appendChild(field);
+            return field;
+        };
+        const textInput = document.createElement('input');
+        textInput.type = 'text';
+        textInput.value = parsed.text;
+        addField('任务内容', textInput);
+
+        const projectSelect = document.createElement('select');
+        const inboxOption = document.createElement('option');
+        inboxOption.value = '';
+        inboxOption.textContent = '收集箱（稍后归类）';
+        projectSelect.appendChild(inboxOption);
+        projects.filter(entry => !entry.archived).forEach(entry => {
+            const option = document.createElement('option');
+            option.value = entry.id;
+            option.textContent = entry.name;
+            projectSelect.appendChild(option);
+        });
+        projectSelect.value = parsed.projectId || '';
+        addField('放到', projectSelect);
+
+        const prioritySelect = document.createElement('select');
+        [['', '无'], ['high', '高'], ['mid', '中'], ['low', '低']].forEach(([value, label]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            prioritySelect.appendChild(option);
+        });
+        prioritySelect.value = parsed.priority;
+        addField('优先级', prioritySelect);
+
+        const dueInput = document.createElement('input');
+        dueInput.type = 'date';
+        dueInput.value = parsed.dueDate;
+        addField('截止日期', dueInput);
+
+        const tagsInput = document.createElement('input');
+        tagsInput.type = 'text';
+        tagsInput.value = parsed.tags.join(', ');
+        addField('标签', tagsInput);
+
+        const estimateInput = document.createElement('input');
+        estimateInput.type = 'number';
+        estimateInput.min = '0';
+        estimateInput.step = '5';
+        estimateInput.value = String(parsed.estimateMinutes || '');
+        addField('预计耗时（分钟）', estimateInput);
+
+        const repeatSelect = document.createElement('select');
+        [['', '不重复'], ['daily', '每天'], ['weekday', '每个工作日'], ['weekly', '每周'], ['monthly', '每月']]
+            .forEach(([value, label]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                repeatSelect.appendChild(option);
+            });
+        repeatSelect.value = parsed.repeat ? parsed.repeat.freq : '';
+        addField('周期', repeatSelect);
+
+        const actions = document.createElement('div');
+        actions.className = 'utility-actions';
+        const confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.className = 'utility-primary-btn';
+        confirm.textContent = '确认添加';
+        confirm.addEventListener('click', async () => {
+            confirm.disabled = true;
+            const base = dueInput.value || todayStr();
+            let repeat = null;
+            if (repeatSelect.value === 'daily') repeat = { freq: 'daily' };
+            else if (repeatSelect.value === 'weekday') repeat = { freq: 'weekday' };
+            else if (repeatSelect.value === 'weekly') repeat = { freq: 'weekly', weekday: new Date(`${base}T00:00:00`).getDay() };
+            else if (repeatSelect.value === 'monthly') repeat = { freq: 'monthly', day: new Date(`${base}T00:00:00`).getDate() };
+            try {
+                await submitQuickAdd({
+                    text: textInput.value.trim() || '未命名任务',
+                    priority: prioritySelect.value,
+                    dueDate: dueInput.value,
+                    tags: tagsInput.value.split(/[,，\s]+/).map(item => item.trim()).filter(Boolean),
+                    estimateMinutes: estimateInput.value,
+                    repeat,
+                }, projectSelect.value);
+                quickAddInput.value = '';
+                closeUtilityModal();
+                showToast(projectSelect.value ? '已添加到项目' : '已加入收集箱');
+                await loadProjects();
+                showWorkbench();
+            } catch (error) {
+                showToast(error.message || '添加失败，请重试');
+                confirm.disabled = false;
+            }
+        });
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'utility-secondary-btn';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', closeUtilityModal);
+        actions.append(confirm, cancel);
+        form.appendChild(actions);
+        utilityBody.appendChild(form);
+    }
+
+    // ---------- 提醒（只在页面打开时生效） ----------
+
+    const REMINDER_STORAGE_KEY = 'todo_list_reminders';
+
+    const reminderState = { enabled: false, timer: null, fired: new Set(), permission: 'default' };
+
+    function loadReminderSettings() {
+        try {
+            const raw = window.localStorage.getItem(REMINDER_STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                reminderState.enabled = Boolean(parsed.enabled);
+                reminderState.fired = new Set(Array.isArray(parsed.fired) ? parsed.fired.slice(-500) : []);
+            }
+        } catch (error) {
+            console.warn('读取提醒设置失败', error);
+        }
+        if (typeof Notification === 'function') reminderState.permission = Notification.permission;
+    }
+
+    function saveReminderSettings() {
+        try {
+            window.localStorage.setItem(REMINDER_STORAGE_KEY, JSON.stringify({
+                enabled: reminderState.enabled,
+                fired: [...reminderState.fired].slice(-500),
+            }));
+        } catch (error) {
+            console.warn('保存提醒设置失败', error);
+        }
+    }
+
+    function renderReminderStatus() {
+        if (!reminderStatus) return;
+        const parts = [];
+        parts.push(reminderState.enabled ? '提醒：已开启（每分钟检查一次）' : '提醒：已关闭');
+        if (reminderState.permission === 'granted') parts.push('浏览器通知：已允许');
+        else if (reminderState.permission === 'denied') parts.push('浏览器通知：已被浏览器拒绝');
+        else parts.push('浏览器通知：未授权');
+        parts.push('只在页面开着时生效');
+        reminderStatus.textContent = parts.join(' · ');
+        if (reminderToggleBtn) reminderToggleBtn.textContent = reminderState.enabled ? '关闭提醒' : '开启提醒';
+    }
+
+    async function checkReminders() {
+        if (!reminderState.enabled) return;
+        let board = null;
+        try {
+            const response = await apiFetch(`/api/workbench?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' });
+            board = await response.json().catch(() => null);
+            if (!response.ok || !board) return;
+        } catch (error) {
+            return; // 下一次检查再试
+        }
+        const groups = board.groups || {};
+        const pending = [];
+        [['overdue', '逾期'], ['today', '今天到期'], ['reviewToday', '待复习']].forEach(([key, label]) => {
+            (groups[key] || []).forEach(item => {
+                const fireKey = `${todayStr()}:${key}:${item.projectId}:${item.nodeId}`;
+                if (reminderState.fired.has(fireKey)) return;
+                reminderState.fired.add(fireKey);
+                pending.push({ label, item });
+            });
+        });
+        if (pending.length === 0) return;
+        saveReminderSettings();
+        const head = pending.slice(0, 3).map(entry => `${entry.label}：${entry.item.text}`).join('；');
+        showToast(`⏰ ${head}${pending.length > 3 ? ` 等 ${pending.length} 项` : ''}`);
+        if (reminderState.permission === 'granted' && typeof Notification === 'function') {
+            pending.slice(0, 3).forEach(entry => {
+                try {
+                    new Notification(`待办提醒 · ${entry.label}`, {
+                        body: entry.item.text,
+                        tag: `${entry.item.projectId}:${entry.item.nodeId}`,
+                    });
+                } catch (error) {
+                    // 通知失败不影响页内提醒
+                }
+            });
+        }
+    }
+
+    function startReminders() {
+        if (reminderState.timer) return;
+        reminderState.timer = window.setInterval(() => { checkReminders(); }, 60 * 1000);
+        window.setTimeout(() => { checkReminders(); }, 3000);
+    }
+
+    function stopReminders() {
+        if (reminderState.timer) {
+            window.clearInterval(reminderState.timer);
+            reminderState.timer = null;
+        }
+    }
+
+    async function toggleReminders() {
+        reminderState.enabled = !reminderState.enabled;
+        saveReminderSettings();
+        if (reminderState.enabled) {
+            startReminders();
+            if (typeof Notification === 'function' && Notification.permission === 'default') {
+                try {
+                    reminderState.permission = await Notification.requestPermission();
+                } catch (error) {
+                    reminderState.permission = Notification.permission;
+                }
+            }
+            showToast('提醒已开启（只在页面开着时生效）');
+        } else {
+            stopReminders();
+            showToast('提醒已关闭');
+        }
+        renderReminderStatus();
+    }
+
+    async function requestNotificationPermission() {
+        if (typeof Notification !== 'function') {
+            showToast('当前浏览器不支持系统通知，只能页内提醒');
+            return;
+        }
+        try {
+            reminderState.permission = await Notification.requestPermission();
+        } catch (error) {
+            reminderState.permission = Notification.permission;
+        }
+        renderReminderStatus();
+        showToast(reminderState.permission === 'granted' ? '已允许浏览器通知' : '浏览器通知未授权');
     }
 
     function flattenParentOptions(project) {
@@ -6382,6 +7430,23 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             nodeFilters.status = nodeStatusFilter.value;
             renderDetail();
         });
+        nodePriorityFilter.addEventListener('change', () => {
+            nodeFilters.priority = nodePriorityFilter.value;
+            renderDetail();
+        });
+        nodeDueFilter.addEventListener('change', () => {
+            nodeFilters.due = nodeDueFilter.value;
+            renderDetail();
+        });
+        nodeTagFilter.addEventListener('input', debounce(() => {
+            nodeFilters.tag = nodeTagFilter.value;
+            renderDetail();
+        }, SEARCH_DEBOUNCE_MS));
+        batchToggleBtn.addEventListener('click', () => setBatchMode(!batchState.active));
+        saveViewBtn.addEventListener('click', saveCurrentView);
+        projectArchiveBtn.addEventListener('click', () => {
+            if (currentProjectId) toggleProjectArchived(currentProjectId);
+        });
         exportBtn.addEventListener('click', exportBackup);
         downloadDatabaseBackupBtn.addEventListener('click', downloadDatabaseBackup);
         inspectDatabaseBackupBtn.addEventListener('click', inspectDatabaseBackupFromUi);
@@ -6481,6 +7546,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         openWorkbenchBtn.addEventListener('click', () => showWorkbench());
         openRecentBtn.addEventListener('click', () => showRecent());
         quickAddBtn.addEventListener('click', () => quickAddToInbox());
+        reminderToggleBtn.addEventListener('click', () => toggleReminders());
+        reminderPermissionBtn.addEventListener('click', () => requestNotificationPermission());
         quickAddInput.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 event.preventDefault();
@@ -6553,6 +7620,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         startServiceHeartbeat();
         checkStorageHealth();
         loadDatabaseBackups();
+        loadSavedViews();
+        loadReminderSettings();
+        renderReminderStatus();
+        if (reminderState.enabled) startReminders();
     }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);

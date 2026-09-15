@@ -58,8 +58,13 @@ migrate_legacy_state = storage_service.migrate_legacy_state
 ensure_schema = storage_service.ensure_schema
 ensure_inbox_project = storage_service.ensure_inbox_project
 add_inbox_item = storage_service.add_inbox_item
+add_project_item = storage_service.add_project_item
 move_node = storage_service.move_node
 touch_project_opened = storage_service.touch_project_opened
+list_saved_views = storage_service.list_saved_views
+save_saved_view = storage_service.save_saved_view
+delete_saved_view = storage_service.delete_saved_view
+batch_update_nodes = storage_service.batch_update_nodes
 workbench = storage_service.workbench
 recent_overview = storage_service.recent_overview
 SchemaVersionError = storage_service.SchemaVersionError
@@ -377,6 +382,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取项目失败：{error}"})
             return
+        if path == "/api/views":
+            try:
+                self.send_json(200, {"views": list_saved_views()})
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取筛选视图失败：{error}"})
+            return
         if path == "/api/workbench":
             try:
                 today = optional_iso_date(query_params(self).get("today", [""])[0])
@@ -511,7 +522,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
-                        "/api/inbox/add", "/api/inbox/move",
+                        "/api/inbox/add", "/api/inbox/move", "/api/views", "/api/batch",
                         "/api/background",
                         "/api/memo", "/api/memos/database-import",
                         "/api/trash",
@@ -612,11 +623,22 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 create_full_backup("before-import")
                 storage_service.replace_projects(projects, pre_backup=False)
                 self.send_json(200, {"ok": True, "projects": read_project_summaries()})
+            elif path == "/api/views":
+                saved = save_saved_view(payload.get("name"), payload.get("payload"))
+                self.send_json(200, {"ok": True, "view": saved, "views": list_saved_views()})
+            elif path == "/api/batch":
+                targets = payload.get("targets")
+                action = str(payload.get("action") or "")
+                result = batch_update_nodes(targets, action, payload.get("value"))
+                self.send_json(200, {"ok": True, **result})
             elif path == "/api/inbox/add":
                 node = payload.get("node")
                 if not isinstance(node, dict):
                     raise ValueError("任务格式不正确")
-                self.send_json(200, {"ok": True, **add_inbox_item(node)})
+                target = str(payload.get("projectId") or storage_service.INBOX_PROJECT_ID)
+                parent_id = payload.get("parentId")
+                self.send_json(200, {"ok": True, **add_project_item(
+                    target, node, str(parent_id) if parent_id else None)})
             elif path == "/api/inbox/move":
                 node_id = str(payload.get("nodeId") or "")
                 from_project = str(payload.get("fromProjectId") or storage_service.INBOX_PROJECT_ID)
@@ -720,7 +742,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
-        if path not in {"/api/project", "/api/background", "/api/memo", "/api/summary", "/api/summaries"}:
+        if path not in {"/api/project", "/api/background", "/api/memo", "/api/summary", "/api/summaries",
+                        "/api/views"}:
             self.send_json(404, {"error": "接口不存在"})
             return
         if not valid_session(self) or not allowed_origin(self.headers.get("Origin")):
@@ -730,6 +753,13 @@ class TodoHandler(SimpleHTTPRequestHandler):
         # 绝不把异常抛到 HTTP 层（那会变成"空回复"）。
         params = query_params(self)
         try:
+            if path == "/api/views":
+                view_id = required_param(params, "id")
+                if not delete_saved_view(view_id):
+                    self.send_json(404, {"error": "视图不存在"})
+                    return
+                self.send_json(200, {"ok": True, "views": list_saved_views()})
+                return
             if path == "/api/summary":
                 summary_id = required_param(params, "id")
                 if not summary_storage.delete_summary(summary_id):

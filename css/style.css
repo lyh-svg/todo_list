@@ -427,6 +427,49 @@ body {
     border-radius: var(--radius);
     box-shadow: var(--shadow);
 }
+.repeat-badge { border-color: #cfe3d8; background: #f1faf5; color: #2f7a55; }
+#reminderStatus { margin: 6px 0 0; }
+/* 筛选视图栏与批量编辑（批次 3） */
+.view-bar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    margin: 10px 0 12px; padding: 8px 10px;
+    border: 1px solid #e2e8f5; border-radius: 10px; background: #f8faff;
+}
+.view-bar-label { font-size: 12px; font-weight: 600; color: #52607a; }
+.view-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+.view-chip { display: inline-flex; align-items: stretch; border-radius: 999px; overflow: hidden; border: 1px solid #ccd8f0; }
+.view-chip-apply {
+    border: 0; background: #fff; color: #3a4a68; font-size: 12px; padding: 4px 10px; cursor: pointer;
+}
+.view-chip-apply:hover { background: #eef3ff; }
+.view-chip-remove {
+    border: 0; border-left: 1px solid #e2e8f5; background: #fff; color: #97a1b5;
+    font-size: 12px; padding: 4px 8px; cursor: pointer;
+}
+.view-chip-remove:hover { background: #fff0f0; color: #c0392b; }
+.view-empty { font-size: 12px; color: #97a1b5; }
+#saveViewBtn {
+    border: 1px solid #ccd8f0; background: #fff; color: var(--primary, #4d6ff0);
+    border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+}
+#saveViewBtn:hover { background: #eef3ff; }
+.batch-toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin: 10px 0; padding: 8px 10px;
+    border: 1px dashed #b9c8e8; border-radius: 10px; background: #f4f8ff;
+}
+.batch-toolbar[hidden] { display: none; }
+.batch-count { font-size: 12px; font-weight: 600; color: #3a4a68; margin-right: 4px; }
+.batch-toolbar button { min-height: 28px; padding: 3px 10px; font-size: 12px; }
+.batch-quick { min-width: 34px; }
+.node-row .batch-mode,
+.tree-node.batch-mode .checkbox { opacity: 0.35; }
+.tree-node.batch-selected > .node-row { background: #eaf1ff; box-shadow: inset 2px 0 0 var(--primary, #4d6ff0); }
+#batchToggleBtn.active, #projectArchiveBtn.active { border-color: var(--primary, #4d6ff0); color: var(--primary, #4d6ff0); }
+.archive-proj-btn {
+    border: 0; background: transparent; color: #7d8798; cursor: pointer; font-size: 13px; padding: 2px 4px;
+}
+.archive-proj-btn:hover { color: var(--primary, #4d6ff0); }
 /* 今日工作台快捷添加（批次 2） */
 .workbench-quick { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .workbench-quick input {
