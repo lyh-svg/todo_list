@@ -2962,7 +2962,11 @@ git commit -m "test(review): 第 1 周内容必须是 40 点且全部通过校�
 **Files:**
 - Modify: `tests/test_browser_flows.py`（新增 `test_07c_review_session_flow`）
 - Create: `scripts/benchmark_review.py`
-- Modify: `scripts/check.sh`（把基准脚本纳入第 4 步的可选输出）
+- Modify: `scripts/verify-tests-catch.py`（**范围修订**：新增内容/接口后，两条反向验证的替换锚点失配会让第 8 步变红，需同步锚点；12 条用例数量与强度不得减少）
+- Modify: `tests/frontend/dom-smoke.js`（**范围修订**：重复键导致 eslint 报错，第 3 步会红，需去重）
+- Modify: `local_server.py` + `review_storage.py`（**范围修订**：`main()` 从未调用 `ensure_content_imported()`，新库复习库为空——规格 §9 要求"启动时按 code 幂等导入"，故补 `ensure_review_content_ready()` 并在启动时调用，失败不阻断服务）
+- Modify: `tests/test_review_http.py`（**范围修订**：为上面的启动导入补测试）
+- ~~Modify: `scripts/check.sh`~~（不把 10k 基准塞进 check.sh：太重；基准作为手动脚本，数字记在报告里）
 
 **Interfaces:**
 - Consumes: 全部前置任务
