@@ -3339,15 +3339,24 @@ let knowledgePoints = [];
             });
         };
 
-        // 导入请求体：除了 projects/mode/keepAiHistory，还要把导出文件里的 review 快照原样
-        // 转发给后端（/api/import 会把它 upsert 进 5 张复习表，只增不删）。旧备份没有这个键时
-        // 不添加该字段，后端 payload.get("review") 为 None → 原样跳过，保持向后兼容。
+        // 预览与确认导入共用的基础请求体（projects/mode/keepAiHistory）。
+        const baseImportBody = () => ({
+            projects: nextProjects.map(serializeProject),
+            mode: state.mode,
+            keepAiHistory: state.keepAiHistory,
+        });
+
+        // 预览请求体**不带** review 快照：/api/import/preview 走 5MiB 小限额分支
+        // （/api/import 才是 110MiB），且后端并不消费 review。projects 本来就接近上限时，
+        // 多出来的 attempts/verdict 体积会把预览打成 413，前端随即禁用「确认导入」
+        // → 整条 UI 导入路径不可用。review 只在确认导入时发送。
+        const previewRequestBody = () => JSON.stringify(baseImportBody());
+
+        // 确认导入请求体：额外把导出文件里的 review 快照原样转发给后端（/api/import 会把它
+        // upsert 进 5 张复习表，只增不删）。旧备份没有这个键时不添加该字段，后端
+        // payload.get("review") 为 None → 原样跳过，保持向后兼容。
         const importRequestBody = () => {
-            const body = {
-                projects: nextProjects.map(serializeProject),
-                mode: state.mode,
-                keepAiHistory: state.keepAiHistory,
-            };
+            const body = baseImportBody();
             if (pendingImportReview !== undefined) body.review = pendingImportReview;
             return JSON.stringify(body);
         };
@@ -3362,7 +3371,7 @@ let knowledgePoints = [];
                 const response = await apiFetch('/api/import/preview', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: importRequestBody(),
+                    body: previewRequestBody(),
                 });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(payload.error || '预览失败');

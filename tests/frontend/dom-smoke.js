@@ -313,6 +313,9 @@ const reviewAnswerBodies = [];
 const reviewAiGradeBodies = [];
 // 记录 /api/import 的请求体：断言导出文件里的 review 快照被原样转发（旧备份不能凭空多出该键）。
 const importBodies = [];
+// 记录 /api/import/preview 的请求体：预览走 5MiB 小限额分支且后端不消费 review，
+// 带上它会在大 projects 上直接 413 → 确认按钮被禁用；这里断言它一定不含该键。
+const previewBodies = [];
 // 模拟"没配置 AI key"：置 true 后 /api/review/ai-grade 返回 503（走 toast 分支）。
 let aiGradeUnavailable = false;
 // null 表示用默认的「还有缺漏」verdict；测试用它切换 correct:true / 空 verdict 两个分支。
@@ -349,17 +352,22 @@ async function fetchStub(url, options = {}) {
         backups: [{ name: 'manual-20260915T000000000000.zip', kind: 'full', bytes: 2048,
                     modifiedAt: '2026-09-15T00:00:00', valid: true }]
     });
-    if (path === '/api/import/preview') return reply(200, {
-        ok: true,
-        preview: {
-            mode: 'replace', keepAiHistory: true, duplicates: [],
-            newProjects: [{ id: 'imp-1', name: '导入的项目', itemCount: 1, completedCount: 0 }],
-            updatedProjects: [], unchangedProjects: [],
-            removedProjects: [{ id: 'old-1', name: '会被移除的项目' }],
-            totals: { addedNodes: 1, updatedNodes: 0, keptLocalOnlyNodes: 0, deletedNodes: 2 },
-            aiHistory: { nodesWithAssessment: 0, nodesWithReview: 0, policy: '保留' }
+    if (path === '/api/import/preview') {
+        if (options.body) {
+            try { previewBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
         }
-    });
+        return reply(200, {
+            ok: true,
+            preview: {
+                mode: 'replace', keepAiHistory: true, duplicates: [],
+                newProjects: [{ id: 'imp-1', name: '导入的项目', itemCount: 1, completedCount: 0 }],
+                updatedProjects: [], unchangedProjects: [],
+                removedProjects: [{ id: 'old-1', name: '会被移除的项目' }],
+                totals: { addedNodes: 1, updatedNodes: 0, keptLocalOnlyNodes: 0, deletedNodes: 2 },
+                aiHistory: { nodesWithAssessment: 0, nodesWithReview: 0, policy: '保留' }
+            }
+        });
+    }
     if (path === '/api/import') {
         if (options.body) {
             try { importBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
@@ -721,8 +729,10 @@ function step(name, fn) {
     elementsById.get('newProjectPlanToggle').checked = false;
 
     // ⑩ 导入 JSON（文件选择框 → 确认 → POST /api/import）
-    // 导出的备份里除了 projects 还带 5 张复习表的 review 快照；前端必须原样转发给 /api/import，
-    // 否则"导出 → 导入"在 UI 路径上会静默丢掉复习进度与作答历史。
+    // 导出的备份里除了 projects 还带 5 张复习表的 review 快照；确认导入必须原样转发给
+    // /api/import，否则"导出 → 导入"在 UI 路径上会静默丢掉复习进度与作答历史。
+    // 但预览（POST /api/import/preview）走 5MiB 小限额分支且后端不消费 review：
+    // 它必须保持"不带 review"，否则 projects 接近上限时预览直接 413 → 确认按钮被禁用。
     // 弹窗在 DOM 桩里 innerHTML='' 清不掉旧子节点（见 app.js 同款注释），第二次打开导入预览时
     // utilityBody 里会同时留着上一次的「确认导入」，必须点最后（最新）那一个。
     const clickImportConfirm = () => {
@@ -769,6 +779,11 @@ function step(name, fn) {
     step('点「确认导入」不抛异常', clickImportConfirm);
     await sleep(150);
     check('确认后才真正调用 /api/import', fetchLog.includes('POST /api/import'), JSON.stringify(fetchLog.slice(-4)));
+    check('预览请求体不带 review（/api/import/preview 走 5MiB 小限额且不消费它，带了会 413）',
+        previewBodies.length === 1 && !('review' in previewBodies[0])
+        && Array.isArray(previewBodies[0].projects) && previewBodies[0].projects.length === 1
+        && previewBodies[0].mode === 'replace',
+        JSON.stringify(previewBodies.slice(-1)).slice(0, 200));
     check('导入请求体带上备份里的 review 快照（points/states/attempts 都在）',
         importBodies.length === 1 && Boolean(importBodies[0].review)
         && Array.isArray(importBodies[0].review.points) && importBodies[0].review.points[0].code === 'py.imp.b'
@@ -778,17 +793,19 @@ function step(name, fn) {
     check('导入后列表显示导入的项目', textOf(elementsById.get('projectGrid')).includes('导入的项目'),
         textOf(elementsById.get('projectGrid')).slice(0, 160));
 
-    // 旧备份（没有 review 键）必须照常导入，且请求体里不能凭空多出 review。
+    // 旧备份（没有 review 键）必须照常导入，且预览/确认两条请求体里都不能凭空多出 review。
     const legacyPayload = { schemaVersion: 2, projects: importPayload.projects };
     elementsById.get('importInput').files = [{ name: 'legacy-backup.json', text: async () => JSON.stringify(legacyPayload) }];
     step('导入不含 review 的旧备份不抛异常', () => elementsById.get('importInput').dispatch('change'));
     await sleep(120);
     step('确认旧备份导入不抛异常', clickImportConfirm);
     await sleep(150);
-    check('不含 review 的旧备份仍能导入，且请求体里没有 review 键',
+    check('不含 review 的旧备份仍能导入，且预览/确认两条请求体里都没有 review 键',
         importBodies.length === 2 && !('review' in importBodies[1])
-        && Array.isArray(importBodies[1].projects) && importBodies[1].projects.length === 1,
-        `count=${importBodies.length} last=${JSON.stringify(importBodies.slice(-1)).slice(0, 160)}`);
+        && previewBodies.length === 2 && !('review' in previewBodies[1])
+        && Array.isArray(importBodies[1].projects) && importBodies[1].projects.length === 1
+        && Array.isArray(previewBodies[1].projects) && previewBodies[1].projects.length === 1,
+        `count=${importBodies.length}/${previewBodies.length} last=${JSON.stringify(importBodies.slice(-1)).slice(0, 160)}`);
 
     // ⑫ 复习页改版：顶栏「复习」先开复习页（按知识点分组 + 筛选），
     //     再点「开始今日复习」进会话；会话仍是一次一题 → 先回忆 → 揭示 → 5 档自评。
