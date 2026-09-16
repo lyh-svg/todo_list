@@ -1,4 +1,6 @@
 """复习接口的 HTTP 层测试（真起 ThreadingHTTPServer，只走 socket）。"""
+import contextlib
+import io
 import json
 import os
 import sys
@@ -9,6 +11,7 @@ from functools import partial
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 APP_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_DIR))
@@ -23,6 +26,7 @@ import review_storage  # noqa: E402
 import storage  # noqa: E402
 
 TODAY = "2026-09-16"
+MIN_POINTS = 40
 CONTENT_PATH = APP_DIR / "content" / "review" / "py-week1.json"
 MUTABLE_DEFAULT = "py.mutability.default-arg"
 
@@ -189,6 +193,54 @@ class ReviewHttpTests(unittest.TestCase):
             "gradeCounts": {"3": 1}, "durationMs": 1000})
         self.assertEqual(status, 400)
         self.assertFalse(payload.get("ok"))
+
+
+class ReviewBootstrapTests(unittest.TestCase):
+    """启动导入课程库：空库幂等播种；内容文件缺失/损坏不阻断启动（同一个临时库）。
+
+    这些用例原在 tests/test_review_bootstrap.py，复审要求并入清单内文件。
+    setUp 会清空知识点表，tearDown 负责恢复，避免影响同模块的 HTTP 用例。
+    """
+
+    def setUp(self) -> None:
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            connection.execute("DELETE FROM review_points")
+            connection.execute("DELETE FROM review_point_tasks")
+
+    def tearDown(self) -> None:
+        review_storage.ensure_content_imported()
+
+    def test_bootstrap_seeds_empty_database_and_is_idempotent(self) -> None:
+        self.assertEqual(review_storage.list_points()["total"], 0)
+        first = review_storage.ensure_review_content_ready()
+        self.assertGreater(first, 0)
+        total = review_storage.list_points()["total"]
+        self.assertGreaterEqual(total, MIN_POINTS)
+        second = review_storage.ensure_review_content_ready()
+        self.assertEqual(second, 0)
+        self.assertEqual(review_storage.list_points()["total"], total)
+
+    def test_missing_content_file_warns_and_returns_none(self) -> None:
+        missing = Path(_TEMP.name) / "no-such-content.json"
+        warning = io.StringIO()
+        with mock.patch.object(review_storage, "WEEK1_PATH", missing), \
+                contextlib.redirect_stderr(warning):
+            self.assertIsNone(review_storage.ensure_review_content_ready())
+        # 内容缺失 ≠ 已是最新：必须留下明确告警。
+        self.assertIn("内容文件不存在", warning.getvalue())
+        self.assertIn(str(missing), warning.getvalue())
+
+    def test_broken_content_file_returns_none_without_raising(self) -> None:
+        broken = Path(_TEMP.name) / "broken-content.json"
+        broken.write_bytes(b"{ not json")
+        with mock.patch.object(review_storage, "WEEK1_PATH", broken):
+            self.assertIsNone(review_storage.ensure_review_content_ready())
+
+    def test_main_wires_startup_bootstrap(self) -> None:
+        source = (APP_DIR / "local_server.py").read_text(encoding="utf-8")
+        main_body = source.split("def main() -> None:", 1)[1]
+        self.assertIn("ensure_review_content_ready()", main_body)
 
 
 if __name__ == "__main__":

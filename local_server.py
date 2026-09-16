@@ -1290,7 +1290,10 @@ def main() -> None:
         print(f"Auto archive skipped: {error}", file=sys.stderr)
     backup_service.create_daily_snapshot()
     review_count = review_storage.ensure_review_content_ready()
-    if review_count:
+    if review_count is None:
+        print("复习知识点未就绪：内置内容文件缺失或损坏（见上方告警），服务继续启动",
+              file=sys.stderr)
+    elif review_count:
         print(f"复习知识点就绪：新增/更新 {review_count} 个")
     else:
         print("复习知识点就绪：已是最新")

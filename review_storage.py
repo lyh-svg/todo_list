@@ -89,16 +89,21 @@ def ensure_content_imported() -> int:
     return result["inserted"] + result["updated"]
 
 
-def ensure_review_content_ready() -> int:
+def ensure_review_content_ready() -> int | None:
     """启动路径调用：按 code 幂等导入随仓库发布的课程库。
 
-    内容文件缺失或损坏时只打印告警，绝不阻断服务启动：复习库为空也能用。
+    返回本次导入/更新的条数：`0` 表示内容已是最新，`>0` 表示本次写入的条数。
+    内容文件缺失或损坏时打印明确告警并返回 `None`——绝不阻断服务启动（复习库为空也能用），
+    也不会把“内容缺失/损坏”谎报成“已是最新”。
     """
+    if not WEEK1_PATH.exists():
+        print(f"复习知识点导入失败：内容文件不存在：{WEEK1_PATH}", file=sys.stderr)
+        return None
     try:
         return ensure_content_imported()
     except Exception as error:  # noqa: BLE001 - 内容文件坏损不能拖垮启动
         print(f"复习知识点导入失败：{error}", file=sys.stderr)
-        return 0
+        return None
 
 
 def points_for_task(task_id: str) -> list[dict[str, Any]]:

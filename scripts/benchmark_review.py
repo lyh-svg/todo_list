@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""写锁基准：保存 1 万任务的同时答题，量复习写入是否会被项目保存拖住。
+"""写锁基准：保存大项目的同时答题，量「谁先持锁、另一方要等多久」。
 
-背景：`storage.write_project()`（整棵树写库）与 `review_storage.apply_grade()`（记一次作答）
-共用同一把 `storage.state_lock()`。这个基准就是在临时库上制造最坏情况——
-一边整棵树保存 1 万个任务，一边答题，量「答题要等多久才拿到写锁」。
+为什么重写口径（Task 16 复审）：旧版在 `thread.start()` 之后立刻 `write_project(...)`，
+没有任何同步保证保存先持锁；量到的 ~15ms 其实常常是「答题先抢到锁、保存根本没挡它」，
+不能拿来判断「答题要不要等保存」。现在改用一把带信号的锁包住 `storage` 的写锁：
+基准等到目标线程**真正拿到锁**再发起另一方，两种顺序都量——
 
-口径：
-- `answerWhileSavingMs` = 保存进行中发起的一次 `apply_grade()` 端到端耗时（5 轮的中位数）。
-  它包含"等保存让出写锁"的时间；因为它真正反映了用户点「确定」后要等多久，
-  所以这个值越高说明答题被项目保存拖得越久。
-- `fullSaveWithAnswerMs` = 同一次并发下整棵树保存本身的耗时（5 轮的中位数）。
-- `baseline` = 无并发的 10k 任务整棵树保存参考值（脚本内实测，不是抄来的常量）。
+- `answerWaitedForSaveMs`：保存先持锁 → 答题端到端耗时的中位数（含等写锁），
+  这才是"答题点确定后要等多久"的真实口径。
+- `saveWaitedForAnswerMs`：答题先持锁 → 保存端到端耗时的中位数（含等写锁），反向对照。
+- `fullSaveMs`：两个并发顺序下保存耗时合并后的中位数。
+- `baselineSaveMs`：同样这棵树、无并发时保存耗时的中位数。
 
-全部在 /tmp 临时库上跑，不碰 data/。
+每档 5 轮取中位数；默认跑 10000 节点（最坏情况）与 223 节点（真实项目规模）两档，
+两档都给同样四个数字。全部在 /tmp 临时库上跑，不碰 data/。
 
-    python3 scripts/benchmark_review.py
+    python3 scripts/benchmark_review.py                 # 10k + 223
+    python3 scripts/benchmark_review.py --tasks 10000    # 只跑一档
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import statistics
@@ -41,10 +44,43 @@ import storage  # noqa: E402
 
 TODAY = "2026-09-16"
 ROUNDS = 5
-TOTAL_TASKS = 10000
+DEFAULT_TASKS = [10000, 223]
+LOCK_WAIT_SECONDS = 30
+NOTE = (
+    "answerWaitedForSaveMs=保存先持锁时答题端到端耗时（含等写锁，答题真正要等保存多久）；"
+    "saveWaitedForAnswerMs=答题先持锁时保存端到端耗时（含等写锁，保存要等答题多久）；"
+    "fullSaveMs=两个并发顺序下保存耗时合并后的中位数；"
+    "baselineSaveMs=同规模无并发保存耗时中位数。每档 5 轮取中位数，单位 ms。"
+)
 
 
-def build_project(total: int) -> dict:
+class SignalledLock:
+    """包住 `storage` 的写锁：谁先真正持锁，就 set 一次 `entered`。
+
+    基准靠这个信号确定"谁先"，不再靠 sleep 猜。只作上下文管理器用，其余属性委托给内层锁。
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.entered = threading.Event()
+
+    def reset(self) -> None:
+        self.entered.clear()
+
+    def __enter__(self):
+        self._inner.acquire()
+        self.entered.set()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self._inner.release()
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def build_project(project_id: str, total: int) -> dict:
     """把 total 个任务铺成 周 → 单元 → 任务（与 benchmark_scale.py 同一形状）。
 
     注意：单元 id 必须带周号。brief 里的 `d{day_no}` 在第 2 周会与第 1 周撞 id，
@@ -69,79 +105,127 @@ def build_project(total: int) -> dict:
                              "completed": False, "expanded": False, "createdAt": TODAY, "children": items})
         weeks.append({"id": f"w{week_no}", "type": "week", "text": f"第{week_no}周",
                       "completed": False, "expanded": False, "createdAt": TODAY, "children": days})
-    return {"id": "bench", "name": "规模基准", "description": "", "createdAt": TODAY,
+    return {"id": project_id, "name": f"规模基准 {total}", "description": "", "createdAt": TODAY,
             "assessmentEnabled": False, "tree": weeks}
 
 
-def timed_save(project: dict, revision: int) -> tuple[float, int]:
-    start = time.perf_counter()
-    next_revision, _ = storage.write_project(project, revision)
-    return (time.perf_counter() - start) * 1000, next_revision
-
-
-def timed_answer(code: str, round_no: int, answer_ms: list[float], failure: list[BaseException],
-                 done: threading.Event) -> None:
-    """答题线程主体：量一次 apply_grade 的端到端耗时，异常带出去让主线程抛。
-
-    定义在模块级而不是循环内闭包：ruff B023（函数不绑定循环变量）会把它当成
-    "每轮共用一个 done/failure"的隐患——虽然这里每轮都会 join，但还是显式传参更清楚。
-    """
+def _run_save(project: dict, revision: int, samples: list[float], next_revision: list[int],
+              failure: list[BaseException]) -> None:
     start = time.perf_counter()
     try:
-        review_storage.apply_grade(code, "concept", 3, today=TODAY, answer=f"基准 {round_no}")
-    except BaseException as error:  # noqa: BLE001 - 线程里的异常必须带回主线程，否则会静默少一轮
+        new_revision, _ = storage.write_project(project, revision)
+        next_revision.append(new_revision)
+    except BaseException as error:  # noqa: BLE001 - 线程里的异常必须带回主线程
         failure.append(error)
     finally:
-        answer_ms.append((time.perf_counter() - start) * 1000)
+        samples.append((time.perf_counter() - start) * 1000)
+
+
+def _run_answer(code: str, answer: str, samples: list[float], failure: list[BaseException],
+                done: threading.Event) -> None:
+    start = time.perf_counter()
+    try:
+        review_storage.apply_grade(code, "concept", 3, today=TODAY, answer=answer)
+    except BaseException as error:  # noqa: BLE001 - 线程里的异常必须带回主线程
+        failure.append(error)
+    finally:
+        samples.append((time.perf_counter() - start) * 1000)
         done.set()
 
 
-def main() -> int:
-    storage.ensure_schema()
-    # 基准要答真实的题：先把内置第 1 周内容导入临时库（真实库只读，不被碰）。
-    review_storage.ensure_content_imported()
-    project = build_project(TOTAL_TASKS)
-    # 并发保存同一棵树要带乐观锁版本号；brief 里的 `write_project(project, None)`
-    # 只在首次插入合法，第二轮起就会撞 StateConflictError（实测，见 Task 16 报告）。
+def measure_scale(tasks: int, code: str, gate: SignalledLock, rounds: int) -> dict:
+    project = build_project(f"bench-{tasks}", tasks)
     revision, _ = storage.write_project(project, None)
-    code = review_storage.list_points()["points"][0]["code"]
 
-    # 基线：无并发时整棵树保存耗时，用来判断并发答题有没有把保存本身也拖慢。
-    baseline_samples = []
-    for _ in range(ROUNDS):
-        elapsed, revision = timed_save(project, revision)
-        baseline_samples.append(elapsed)
-    baseline_ms = statistics.median(baseline_samples)
+    baseline: list[float] = []
+    for _ in range(rounds):
+        start = time.perf_counter()
+        revision, _ = storage.write_project(project, revision)
+        baseline.append((time.perf_counter() - start) * 1000)
 
-    answer_ms, save_ms = [], []
-    for round_no in range(ROUNDS):
-        done = threading.Event()
+    answer_waited: list[float] = []
+    save_when_save_first: list[float] = []
+    save_waited: list[float] = []
+    for round_no in range(rounds):
+        # 顺序 A：保存线程先持锁，主线程再发起答题 —— 答题要等保存。
+        gate.reset()
+        save_samples: list[float] = []
+        next_revision: list[int] = []
         failure: list[BaseException] = []
-        thread = threading.Thread(target=timed_answer,
-                                 args=(code, round_no, answer_ms, failure, done))
-        thread.start()
-        save_start = time.perf_counter()
-        revision, _ = storage.write_project(project, revision)  # 10k 任务整棵树写入，与答题共用同一把写锁
-        save_ms.append((time.perf_counter() - save_start) * 1000)
-        done.wait(timeout=30)
-        thread.join(timeout=30)
+        saver = threading.Thread(target=_run_save,
+                                 args=(project, revision, save_samples, next_revision, failure))
+        saver.start()
+        if not gate.entered.wait(timeout=LOCK_WAIT_SECONDS):
+            raise RuntimeError(f"保存线程 {LOCK_WAIT_SECONDS}s 内没拿到写锁")
+        start = time.perf_counter()
+        review_storage.apply_grade(code, "concept", 3, today=TODAY, answer=f"基准 {tasks} 保存先 {round_no}")
+        answer_waited.append((time.perf_counter() - start) * 1000)
+        saver.join(timeout=LOCK_WAIT_SECONDS)
+        if saver.is_alive():
+            raise RuntimeError("保存线程 30 秒内没结束：可能被写锁死等")
         if failure:
             raise failure[0]
-        if thread.is_alive():
+        save_when_save_first.append(save_samples[0])
+        revision = next_revision[0]
+
+        # 顺序 B：答题线程先持锁，主线程再发起保存 —— 保存要等答题（反向对照）。
+        gate.reset()
+        answer_samples: list[float] = []
+        failure = []
+        done = threading.Event()
+        answerer = threading.Thread(target=_run_answer,
+                                    args=(code, f"基准 {tasks} 答题先 {round_no}",
+                                          answer_samples, failure, done))
+        answerer.start()
+        if not gate.entered.wait(timeout=LOCK_WAIT_SECONDS):
+            raise RuntimeError(f"答题线程 {LOCK_WAIT_SECONDS}s 内没拿到写锁")
+        save_start = time.perf_counter()
+        revision, _ = storage.write_project(project, revision)
+        save_waited.append((time.perf_counter() - save_start) * 1000)
+        done.wait(timeout=LOCK_WAIT_SECONDS)
+        answerer.join(timeout=LOCK_WAIT_SECONDS)
+        if failure:
+            raise failure[0]
+        if answerer.is_alive():
             raise RuntimeError("答题线程 30 秒内没结束：可能被写锁死等")
 
-    payload = {
-        "answerWhileSavingMs": round(statistics.median(answer_ms), 1),
-        "fullSaveWithAnswerMs": round(statistics.median(save_ms), 1),
-        "baseline": f"10k 任务整棵树保存（无并发）本次实测中位数 {round(baseline_ms, 1)}ms；"
-                    "对照 scripts/benchmark_scale.py 的 fullSaveMs",
-        "tasks": TOTAL_TASKS,
-        "rounds": ROUNDS,
-        "samples": {"answerMs": [round(value, 1) for value in answer_ms],
-                    "saveMs": [round(value, 1) for value in save_ms],
-                    "baselineMs": [round(value, 1) for value in baseline_samples]},
+    median = statistics.median
+    return {
+        "tasks": tasks,
+        "answerWaitedForSaveMs": round(median(answer_waited), 1),
+        "saveWaitedForAnswerMs": round(median(save_waited), 1),
+        "fullSaveMs": round(median(save_when_save_first + save_waited), 1),
+        "baselineSaveMs": round(median(baseline), 1),
+        "samples": {
+            "answerWaitedForSaveMs": [round(value, 1) for value in answer_waited],
+            "saveWhenSaveHeldFirstMs": [round(value, 1) for value in save_when_save_first],
+            "saveWaitedForAnswerMs": [round(value, 1) for value in save_waited],
+            "baselineSaveMs": [round(value, 1) for value in baseline],
+        },
     }
-    print(json.dumps(payload, ensure_ascii=False))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="复习写锁基准（两口径 + 多规模）")
+    parser.add_argument("--tasks", type=int, nargs="+", default=DEFAULT_TASKS,
+                        help=f"节点数档位，默认 {DEFAULT_TASKS}")
+    parser.add_argument("--rounds", type=int, default=ROUNDS, help=f"每档轮数，默认 {ROUNDS}")
+    args = parser.parse_args()
+
+    storage.ensure_schema()
+    # 基准要答真实的题：先把内置内容导入临时库（真实库只读，不被碰）。
+    review_storage.ensure_content_imported()
+    code = review_storage.list_points()["points"][0]["code"]
+
+    inner_lock = storage._database_lock
+    gate = SignalledLock(inner_lock)
+    storage._database_lock = gate
+    try:
+        runs = [measure_scale(tasks, code, gate, args.rounds) for tasks in args.tasks]
+    finally:
+        storage._database_lock = inner_lock
+
+    print(json.dumps({"note": NOTE, "rounds": args.rounds, "runs": runs}, ensure_ascii=False, indent=2))
     return 0
 
 

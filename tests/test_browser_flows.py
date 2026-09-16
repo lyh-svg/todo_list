@@ -32,6 +32,8 @@ except ImportError:  # pragma: no cover - 取决于开发机是否装了 playwri
 
 TOKEN = "browser-smoke-token"
 TODAY = "2026-09-15"
+MIN_POINTS = 40
+REVIEW_PROMPT_FALLBACK = "（这道题没有题面）"
 
 
 def free_port() -> int:
@@ -90,18 +92,6 @@ class ServerProcess:
     @property
     def base(self) -> str:
         return f"http://127.0.0.1:{self.port}"
-
-    def seed_builtin_review_content(self) -> None:
-        """把内置第 1 周复习内容导入这个临时库。
-
-        真实启动路径（local_server.main）目前只建 schema，不会调
-        `review_storage.ensure_content_imported()`；不先导入的话，知识点库与复习队列
-        在这个空临时库上都是空的，浏览器测试根本走不到会话。这里用一个子进程按同一套
-        TODO_* 环境变量导入——子进程继承 `self.env`，与真服务用的是同一个临时库，
-        真实 data/ 全程只读。
-        """
-        script = "import storage, review_storage; storage.ensure_schema(); review_storage.ensure_content_imported()"
-        subprocess.run([sys.executable, "-c", script], cwd=str(APP_DIR), env=self.env, check=True)
 
     def start(self) -> None:
         self.handle = self.log.open("wb")
@@ -195,8 +185,6 @@ class BrowserFlowTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory(prefix="todo-browser-")
         cls.workdir = Path(cls.tmp.name)
         cls.server = ServerProcess(cls.workdir)
-        # 复习会话流程（test_07c）要用内置知识点：先把内容导入临时库再起服务。
-        cls.server.seed_builtin_review_content()
         cls.server.start()
         # 缺系统 NSS/NSPR 时，scripts/browser-test.sh 会把 deb 解包到 .playwright-libs；
         # 这里自动带上它，这样直接跑 unittest 也能启动浏览器（不需要 sudo）。
@@ -452,6 +440,12 @@ class BrowserFlowTests(unittest.TestCase):
         if self.page.query_selector("#detailView.active"):
             self.page.click("#backBtn")
         self.page.wait_for_selector("#projectsView.active", timeout=15000)
+        # 真启动路径（local_server.main）必须把内置第 1 周内容导入临时库。这里不手工种内容，
+        # 直接断言接口返回的知识点非空——把 main() 里那行导入注释掉，这条用例就会失败。
+        status, points = self.server.api("/api/review/points?limit=1")
+        self.assertEqual(status, 200, points)
+        self.assertGreaterEqual(points["total"], MIN_POINTS,
+                                f"启动导入没生效：知识点 total={points['total']}，应为 {MIN_POINTS} 个内置点")
         self.open_more_tools()
         self.page.click("#openKnowledgeBtn")
         self.page.wait_for_selector("#knowledgeView.active", timeout=15000)
@@ -464,6 +458,8 @@ class BrowserFlowTests(unittest.TestCase):
         self.page.wait_for_selector("#reviewSessionView.active", timeout=15000)
         prompt = self.page.inner_text("#reviewQuestionPrompt")
         self.assertTrue(prompt.strip(), "应该有题面")
+        self.assertNotEqual(prompt.strip(), REVIEW_PROMPT_FALLBACK,
+                            "题面不能是兜底文案——说明出题没用上真实内容")
         # 关键：还没点「看答案」时不能泄露答案。
         panel = self.page.query_selector("#reviewAnswerPanel")
         self.assertTrue(panel is None or not panel.is_visible(), "揭示前不该显示答案面板")
@@ -471,6 +467,8 @@ class BrowserFlowTests(unittest.TestCase):
         self.page.click("#reviewRevealBtn")
         self.page.wait_for_selector("#reviewAnswerPanel:not([hidden])", timeout=10000)
         self.assertIn("参考答案", self.page.inner_text("#reviewAnswerPanel"))
+        self.assertGreaterEqual(len(self.page.query_selector_all("#reviewAnswerPanel .expected-answer")), 1,
+                                "揭示后至少要渲染出一条参考答案（.expected-answer）")
         self.page.wait_for_selector("#reviewGradeButtons:not([hidden])", timeout=10000)
         self.page.click("#reviewGradeButtons .review-grade-btn[data-grade='4']")
         self.page.wait_for_selector("#reviewSessionSummary:not([hidden])", timeout=15000)
