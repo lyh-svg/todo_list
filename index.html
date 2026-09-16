@@ -226,6 +226,23 @@
 <span class="review-subline" id="reviewSubline"></span>
 </div>
 </div>
+<div class="review-toolbar">
+<button type="button" id="startReviewSessionBtn" class="utility-primary-btn">开始今日复习</button>
+<select id="reviewTypeFilter" class="filter-select">
+<option value="">全部题型</option>
+<option value="concept">概念题</option>
+<option value="predict">代码预测题</option>
+<option value="debug">错误排查题</option>
+<option value="code_task">实际编程题</option>
+</select>
+<select id="reviewModuleFilter" class="filter-select"><option value="">全部模块</option></select>
+<select id="reviewScopeFilter" class="filter-select">
+<option value="">全部</option>
+<option value="overdue">只看已逾期</option>
+<option value="weak">只看薄弱点</option>
+<option value="new">只看新知识点</option>
+</select>
+</div>
 <div class="review-body" id="reviewBody"></div>
 </div>
 <div class="view" id="reviewSessionView">

@@ -2255,6 +2255,30 @@ body.modal-open { overflow: hidden; }
 #reviewView .review-heading h2 { font-size: 20px; color: var(--text); }
 .review-subline,
 #reviewView .review-subline { color: var(--text-light); font-size: 12px; }
+/* 复习页工具栏：开始今日复习 + 题型/模块/范围筛选 */
+.review-toolbar,
+#reviewView .review-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    max-width: 980px;
+    margin: 0 auto;
+    width: 100%;
+    padding: 0 22px 6px;
+}
+.review-toolbar .filter-select,
+#reviewView .filter-select {
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--text);
+    max-width: 180px;
+}
+.review-toolbar .utility-primary-btn { font-size: 12px; padding: 6px 14px; }
 .review-body {
     max-width: 980px;
     margin: 0 auto;

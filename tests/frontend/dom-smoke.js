@@ -254,6 +254,8 @@ const workbenchFixture = {
     totals: { overdue: 0, today: 1, next7: 0, reviewToday: 0, inbox: 0 },
 };
 const fetchLog = [];
+// 记录完整请求 URL：Task 11 的题型/模块筛选要断言查询参数真的带去后端了。
+const fetchUrls = [];
 // 记录整项目保存的请求体：用来断言「保存时不能出现重复节点 ID」这类数据完整性不变量
 const projectPostBodies = [];
 // 记录复习自评的请求体：断言"点第 3 个按钮 = 档位 3"，而不是只断言"发过这个请求"。
@@ -261,6 +263,7 @@ const reviewAnswerBodies = [];
 async function fetchStub(url, options = {}) {
     const path = String(url).split('?')[0];
     fetchLog.push(`${options.method || 'GET'} ${path}`);
+    fetchUrls.push(String(url));
     const reply = (status, payload) => ({
         ok: status >= 200 && status < 300, status,
         headers: new HeadersStub({ 'Content-Type': 'application/json' }),
@@ -324,12 +327,16 @@ async function fetchStub(url, options = {}) {
     if (path === '/api/review/queue') return reply(200, { items: [{ code: 'py.a.b', title: '示例知识点',
         minutes: 10, module: '容器', level: '基础', questionType: 'predict',
         prompt: '写出下面代码的输出', body: 'def add(a, b):\n    return a + b\n\nprint(add(1, 2))',
-        reason: 'today', due: today, taskId: '1103', projectId: 'p1' },
+        reason: 'overdue', due: '2026-09-01', taskId: '1103', projectId: 'p1' },
         { code: 'py.a.c', title: '示例知识点二',
         minutes: 10, module: '容器', level: '基础', questionType: 'debug',
         prompt: '找出下面代码的问题', body: 'def total(items=[]):\n    items.append(1)\n    return items',
         reason: 'today', due: today, taskId: '1104', projectId: 'p1' }],
         total: 2, truncated: false, limit: 10 });
+    // 任务级到期（旧的 review_due 数据）仍走 /api/reviews：复习页要把它单独成组渲染出来。
+    if (path === '/api/reviews') return reply(200, { due: [{ projectId: 'p1', projectName: '测试项目',
+        ancestorIds: ['w1', 'd1'], path: '第1周 / 单元1', nodeId: 'i1', text: '任务一', due: today,
+        learning: false }], future: [], truncated: false, limit: 50 });
     if (path === '/api/review/reveal') {
         // 按请求的题型返回对应的揭示内容：predict 和 debug 的题面代码不一样，
         // 桩里写死一份会让"第二题"的断言失去意义。
@@ -354,8 +361,10 @@ async function fetchStub(url, options = {}) {
     }
     if (path === '/api/review/session') return reply(200, { ok: true, sessionId: 's-review-1' });
     if (path === '/api/review/points') return reply(200, { points: [{ code: 'py.a.b', title: '示例知识点',
-        minutes: 10, module: '容器', level: '基础', origin: 'builtin', due: today, weak: true, lastGrade: 3,
-        pitfalls: ['可变默认参数'] }], total: 1, limit: 200, offset: 0 });
+        minutes: 10, module: '容器', level: '基础', origin: 'builtin', due: today, weak: true, lastGrade: 2,
+        pitfalls: ['可变默认参数'] },
+        { code: 'py.a.d', title: '已掌握的知识点', minutes: 8, module: '函数', level: '进阶', origin: 'builtin',
+        due: '2026-10-01', weak: false, lastGrade: 5, pitfalls: [] }], total: 2, limit: 500, offset: 0 });
     if (path === '/api/review/history') return reply(200, { code: 'py.a.b', title: '示例知识点',
         module: '容器', level: '基础', minutes: 10, pitfalls: [], attempts: [], state: null });
     if (path === '/api/memos') return reply(200, { memos: [], databaseBytes: 0 });
@@ -622,8 +631,70 @@ function step(name, fn) {
     check('导入后列表显示导入的项目', textOf(elementsById.get('projectGrid')).includes('导入的项目'),
         textOf(elementsById.get('projectGrid')).slice(0, 160));
 
-    // ⑫ 复习会话：一次一题 → 先回忆 → 揭示 → 5 档自评（揭示前 DOM 里不能有答案）
-    step('点击「开始复习」不抛异常', () => elementsById.get('reviewQueueBtn').dispatch('click'));
+    // ⑫ 复习页改版：顶栏「复习」先开复习页（按知识点分组 + 筛选），
+    //     再点「开始今日复习」进会话；会话仍是一次一题 → 先回忆 → 揭示 → 5 档自评。
+    step('点击「复习」打开复习页不抛异常', () => elementsById.get('reviewQueueBtn').dispatch('click'));
+    await sleep(120);
+    check('顶栏「复习」先进复习页（不再直接进会话）',
+        activeViews().includes('reviewView') && !activeViews().includes('reviewSessionView'),
+        JSON.stringify(activeViews()));
+    const reviewPageText = textOf(elementsById.get('reviewBody'));
+    check('复习页主体按知识点分组（今日必须复习 + 已逾期）',
+        reviewPageText.includes('今日必须复习') && reviewPageText.includes('已逾期'),
+        reviewPageText.slice(0, 240));
+    check('任务级到期单独成组（保留旧 /api/reviews 数据）',
+        reviewPageText.includes('任务级到期') && reviewPageText.includes('任务一'),
+        reviewPageText.slice(0, 240));
+    check('最近答错/最近掌握按 lastGrade 分组',
+        reviewPageText.includes('最近答错') && reviewPageText.includes('最近掌握')
+        && reviewPageText.includes('已掌握的知识点'),
+        reviewPageText.slice(0, 300));
+    const typeFilter = elementsById.get('reviewTypeFilter');
+    const moduleFilter = elementsById.get('reviewModuleFilter');
+    const scopeFilter = elementsById.get('reviewScopeFilter');
+    check('复习页有题型/模块/范围筛选与「开始今日复习」按钮',
+        Boolean(typeFilter) && Boolean(moduleFilter) && Boolean(scopeFilter)
+        && Boolean(elementsById.get('startReviewSessionBtn')));
+    check('模块下拉由知识点数据填充',
+        moduleFilter ? findAll(moduleFilter, el => el._tag === 'option').length >= 3 : false,
+        textOf(moduleFilter));
+    const queueFetchesBefore = fetchUrls.filter(u => u.includes('/api/review/queue')).length;
+    step('切换题型筛选不抛异常', () => {
+        typeFilter.value = 'concept';
+        typeFilter.dispatch('change');
+    });
+    await sleep(120);
+    check('题型筛选变化后带 type 重新拉取队列',
+        fetchUrls.filter(u => u.includes('/api/review/queue')).length > queueFetchesBefore
+        && fetchUrls.some(u => u.includes('/api/review/queue') && u.includes('type=concept')),
+        JSON.stringify(fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-3)));
+    step('切换模块筛选不抛异常', () => {
+        moduleFilter.value = '函数';
+        moduleFilter.dispatch('change');
+    });
+    await sleep(120);
+    check('模块筛选变化后带 module 重新拉取队列',
+        fetchUrls.some(u => u.includes('/api/review/queue') && u.includes('module=%E5%87%BD%E6%95%B0')),
+        JSON.stringify(fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-3)));
+    step('切换范围筛选不抛异常', () => {
+        scopeFilter.value = 'overdue';
+        scopeFilter.dispatch('change');
+    });
+    await sleep(60);
+    check('范围筛选只保留已逾期分组（前端过滤）',
+        textOf(elementsById.get('reviewBody')).includes('已逾期')
+        && !textOf(elementsById.get('reviewBody')).includes('今日必须复习'),
+        textOf(elementsById.get('reviewBody')).slice(0, 200));
+    step('复位范围筛选不抛异常', () => {
+        scopeFilter.value = '';
+        scopeFilter.dispatch('change');
+    });
+    await sleep(60);
+    check('复位范围筛选后分组恢复',
+        textOf(elementsById.get('reviewBody')).includes('今日必须复习'),
+        textOf(elementsById.get('reviewBody')).slice(0, 200));
+    step('点「开始今日复习」进会话不抛异常',
+        () => elementsById.get('startReviewSessionBtn').dispatch('click'));
     await sleep(120);
     check('复习会话视图打开', activeViews().includes('reviewSessionView'), JSON.stringify(activeViews()));
     const promptEl = elementsById.get('reviewQuestionPrompt');
@@ -649,7 +720,7 @@ function step(name, fn) {
     const sessionStartsBefore = fetchLog.filter(line => line === 'POST /api/review/session').length;
     step('「退出」复习会话不抛异常', () => elementsById.get('reviewSessionExitBtn').dispatch('click'));
     await sleep(80);
-    step('再次点「开始复习」不抛异常', () => elementsById.get('reviewQueueBtn').dispatch('click'));
+    step('再次点「开始今日复习」不抛异常', () => elementsById.get('startReviewSessionBtn').dispatch('click'));
     await sleep(80);
     check('再次开始复习恢复了上次未提交的回忆内容',
         elementsById.get('reviewAnswerInput').value === '我写的回忆',

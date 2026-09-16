@@ -2,6 +2,7 @@
 const fs = require('fs');
 const ROOT = require('path').resolve(__dirname, '..', '..');
 const src = fs.readFileSync(ROOT + '/js/app.js', 'utf8');
+const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
 function extract(name) {
     const at = src.indexOf(`    function ${name}(`);
     if (at < 0) throw new Error('找不到 ' + name);
@@ -98,6 +99,14 @@ check('⑥ 保存完成后解除守卫', src.includes('if (!savePending()) disar
 
 check('⑦ 读列表带浏览器本地日期', src.includes('`/api/projects?today=${encodeURIComponent(todayStr())}`'));
 check('⑦ 时区不一致会提示一次', src.includes('stored.serverToday !== todayStr() && !timezoneWarned'));
+
+// —— 第七批 Task 11：复习页改版（知识点分组 + 题型/模块筛选 + 任务级到期单独成组）——
+check('复习页：主体分组改为知识点（今日必须复习/已逾期/薄弱/最近答错/最近掌握）',
+    /今日必须复习[\s\S]{0,400}已逾期[\s\S]{0,400}薄弱知识点[\s\S]{0,400}最近答错[\s\S]{0,400}最近掌握/.test(src));
+check('复习页：任务级到期单独成组（保留旧 review_due 数据）',
+    /任务级到期[\s\S]{0,300}\/api\/reviews/.test(src));
+check('复习页：支持题型与 Python 模块筛选',
+    /reviewTypeFilter|reviewModuleFilter/.test(src) && /id="reviewTypeFilter"/.test(html));
 
 const failed = results.filter(r => !r).length;
 console.log(`\n   通过 ${results.length - failed} 项，失败 ${failed} 项`);

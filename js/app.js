@@ -31,6 +31,11 @@ const reviewView = document.getElementById('reviewView');
 const reviewBackBtn = document.getElementById('reviewBackBtn');
 const reviewBody = document.getElementById('reviewBody');
 const reviewSubline = document.getElementById('reviewSubline');
+// 第七批 Task 11：复习页工具栏（开始今日复习 + 题型/模块/范围筛选）
+const startReviewSessionBtn = document.getElementById('startReviewSessionBtn');
+const reviewTypeFilter = document.getElementById('reviewTypeFilter');
+const reviewModuleFilter = document.getElementById('reviewModuleFilter');
+const reviewScopeFilter = document.getElementById('reviewScopeFilter');
 const projectReviewToggle = document.getElementById('projectReviewToggle');
 // 第七批：复习会话视图（一次一题、先回忆后揭示、五档自评）
 const reviewSessionView = document.getElementById('reviewSessionView');
@@ -6284,7 +6289,12 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             && probe.getDate() === parts[2];
     }
 
-    let reviewQueueState = { dueItems: [], futureItems: [] };
+    // 复习页状态（Task 11）：主体按知识点分组，任务级到期单独成组。
+    // { summary, items, dueToday, overdue, upcoming, weak, newItems, wrong, mastered, taskDue, taskFuture }
+    let reviewQueueState = {
+        summary: null, items: [], dueToday: [], overdue: [], upcoming: [], weak: [], newItems: [],
+        wrong: [], mastered: [], taskDue: [], taskFuture: []
+    };
 
     // 把服务端聚合出来的复习条目转成渲染用的形状。
     // node 只带渲染需要的字段；真要改复习计划时再按需加载那一个项目（见 runQueueAction）。
@@ -6370,6 +6380,22 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
         } catch (error) { /* 忽略 */ }
     }
 
+    // 用指定的一组题（队列里的一题，或整条今日队列）开一轮复习会话。
+    async function startReviewSessionWithItems(items) {
+        if (!Array.isArray(items) || items.length === 0) return;
+        // 会话 id 失败不阻塞练习：离线也能一题一题过，只是统计不上报。
+        let sessionId = '';
+        try {
+            const started = await callApi('/api/review/session', 'POST', { action: 'start', planned: items.length });
+            sessionId = started.sessionId || '';
+        } catch (error) { sessionId = ''; }
+        reviewSessionState = { sessionId: sessionId, items: items.slice(), index: 0,
+            startedAt: Date.now(), gradeCounts: {}, revealed: false };
+        saveReviewSession();
+        activateView(reviewSessionView);
+        renderReviewQuestion();
+    }
+
     async function startReviewSession() {
         // ① 优先接着上次没练完的会话：不重新取队列、也不开新会话。
         if (restoreReviewSession()) {
@@ -6392,16 +6418,7 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             activateView(reviewView);
             return;
         }
-        // 会话 id 失败不阻塞练习：离线也能一题一题过，只是统计不上报。
-        let sessionId = '';
-        try {
-            const started = await callApi('/api/review/session', 'POST', { action: 'start', planned: items.length });
-            sessionId = started.sessionId || '';
-        } catch (error) { sessionId = ''; }
-        reviewSessionState = { sessionId: sessionId, items: items, index: 0, startedAt: Date.now(), gradeCounts: {}, revealed: false };
-        saveReviewSession();
-        activateView(reviewSessionView);
-        renderReviewQuestion();
+        await startReviewSessionWithItems(items);
     }
 
     // 题面代码（predict 要预测的、debug 要排查的片段）必须随题渲染：
@@ -6569,6 +6586,34 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
         reviewSessionSummary.replaceChildren(summary);
     }
 
+    // 复习页查询串：题型/模块真的作为查询参数传给后端（/api/review/queue 已支持）。
+    function reviewQueueQuery() {
+        const params = [`today=${encodeURIComponent(todayStr())}`];
+        const type = (reviewTypeFilter && reviewTypeFilter.value) || '';
+        const moduleName = (reviewModuleFilter && reviewModuleFilter.value) || '';
+        if (type) params.push(`type=${encodeURIComponent(type)}`);
+        if (moduleName) params.push(`module=${encodeURIComponent(moduleName)}`);
+        return params.join('&');
+    }
+
+    // 模块下拉的选项来自知识点库（/api/review/points），每次整体重建但保留当前选择。
+    function populateReviewModules(modules) {
+        if (!reviewModuleFilter) return;
+        const current = reviewModuleFilter.value || '';
+        const all = document.createElement('option');
+        all.value = '';
+        all.textContent = '全部模块';
+        const options = [all];
+        modules.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            options.push(option);
+        });
+        reviewModuleFilter.replaceChildren(...options);
+        reviewModuleFilter.value = modules.includes(current) ? current : '';
+    }
+
     async function showReviewQueue() {
         try {
             await settleSaves();
@@ -6576,30 +6621,63 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             showToast('当前修改尚未保存，请先解决保存失败');
             return;
         }
-        // 队列由服务端直接算（只读 nodes 表 + 项目名）：
-        // 以前要先把每个项目的整棵树都加载进来，项目一多就很慢（第六批 item 3）。
         activateView(reviewView);
         reviewSubline.textContent = '';
         renderReviewMessage(listStatusText('review', 'loading'), false);
-        let payload = null;
+        const query = `today=${encodeURIComponent(todayStr())}`;
+        const queueQuery = reviewQueueQuery();
+        let summary = null;
+        let queue = null;
+        let taskPayload = null;
+        let pointsPayload = null;
         try {
-            const response = await apiFetch(
-                `/api/reviews?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' });
-            payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '读取复习队列失败');
+            // 任务级到期单独成组：数据仍来自旧的 /api/reviews（保留 review_due），
+            // 与知识点队列 /api/review/queue 互不影响。
+            const [summaryResponse, queueResponse, taskResponse, pointsResponse] = await Promise.all([
+                apiFetch(`/api/review/summary?${query}`, { cache: 'no-store' }),
+                apiFetch(`/api/review/queue?${queueQuery}`, { cache: 'no-store' }),
+                apiFetch(`/api/reviews?${query}`, { cache: 'no-store' }),
+                apiFetch('/api/review/points?limit=500', { cache: 'no-store' }),
+            ]);
+            summary = await summaryResponse.json().catch(() => ({}));
+            queue = await queueResponse.json().catch(() => ({}));
+            taskPayload = await taskResponse.json().catch(() => ({}));
+            pointsPayload = await pointsResponse.json().catch(() => ({}));
+            if (!summaryResponse.ok || !queueResponse.ok) {
+                throw new Error(summary.error || queue.error || '读取复习队列失败');
+            }
         } catch (error) {
             const message = listStatusText('review', 'failed', error && error.message);
             renderReviewMessage(message, true);
             showToast(message);
             return;
         }
+        const items = Array.isArray(queue.items) ? queue.items : [];
+        const points = Array.isArray(pointsPayload.points) ? pointsPayload.points : [];
+        const moduleName = (reviewModuleFilter && reviewModuleFilter.value) || '';
+        const inModule = point => !moduleName || point.module === moduleName;
+        populateReviewModules(Array.from(new Set(points.map(point => point.module).filter(Boolean))));
         reviewQueueState = {
-            dueItems: (payload.due || []).map(reviewEntryToItem),
-            futureItems: (payload.future || []).map(reviewEntryToItem)
+            summary: summary,
+            items: items,
+            dueToday: items.filter(item => item.reason === 'today'),
+            overdue: items.filter(item => item.reason === 'overdue'),
+            upcoming: items.filter(item => item.reason === 'upcoming'),
+            weak: items.filter(item => item.reason === 'weak'),
+            newItems: items.filter(item => item.reason === 'new'),
+            // 后端暂无"最近答错/最近掌握"的聚合接口：用知识点库的 lastGrade 兜底
+            // （1~2 判答错、4~5 判掌握），不改后端也能成组。
+            wrong: points.filter(point => inModule(point) && Number(point.lastGrade) > 0
+                && Number(point.lastGrade) <= 2),
+            mastered: points.filter(point => inModule(point) && Number(point.lastGrade) >= 4),
+            taskDue: (Array.isArray(taskPayload.due) ? taskPayload.due : []).map(reviewEntryToItem),
+            taskFuture: (Array.isArray(taskPayload.future) ? taskPayload.future : []).map(reviewEntryToItem),
         };
-        renderReviewQueue();
-        if (payload.truncated) {
-            showToast(`复习条目较多，仅显示前 ${payload.limit} 条`);
+        reviewSubline.textContent = `今日必复 ${summary.dueToday || 0} · 逾期 ${summary.overdue || 0}`
+            + ` · 薄弱 ${summary.weak || 0} · 连续 ${summary.streakDays || 0} 天`;
+        renderReviewGroups();
+        if (queue.truncated) {
+            showToast(`复习条目较多，仅显示前 ${queue.limit} 条`);
         }
         loadReviewCounts();
     }
@@ -8036,27 +8114,119 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
         }
     }
 
-    function renderReviewQueue() {
+    // 复习页主体：按知识点分组（今日必须复习 / 即将到期 / 已逾期 / 薄弱知识点 /
+    // 新知识点 / 最近答错 / 最近掌握），任务级到期单独成组放在最后。
+    // 范围筛选（overdue/weak/new）只是前端分组过滤，不需要重新拉取数据。
+    function renderReviewGroups() {
+        const state = reviewQueueState;
         const body = reviewBody;
-        body.innerHTML = '';
-        const due = reviewQueueState.dueItems || [];
-        const future = reviewQueueState.futureItems || [];
-        const total = due.length + future.length;
-        reviewSubline.textContent = total > 0
-            ? '待复习 ' + due.length + ' 项 · 已安排 ' + future.length + ' 项'
-            : '还没有到期的复习';
-        if (total === 0) {
+        // 用 replaceChildren 而不是 innerHTML=''：范围筛选会反复重渲染，
+        // 必须真的把上一次的分组清掉（DOM 桩里 innerHTML 赋值不会清子节点）。
+        body.replaceChildren();
+        const scope = (reviewScopeFilter && reviewScopeFilter.value) || '';
+        let groups = [
+            ['今日必须复习', state.dueToday || []],
+            ['即将到期', state.upcoming || []],
+            ['已逾期', state.overdue || []],
+            ['薄弱知识点', state.weak || []],
+            ['新知识点', state.newItems || []],
+            ['最近答错', state.wrong || []],
+            ['最近掌握', state.mastered || []],
+        ];
+        if (scope) {
+            const scopedTitles = { overdue: '已逾期', weak: '薄弱知识点', new: '新知识点' };
+            groups = groups.filter(entry => entry[0] === scopedTitles[scope]);
+        }
+        groups.forEach(entry => {
+            if (entry[1].length === 0) return;
+            body.appendChild(renderKnowledgeGroup(entry[0], entry[1]));
+        });
+        // 任务级到期沿用旧 /api/reviews 的行渲染与操作按钮（记住/模糊/忘了/更多/AI）。
+        if (!scope && (state.taskDue || []).length > 0) {
+            body.appendChild(renderTaskDueGroup(state.taskDue));
+        }
+        if (!scope && (state.taskFuture || []).length > 0) {
+            body.appendChild(renderReviewGroup('任务级到期 · 未来安排', state.taskFuture));
+        }
+        if (body.childElementCount === 0) {
             const empty = document.createElement('p');
             empty.className = 'review-empty';
-            empty.textContent = '还没有排入复习的内容；完成任务后会自动排到明天，也可在项目里点任务旁的 ◷ 手动安排';
+            empty.textContent = '今天没有到期的知识点：可以去知识点库挑一个练，或先完成学习任务';
             body.appendChild(empty);
-            return;
         }
-        if (due.length > 0) {
-            body.appendChild(renderReviewGroup('待复习 · 今天到期与逾期', due));
+    }
+
+    function renderKnowledgeGroup(title, items) {
+        const group = document.createElement('div');
+        group.className = 'review-group';
+        const head = document.createElement('div');
+        head.className = 'review-group-title';
+        const label = document.createElement('span');
+        label.textContent = title;
+        const count = document.createElement('span');
+        count.className = 'gcount';
+        count.textContent = String(items.length);
+        head.append(label, count);
+        group.appendChild(head);
+        items.forEach(item => group.appendChild(createKnowledgeItemElement(item)));
+        return group;
+    }
+
+    function createKnowledgeItemElement(item) {
+        const row = document.createElement('div');
+        row.className = 'review-item';
+        const main = document.createElement('div');
+        main.className = 'review-item-main';
+        const path = document.createElement('span');
+        path.className = 'review-item-path';
+        path.textContent = `${item.module || '未分类'} · ${item.minutes || 0} 分钟`;
+        const text = document.createElement('div');
+        text.className = 'review-item-text';
+        text.textContent = item.title || item.code || '未命名知识点';
+        main.append(path, text);
+        if (Number(item.lastGrade) > 0) {
+            const tag = document.createElement('span');
+            tag.className = 'review-tag';
+            tag.textContent = GRADE_LABELS[Number(item.lastGrade)] || `档位 ${item.lastGrade}`;
+            main.appendChild(tag);
         }
-        if (future.length > 0) {
-            body.appendChild(renderReviewGroup('已安排 · 未来', future));
+        const actions = document.createElement('div');
+        actions.className = 'review-actions';
+        // 只有队列里的题才带题型/题面；知识点库兜底出来的条目只提供历史入口。
+        if (item.questionType && item.prompt) {
+            const start = document.createElement('button');
+            start.type = 'button';
+            start.className = 'review-btn easy';
+            start.textContent = '开始复习这一题';
+            start.addEventListener('click', () => startReviewSessionWithItems([item]));
+            actions.appendChild(start);
+        }
+        const detail = document.createElement('button');
+        detail.type = 'button';
+        detail.className = 'review-btn';
+        detail.textContent = '历史';
+        detail.addEventListener('click', () => showReviewHistory(item.code));
+        actions.appendChild(detail);
+        row.append(main, actions);
+        return row;
+    }
+
+    // 任务级到期（原来的复习）：数据仍来自 /api/reviews，渲染走旧的 reviewEntryToItem 形状。
+    function renderTaskDueGroup(items) {
+        return renderReviewGroup('任务级到期（原来的复习）', items);
+    }
+
+    async function showReviewHistory(code) {
+        try {
+            const response = await apiFetch(`/api/review/history?code=${encodeURIComponent(code)}`, { cache: 'no-store' });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || '读取历史失败');
+            showUtilityModal('复习历史', data.title || code);
+            const lines = (Array.isArray(data.attempts) ? data.attempts : []).map(entry =>
+                `${entry.reviewedOn || ''} · ${GRADE_LABELS[entry.grade] || entry.grade} · ${entry.answer || '（没写）'}`);
+            utilityBody.textContent = lines.length > 0 ? lines.join('\n') : '还没有作答记录';
+        } catch (error) {
+            showToast(error.message || '读取历史失败');
         }
     }
 
@@ -9311,9 +9481,17 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             if (e.key === 'Enter') createProjectBtn.click();
         });
         backBtn.addEventListener('click', showProjectsView);
-        // 顶栏「复习」现在直接进复习会话（第七批）：先回忆 → 揭示 → 五档自评。
-        // 旧的复习队列页仍然可达（会话退出按钮 / 队列内操作后的回跳）。
-        reviewQueueBtn.addEventListener('click', () => { startReviewSession(); });
+        // 顶栏「复习」打开复习页（分组 + 筛选）；页内的「开始今日复习」才进会话。
+        reviewQueueBtn.addEventListener('click', () => { showReviewQueue(); });
+        if (startReviewSessionBtn) {
+            startReviewSessionBtn.addEventListener('click', () => { startReviewSession(); });
+        }
+        [reviewTypeFilter, reviewModuleFilter].forEach(select => {
+            if (select) select.addEventListener('change', () => { showReviewQueue(); });
+        });
+        if (reviewScopeFilter) {
+            reviewScopeFilter.addEventListener('change', renderReviewGroups);
+        }
         reviewBackBtn.addEventListener('click', () => { showProjectsView(); });
         reviewSessionExitBtn.addEventListener('click', () => { saveReviewDraft(); saveReviewSession(); showReviewQueue(); });
         reviewRevealBtn.addEventListener('click', revealReviewAnswer);
