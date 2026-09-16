@@ -1289,6 +1289,11 @@ def main() -> None:
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
         print(f"Auto archive skipped: {error}", file=sys.stderr)
     backup_service.create_daily_snapshot()
+    review_count = review_storage.ensure_review_content_ready()
+    if review_count:
+        print(f"复习知识点就绪：新增/更新 {review_count} 个")
+    else:
+        print("复习知识点就绪：已是最新")
     storage_service.purge_trash_items()
     memo_storage.initialize()
     if not memo_storage.check_integrity():

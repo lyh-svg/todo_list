@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -86,6 +87,18 @@ def ensure_content_imported() -> int:
     loaded = review_content.load_content_file(WEEK1_PATH)
     result = import_content(loaded["points"], week=loaded["week"] or 1)
     return result["inserted"] + result["updated"]
+
+
+def ensure_review_content_ready() -> int:
+    """启动路径调用：按 code 幂等导入随仓库发布的课程库。
+
+    内容文件缺失或损坏时只打印告警，绝不阻断服务启动：复习库为空也能用。
+    """
+    try:
+        return ensure_content_imported()
+    except Exception as error:  # noqa: BLE001 - 内容文件坏损不能拖垮启动
+        print(f"复习知识点导入失败：{error}", file=sys.stderr)
+        return 0
 
 
 def points_for_task(task_id: str) -> list[dict[str, Any]]:
