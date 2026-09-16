@@ -2328,6 +2328,15 @@ body.modal-open { overflow: hidden; }
 .review-item.expanded .review-item-text {
     white-space: normal;
 }
+/* 最近答错/最近掌握是作答记录：多一行"我写的"答案摘要（单行截断，完整内容点历史看）。 */
+.review-item-answer {
+    font-size: 12px;
+    color: var(--text-light);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .review-tag {
     display: inline-block;
     font-size: 11px;

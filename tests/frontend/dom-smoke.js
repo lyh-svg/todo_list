@@ -323,7 +323,12 @@ async function fetchStub(url, options = {}) {
         trashRetentionDays: 7, autoArchiveEnabled: false, autoArchiveDays: 30,
         reviewDailyLimit: 10, reviewNewPerDay: 2 } });
     if (path === '/api/review/summary') return reply(200, { dueToday: 1, overdue: 1, upcoming: 0, weak: 1,
-        total: 3, learned: 2, answeredToday: 0, streakDays: 3, limit: 10, newPerDay: 2 });
+        total: 3, learned: 2, answeredToday: 0, streakDays: 3, limit: 10, newPerDay: 2,
+        // 最近答错/最近掌握是"作答记录"：带题型/档位/日期/答案，复习页不能再靠知识点 lastGrade 兜底。
+        recentWrong: [{ id: 'a1', code: 'py.a.b', title: '答错的知识点', questionType: 'concept',
+            grade: 1, answer: '我写错的答案', reviewedOn: '2026-09-10' }],
+        recentMastered: [{ id: 'a2', code: 'py.a.d', title: '掌握的知识点', questionType: 'predict',
+            grade: 5, answer: '我写对的答案', reviewedOn: '2026-09-12' }] });
     if (path === '/api/review/queue') return reply(200, { items: [{ code: 'py.a.b', title: '示例知识点',
         minutes: 10, module: '容器', level: '基础', questionType: 'predict',
         prompt: '写出下面代码的输出', body: 'def add(a, b):\n    return a + b\n\nprint(add(1, 2))',
@@ -645,10 +650,18 @@ function step(name, fn) {
     check('任务级到期单独成组（保留旧 /api/reviews 数据）',
         reviewPageText.includes('任务级到期') && reviewPageText.includes('任务一'),
         reviewPageText.slice(0, 240));
-    check('最近答错/最近掌握按 lastGrade 分组',
+    check('最近答错/最近掌握渲染真实作答记录（含题型/档位/日期/答案摘要）',
         reviewPageText.includes('最近答错') && reviewPageText.includes('最近掌握')
-        && reviewPageText.includes('已掌握的知识点'),
-        reviewPageText.slice(0, 300));
+        && reviewPageText.includes('答错的知识点') && reviewPageText.includes('掌握的知识点')
+        && reviewPageText.includes('概念题') && reviewPageText.includes('2026-09-10')
+        && reviewPageText.includes('第 1 档') && reviewPageText.includes('我写错的答案')
+        && reviewPageText.includes('2026-09-12') && reviewPageText.includes('第 5 档'),
+        reviewPageText.slice(0, 500));
+    // 以前这两组是用 /api/review/points 的 lastGrade（2/5）兜底出来的知识点，
+    // 会渲染"已掌握的知识点"；改成真实作答记录后它必须消失。
+    check('最近答错/最近掌握不再用知识点 lastGrade 兜底',
+        !reviewPageText.includes('已掌握的知识点'),
+        reviewPageText.slice(0, 500));
     const typeFilter = elementsById.get('reviewTypeFilter');
     const moduleFilter = elementsById.get('reviewModuleFilter');
     const scopeFilter = elementsById.get('reviewScopeFilter');
@@ -668,6 +681,13 @@ function step(name, fn) {
         fetchUrls.filter(u => u.includes('/api/review/queue')).length > queueFetchesBefore
         && fetchUrls.some(u => u.includes('/api/review/queue') && u.includes('type=concept')),
         JSON.stringify(fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-3)));
+    check('题型筛选也作用于最近答错/最近掌握（predict 记录被过滤掉）',
+        textOf(elementsById.get('reviewBody')).includes('答错的知识点')
+        && !textOf(elementsById.get('reviewBody')).includes('掌握的知识点'),
+        textOf(elementsById.get('reviewBody')).slice(0, 300));
+    check('题型/模块筛选后顶部统计标注筛后口径',
+        textOf(elementsById.get('reviewSubline')).includes('按题型/模块筛选后'),
+        textOf(elementsById.get('reviewSubline')));
     step('切换模块筛选不抛异常', () => {
         moduleFilter.value = '函数';
         moduleFilter.dispatch('change');
@@ -685,6 +705,20 @@ function step(name, fn) {
         textOf(elementsById.get('reviewBody')).includes('已逾期')
         && !textOf(elementsById.get('reviewBody')).includes('今日必须复习'),
         textOf(elementsById.get('reviewBody')).slice(0, 200));
+    // 范围筛选只作用于知识点分组：任务级到期组按自己的 due/future 显隐，不能被整组隐藏。
+    check('范围筛选不隐藏任务级到期组（它按自身 due 判断显隐）',
+        textOf(elementsById.get('reviewBody')).includes('任务级到期')
+        && textOf(elementsById.get('reviewBody')).includes('任务一'),
+        textOf(elementsById.get('reviewBody')).slice(0, 240));
+    step('切换到没有条目的范围筛选不抛异常', () => {
+        scopeFilter.value = 'new';
+        scopeFilter.dispatch('change');
+    });
+    await sleep(60);
+    check('范围筛选空态区分"该范围没有条目"与"今天完全没有到期"',
+        textOf(elementsById.get('reviewBody')).includes('该范围')
+        && !textOf(elementsById.get('reviewBody')).includes('今天没有到期的知识点'),
+        textOf(elementsById.get('reviewBody')).slice(0, 240));
     step('复位范围筛选不抛异常', () => {
         scopeFilter.value = '';
         scopeFilter.dispatch('change');
@@ -693,9 +727,15 @@ function step(name, fn) {
     check('复位范围筛选后分组恢复',
         textOf(elementsById.get('reviewBody')).includes('今日必须复习'),
         textOf(elementsById.get('reviewBody')).slice(0, 200));
+    const startQueueFetchesBefore = fetchUrls.filter(u => u.includes('/api/review/queue')).length;
     step('点「开始今日复习」进会话不抛异常',
         () => elementsById.get('startReviewSessionBtn').dispatch('click'));
     await sleep(120);
+    check('「开始今日复习」继承题型/模块筛选（不再硬编码 ?today=）',
+        fetchUrls.filter(u => u.includes('/api/review/queue')).length > startQueueFetchesBefore
+        && fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-1)[0].includes('type=concept')
+        && fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-1)[0].includes('module=%E5%87%BD%E6%95%B0'),
+        JSON.stringify(fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-2)));
     check('复习会话视图打开', activeViews().includes('reviewSessionView'), JSON.stringify(activeViews()));
     const promptEl = elementsById.get('reviewQuestionPrompt');
     check('会话出题了（有题面）', Boolean(promptEl && textOf(promptEl).trim()),

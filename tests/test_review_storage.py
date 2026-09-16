@@ -120,9 +120,27 @@ class SummaryTests(unittest.TestCase):
 
     def test_recent_wrong_and_mastered(self) -> None:
         review_storage.apply_grade("py.a.b", "concept", 1, today="2026-09-16", answer="错的")
-        review_storage.apply_grade("py.a.b", "predict", 5, today="2026-09-16")
+        review_storage.apply_grade("py.a.b", "predict", 5, today="2026-09-16", answer="对的")
         self.assertEqual(len(review_storage.recent_attempts("wrong", "2026-09-16")), 1)
         self.assertEqual(len(review_storage.recent_attempts("mastered", "2026-09-16")), 1)
+
+    def test_summary_reports_recent_attempts_not_last_grade(self) -> None:
+        """最近答错/最近掌握必须是作答记录（含题干/题型/档位/日期/答案），不是知识点 lastGrade。"""
+        review_storage.apply_grade("py.a.b", "concept", 1, today="2026-09-16", answer="错的")
+        review_storage.apply_grade("py.a.b", "predict", 5, today="2026-09-16", answer="对的")
+        data = review_storage.summary("2026-09-16")
+        # summary() 的键集合锁死为：10 个旧键 + 新增 recentWrong/recentMastered = 12 个。
+        self.assertEqual(set(data), {
+            "dueToday", "overdue", "upcoming", "weak", "total", "learned", "answeredToday",
+            "streakDays", "limit", "newPerDay", "recentWrong", "recentMastered"})
+        self.assertEqual([entry["answer"] for entry in data["recentWrong"]], ["错的"])
+        self.assertEqual([entry["questionType"] for entry in data["recentWrong"]], ["concept"])
+        self.assertEqual(data["recentWrong"][0]["grade"], 1)
+        self.assertEqual(data["recentWrong"][0]["reviewedOn"], "2026-09-16")
+        self.assertEqual(data["recentWrong"][0]["title"], "示例点")
+        self.assertEqual([entry["answer"] for entry in data["recentMastered"]], ["对的"])
+        self.assertEqual([entry["questionType"] for entry in data["recentMastered"]], ["predict"])
+        self.assertEqual(data["recentMastered"][0]["grade"], 5)
 
     def test_history_returns_answers_and_pitfalls(self) -> None:
         review_storage.apply_grade("py.a.b", "concept", 2, today="2026-09-16", answer="我写的")

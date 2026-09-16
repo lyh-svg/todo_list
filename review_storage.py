@@ -418,9 +418,13 @@ def summary(today: str) -> dict[str, Any]:
             due_today += 1
         else:
             upcoming += 1
+    # 最近答错/最近掌握是真实的作答记录（复用 recent_attempts），不是 points.lastGrade：
+    # 前者能给出"哪一次作答、写了什么、什么题型"，后者只是知识点的最新档位。
     return {"dueToday": due_today, "overdue": overdue, "upcoming": upcoming, "weak": weak,
             "total": total, "learned": learned, "answeredToday": answered_today,
-            "streakDays": streak_days(today), **settings}
+            "streakDays": streak_days(today),
+            "recentWrong": recent_attempts("wrong", today),
+            "recentMastered": recent_attempts("mastered", today), **settings}
 
 
 def recent_attempts(kind: str, today: str, limit: int = 10) -> list[dict[str, Any]]:

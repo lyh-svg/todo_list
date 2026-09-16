@@ -4,7 +4,10 @@ const ROOT = require('path').resolve(__dirname, '..', '..');
 const src = fs.readFileSync(ROOT + '/js/app.js', 'utf8');
 const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
 function extract(name) {
-    const at = src.indexOf(`    function ${name}(`);
+    // 同时支持普通函数与 async 函数（复习页的 showReviewQueue 等是 async）。
+    const sync = `    function ${name}(`;
+    const asyncAt = src.indexOf(`    async function ${name}(`);
+    const at = src.includes(sync) ? src.indexOf(sync) : asyncAt;
     if (at < 0) throw new Error('找不到 ' + name);
     let depth = 0, seen = false;
     for (let i = at; i < src.length; i++) {
@@ -101,12 +104,22 @@ check('⑦ 读列表带浏览器本地日期', src.includes('`/api/projects?toda
 check('⑦ 时区不一致会提示一次', src.includes('stored.serverToday !== todayStr() && !timezoneWarned'));
 
 // —— 第七批 Task 11：复习页改版（知识点分组 + 题型/模块筛选 + 任务级到期单独成组）——
+// 断言必须锚到函数体：紧邻的注释里就含这些标题，对 src 全文用正则的话
+// 删掉代码只留注释也会误判为通过。
+const renderGroupsSrc = extract('renderReviewGroups');
+const showQueueSrc = extract('showReviewQueue');
+const queueQuerySrc = extract('reviewQueueQuery');
 check('复习页：主体分组改为知识点（今日必须复习/已逾期/薄弱/最近答错/最近掌握）',
-    /今日必须复习[\s\S]{0,400}已逾期[\s\S]{0,400}薄弱知识点[\s\S]{0,400}最近答错[\s\S]{0,400}最近掌握/.test(src));
+    ['今日必须复习', '已逾期', '薄弱知识点', '最近答错', '最近掌握']
+        .every(title => renderGroupsSrc.includes(`title: '${title}'`)),
+    renderGroupsSrc.slice(0, 160));
 check('复习页：任务级到期单独成组（保留旧 review_due 数据）',
-    /任务级到期[\s\S]{0,300}\/api\/reviews/.test(src));
+    renderGroupsSrc.includes('任务级到期') && showQueueSrc.includes('/api/reviews'),
+    renderGroupsSrc.slice(0, 160));
 check('复习页：支持题型与 Python 模块筛选',
-    /reviewTypeFilter|reviewModuleFilter/.test(src) && /id="reviewTypeFilter"/.test(html));
+    queueQuerySrc.includes('reviewTypeFilter') && queueQuerySrc.includes('reviewModuleFilter')
+    && renderGroupsSrc.includes('reviewTypeFilter')
+    && /id="reviewTypeFilter"/.test(html));
 
 const failed = results.filter(r => !r).length;
 console.log(`\n   通过 ${results.length - failed} 项，失败 ${failed} 项`);
