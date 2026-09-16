@@ -108,6 +108,12 @@ class ReviewContentTests(unittest.TestCase):
         loaded = review_content.load_content_file(Path("content/review/py-week1.json"))
         self.assertEqual(review_content.validate_points(loaded["points"]), [])
 
+    def test_real_week1_file_has_40_unique_points(self) -> None:
+        loaded = review_content.load_content_file(Path("content/review/py-week1.json"))
+        codes = [point["code"] for point in loaded["points"]]
+        self.assertEqual(len(codes), 40)
+        self.assertEqual(len(set(codes)), 40, "知识点 code 必须唯一")
+
 
 if __name__ == "__main__":
     unittest.main()
