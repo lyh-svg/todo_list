@@ -36,7 +36,7 @@ MAX_TRASH_RETENTION_DAYS = 365
 MAX_AUTO_ARCHIVE_DAYS = 3650
 ORPHAN_BOX_TITLE = "孤立任务箱"                    # 父节点被删掉时，恢复到这里
 ACTIVITY_LIMIT_MAX = 500
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 # 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
 PRIORITIES = ("", "high", "mid", "low")
 MAX_TAGS = 20
@@ -65,6 +65,11 @@ class _ManagedConnection(sqlite3.Connection):
 
 
 _database_lock = threading.RLock()
+
+
+def state_lock() -> threading.RLock:
+    """给其他模块用的公开锁入口（复习答题写入与项目保存共用同一把闸）。"""
+    return _database_lock
 
 
 class StateConflictError(RuntimeError):
@@ -393,6 +398,62 @@ def open_state_database() -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             builtin INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS review_points (
+            code TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            minutes INTEGER NOT NULL DEFAULT 10,
+            module TEXT NOT NULL DEFAULT '',
+            level TEXT NOT NULL DEFAULT '基础',
+            origin TEXT NOT NULL DEFAULT 'builtin',
+            content_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS review_point_tasks (
+            code TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            PRIMARY KEY (code, task_id, project_id)
+        );
+        CREATE TABLE IF NOT EXISTS review_states (
+            code TEXT PRIMARY KEY,
+            due TEXT NOT NULL DEFAULT '',
+            interval_days INTEGER NOT NULL DEFAULT 0,
+            streak INTEGER NOT NULL DEFAULT 0,
+            lapses INTEGER NOT NULL DEFAULT 0,
+            last_grade INTEGER NOT NULL DEFAULT 0,
+            weak INTEGER NOT NULL DEFAULT 0,
+            last_reviewed_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS review_attempts (
+            id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            task_id TEXT NOT NULL DEFAULT '',
+            project_id TEXT NOT NULL DEFAULT '',
+            question_type TEXT NOT NULL,
+            grade INTEGER NOT NULL,
+            answer TEXT NOT NULL DEFAULT '',
+            ai_verdict TEXT NOT NULL DEFAULT '',
+            reviewed_on TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            session_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS review_sessions (
+            id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL DEFAULT '',
+            planned INTEGER NOT NULL DEFAULT 0,
+            answered INTEGER NOT NULL DEFAULT 0,
+            grade_counts_json TEXT NOT NULL DEFAULT '{}',
+            duration_ms INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_states_due ON review_states(due);
+        CREATE INDEX IF NOT EXISTS idx_review_states_weak ON review_states(weak);
+        CREATE INDEX IF NOT EXISTS idx_review_attempts_code ON review_attempts(code, created_at);
+        CREATE INDEX IF NOT EXISTS idx_review_attempts_day ON review_attempts(reviewed_on);
+        CREATE INDEX IF NOT EXISTS idx_review_tasks_task ON review_point_tasks(task_id);
         """
     )
     node_columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
@@ -873,6 +934,8 @@ def ensure_schema() -> None:
             )
         backup_name = create_manual_database_backup(f"before-migrate-v{version}") if has_data else ""
         try:
+            # v7 -> v8：只新增 5 张复习表与索引（DDL 幂等，已在 open_state_database 里执行），
+            # 不改动既有列、不回填数据；迁移前已自动快照，失败会回滚。
             migrate_legacy_state()
             with _database_lock:
                 with open_state_database() as connection:
