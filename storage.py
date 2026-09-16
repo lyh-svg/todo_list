@@ -1598,6 +1598,48 @@ def read_project(project_id: Any) -> tuple[dict[str, Any], int] | None:
         return _read_project_from_connection(connection, str(project_id))
 
 
+# JSON 导出附带的 5 张复习表的（导出键 → 表名、稳定排序键）映射。排序键都用主键：
+# 行序不定会让"导出内容比对"变成随机假阴性。键名与前端 camelCase 习惯保持一致。
+REVIEW_EXPORT_TABLES: dict[str, tuple[str, str]] = {
+    "points": ("review_points", "code"),
+    "pointTasks": ("review_point_tasks", "code,task_id,project_id"),
+    "states": ("review_states", "code"),
+    "attempts": ("review_attempts", "id"),
+    "sessions": ("review_sessions", "id"),
+}
+
+
+def _camel_case_column(column: str) -> str:
+    head, *rest = str(column).split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def _read_review_export(connection: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    """把 5 张复习表读成 JSON 可序列化的快照（列名转 camelCase，JSON 文本列解析成对象）。"""
+    review: dict[str, list[dict[str, Any]]] = {}
+    for key, (table, order_by) in REVIEW_EXPORT_TABLES.items():
+        rows = connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}").fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item: dict[str, Any] = {}
+            for column in row.keys():
+                name = _camel_case_column(column)
+                value = row[column]
+                if column.endswith("_json"):
+                    # 落库时是 JSON 文本（content_json / grade_counts_json）；导出成对象后
+                    # 人看得懂，将来的导入侧也不用再解一层转义字符串。
+                    if name.endswith("Json"):
+                        name = name[: -len("Json")]
+                    try:
+                        value = json.loads(value) if value else {}
+                    except (TypeError, ValueError):
+                        value = row[column]
+                item[name] = value
+            items.append(item)
+        review[key] = items
+    return review
+
+
 def export_projects_snapshot() -> dict[str, Any]:
     """导出全部项目的完整快照，形状与前端"导入备份"（/api/import）兼容。
 
@@ -1605,6 +1647,12 @@ def export_projects_snapshot() -> dict[str, Any]:
     摘要里的 tree 是空的，直接导出会让未打开的项目变成空壳，导入后丢数据。
     整个导出必须在一把锁、一个连接里完成：分成两次加锁的话，中间新建的项目不会出现在
     导出结果里，而导入是"整体替换"语义，用这份 JSON 恢复就会把它删掉。
+
+    顶层还额外带一个 `review` 键：5 张复习表（points / pointTasks / states / attempts /
+    sessions）的快照。不加它的话，用户拿"导出 JSON → 导入"做迁移会静默丢掉复习进度与作答
+    历史（规格 §9/§10.7 把"导出往返覆盖新增表"列为验收项）。`review` 是附加信息，导入侧
+    当前忽略它：前端 extractProjects 只消费 `projects`，/api/import 也只吃 `projects`。
+    因此 `schemaVersion` 必须原样保持 EXPORT_SCHEMA_VERSION，绝不能为了带上 review 而递增。
     """
     projects: list[dict[str, Any]] = []
     with _database_lock, open_state_database() as connection:
@@ -1615,10 +1663,12 @@ def export_projects_snapshot() -> dict[str, Any]:
             result = _read_project_from_connection(connection, str(row["project_id"]))
             if result:
                 projects.append(result[0])
+        review = _read_review_export(connection)
     return {
         "schemaVersion": EXPORT_SCHEMA_VERSION,
         "exportedAt": datetime.now().isoformat(timespec="seconds"),
         "projects": projects,
+        "review": review,
     }
 
 

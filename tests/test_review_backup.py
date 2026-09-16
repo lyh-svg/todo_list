@@ -9,10 +9,18 @@
 只用标准库（unittest + zipfile + sqlite3）；所有路径在 import storage 之前指向临时目录，
 不触碰 data/ 下的真实数据库。
 运行：python3 -m unittest tests.test_review_backup -v
+
+隔离说明（同进程污染）：
+    storage / memo / summary 三个库的路径都在 import 时从环境变量定死，所以本文件必须
+    单独跑，不能与 schema 类用例（tests.test_schema_and_import / tests.test_full_backup 等）
+    同进程混跑：谁先 import storage，storage.DATABASE_FILE 就归谁，本文件的 TODO_SQLITE_*
+    环境变量会被静默忽略。setUp 已做最小兜底（删临时库文件 + 清空 5 张复习表 + 用当前
+    backup_service.BACKUP_DIR），因此内容断言仍然有效；但是否落在自己的临时库里不再保证。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -83,6 +91,7 @@ class ReviewBackupTests(unittest.TestCase):
                                    answer="第二次作答", session_id=session_id)
         review_storage.finish_session(session_id, answered=2, grade_counts={4: 1, 2: 1},
                                       duration_ms=1234)
+        self.session_id = session_id
 
         self.before = dump_review_tables()
         # 前置条件：5 张表都得真的有数据，否则"往返后一致"可能只是空表对空表。
@@ -147,6 +156,48 @@ class ReviewBackupTests(unittest.TestCase):
         self.assertEqual(sorted(item["answer"] for item in after_history["attempts"]),
                          sorted(item["answer"] for item in self.before_history["attempts"]))
         self.assertEqual(after_history["attempts"][0]["reviewedOn"], TODAY)
+
+
+    def test_json_export_attaches_review_snapshot(self) -> None:
+        """JSON 导出（/api/export）必须附带 5 张复习表，否则"导出 JSON → 导入"会丢复习进度。
+
+        前端 extractProjects 只认 `projects` 且会拒绝更大的 schemaVersion，所以版本号必须原样
+        保持 2：为了带 review 顺手 bump，会让整份备份被前端直接拒收。
+        """
+        snapshot = storage.export_projects_snapshot()
+        json.dumps(snapshot, ensure_ascii=False)   # 附带的 review 必须真的能序列化成 JSON
+
+        # 前端导入契约没变：版本号不动，projects 仍是唯一被消费的键。
+        self.assertEqual(snapshot["schemaVersion"], storage.EXPORT_SCHEMA_VERSION)
+        self.assertEqual(snapshot["schemaVersion"], 2)
+        self.assertIn("projects", snapshot)
+        review = snapshot["review"]
+        self.assertEqual(set(review), {"points", "pointTasks", "states", "attempts", "sessions"})
+
+        # 刚做的两次作答（setUp）必须能在点、状态、attempts 里逐项看到。
+        point = next(point for point in review["points"] if point["code"] == CODE)
+        self.assertIsInstance(point["content"], dict, "content_json 应解析成对象，而不是 JSON 文本")
+        self.assertTrue(point["content"].get("concept"), "复习点内容体不该是空的")
+        self.assertIn(CODE, {item["code"] for item in review["pointTasks"]})
+
+        state = next(item for item in review["states"] if item["code"] == CODE)
+        for field, expected in (("due", self.before_state["due"]),
+                                ("intervalDays", self.before_state["intervalDays"]),
+                                ("streak", self.before_state["streak"]),
+                                ("lastGrade", self.before_state["lastGrade"]),
+                                ("weak", self.before_state["weak"])):
+            self.assertEqual(state[field], expected, f"review.states.{field} 与库中状态不一致")
+
+        attempts = [item for item in review["attempts"] if item["code"] == CODE]
+        self.assertEqual(sorted(item["answer"] for item in attempts),
+                         ["往返测试", "第二次作答"])
+        self.assertEqual({item["questionType"] for item in attempts}, {"concept", "predict"})
+        self.assertEqual({item["reviewedOn"] for item in attempts}, {TODAY})
+        self.assertEqual({item["sessionId"] for item in attempts}, {self.session_id})
+
+        session = next(item for item in review["sessions"] if item["id"] == self.session_id)
+        self.assertEqual(session["gradeCounts"], {"4": 1, "2": 1})
+        self.assertEqual(session["answered"], 2)
 
 
 if __name__ == "__main__":
