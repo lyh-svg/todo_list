@@ -2863,6 +2863,8 @@ git commit -m "test(review): 备份/恢复往返覆盖复习表（必要处补�
 
 **Files:**
 - Modify: `content/review/py-week1.json`（从 1 个示例点扩到 40 个点）
+- Modify: `tests/test_review_content.py`（**范围修订**：加"必须 40 点"的断言）
+- Modify: `tests/test_review_generate.py`（**范围修订**：真实内容把 5 个点挂到任务 `1202`，与该测试的合成种子 id 撞车，需把种子号段改成 `9202` 系列；断言强度不得放松）
 - Test: `tests/test_review_content.py`（已有 `test_real_week1_file_is_valid` 作为闸门）
 
 **Interfaces:**
