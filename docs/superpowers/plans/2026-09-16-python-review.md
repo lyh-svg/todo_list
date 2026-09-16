@@ -1438,7 +1438,7 @@ class ReviewHttpTests(unittest.TestCase):
         self.assertEqual(self.call(f"/api/review/summary?today=not-a-date")[0], 400)
         self.assertEqual(self.call(f"/api/review/queue?today={TODAY}&limit=abc")[0], 400)
         self.assertEqual(self.call("/api/review/history")[0], 400)
-        self.assertEqual(self.call("/api/review/history?code=py.nope.nope")[0], 404 if False else 200)
+        self.assertEqual(self.call("/api/review/history?code=py.nope.nope")[0], 404)
 
     def test_requires_session_token(self) -> None:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -1527,11 +1527,6 @@ import review_content
 
 Run: `python3 -m unittest tests.test_review_http -v`
 Expected: PASS（5 个用例）
-注意：把 `test_bad_params_are_400` 里最后一行改成对不存在知识点断言 404：
-
-```python
-        self.assertEqual(self.call("/api/review/history?code=py.nope.nope")[0], 404)
-```
 
 - [ ] **Step 5: 提交**
 
@@ -1821,6 +1816,12 @@ git commit -m "feat(review): 每日复习上限与新增知识点名额设置"
     await sleep(150);
     check('提交自评后调用了 /api/review/answer',
         fetchLog.includes('POST /api/review/answer'), JSON.stringify(fetchLog.slice(-4)));
+```
+
+**先改 `tests/frontend/dom-smoke.js` 顶部的 `VIEWS` 常量**，把新视图加进去（否则 `activeViews()` 永远看不到它们）：
+
+```javascript
+const VIEWS = ['projectsView', 'detailView', 'reviewView', 'reviewSessionView', 'knowledgeView', 'workbenchView'];
 ```
 
 配套 fetch 桩（`tests/frontend/dom-smoke.js` 的 `fetchStub` 里新增）：
@@ -2663,7 +2664,33 @@ def points_for_task(task_id: str) -> list[dict[str, Any]]:
                 self.send_json(200, {"ok": True, "verdict": verdict})
 ```
 
-`prompts.py` 增加 `REVIEW_POINTS_PROMPT`：要求返回
+```python
+def grade_review_answer(*, code: str, question_type: str, answer: str,
+                        reference: dict) -> dict:
+    """可选 AI 判分：返回 {correct, missing, wrongAt, hint}；失败时返回空 dict，不影响自评。"""
+    if _mock_enabled():
+        return {"correct": bool(answer.strip()), "missing": [] if answer.strip() else ["没有写出内容"],
+                "wrongAt": "", "hint": "（模拟判分）对照参考答案检查关键机制是否讲到"}
+    settings = read_settings()
+    request_body = {
+        "model": model_aliases(settings).get("flash", "deepseek-chat"),
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": REVIEW_GRADE_PROMPT},
+            {"role": "user", "content": json.dumps(
+                {"知识点": code, "题型": question_type, "我的答案": answer,
+                 "参考答案": reference}, ensure_ascii=False)},
+        ],
+    }
+    try:
+        parsed = _request_json(settings, request_body)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+```
+
+`prompts.py` 增加 `REVIEW_POINTS_PROMPT` 与 `REVIEW_GRADE_PROMPT`：前者要求返回
 `{"points":[{code,title,minutes,module,level,concept,predict,debug,code_task,pitfalls}]}`，`code` 形如 `py.ai.<taskId>.<序号>`，
 其余字段与课程库格式一致（见 Task 1）。注意 `review_content.normalize_points` 是本任务要新增的轻量清洗
 （补齐缺省字段、过滤非法项），Task 1 的校验器仍然是最终闸门。
@@ -3024,23 +3051,27 @@ def main() -> int:
     project = build_project(10000)
     storage.write_project(project, None)
     code = review_storage.list_points()["points"][0]["code"]
-    answers = []
+    answer_ms, save_ms = [], []
     for round_no in range(5):
         done = threading.Event()
 
         def answer() -> None:
             start = time.perf_counter()
             review_storage.apply_grade(code, "concept", 3, today=TODAY, answer=f"基准 {round_no}")
-            answers.append((time.perf_counter() - start) * 1000)
+            answer_ms.append((time.perf_counter() - start) * 1000)
             done.set()
 
         thread = threading.Thread(target=answer)
         thread.start()
-        storage.write_project(project, None)   # 同一把写锁
+        save_start = time.perf_counter()
+        storage.write_project(project, None)   # 10k 任务整棵树写入，与答题共用同一把写锁
+        save_ms.append((time.perf_counter() - save_start) * 1000)
         done.wait(timeout=30)
         thread.join(timeout=30)
-    print(json.dumps({"savesWithAnswerMs": round(statistics.median(answers), 1),
-                      "answerMs": round(statistics.median(answers), 1)}, ensure_ascii=False))
+    print(json.dumps({"answerWhileSavingMs": round(statistics.median(answer_ms), 1),
+                      "fullSaveWithAnswerMs": round(statistics.median(save_ms), 1),
+                      "baseline": "10k 任务整棵树保存（无并发）约 390ms，见 scripts/benchmark_scale.py"},
+                     ensure_ascii=False))
     return 0
 
 
@@ -3051,7 +3082,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 跑基准**
 
 Run: `timeout 900 python3 scripts/benchmark_review.py`
-Expected: 打印类似 `{"savesWithAnswerMs": 380.0, "answerMs": 12.0}`；**若答题耗时超过 100ms**，在 `review_storage` 里改成"答题先写内存队列、按批落库"（在 `apply_grade` 里累积到 `_pending_attempts`，由 `flush_review_attempts()` 每 5 题或退出会话时写入），并重跑基准与全部复习测试。
+Expected: 打印类似 `{"answerWhileSavingMs": 12.0, "fullSaveWithAnswerMs": 395.0, ...}`；**若答题耗时超过 100ms**，在 `review_storage` 里改成"答题先写内存队列、按批落库"（在 `apply_grade` 里累积到 `_pending_attempts`，由 `flush_review_attempts()` 每 5 题或退出会话时写入），并重跑基准与全部复习测试。
 
 - [ ] **Step 5: 全量检查**
 
