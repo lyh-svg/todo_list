@@ -24,7 +24,8 @@ def seed(code="py.a.b"):
     review_storage.import_content([{
         "code": code, "title": "示例点", "minutes": 10, "module": "容器", "level": "基础",
         "taskRefs": [], "concept": {"prompt": "p", "answer": ["a"]},
-        "predict": {"prompt": "p", "code": "print(1)", "expected": ["1"], "explain": "e"},
+        "predict": {"prompt": "写出下面代码的输出", "code": "def add(a, b):\n    return a + b\n\nprint(add(1, 2))",
+                    "expected": ["3"], "explain": "e"},
         "debug": {"prompt": "p", "code": "x =", "rootCause": "r", "fix": "f"},
         "code_task": {"prompt": "p", "acceptance": ["a"], "reference": "r"}, "pitfalls": ["p"],
     }])
@@ -166,6 +167,16 @@ class QueueTests(unittest.TestCase):
         for key in ("answer", "expected", "explain", "rootCause", "fix", "acceptance", "reference"):
             self.assertNotIn(key, item)
         self.assertTrue(item["prompt"])
+
+    def test_queue_includes_question_body_code_but_not_answers(self) -> None:
+        # predict/debug 的题面代码片段必须随队列下发：只给 prompt 的话用户根本看不到要预测的代码。
+        self._set_state("py.a.today", TODAY)
+        item = review_storage.build_queue(TODAY, limit=1, question_type="predict")["items"][0]
+        self.assertEqual(item["questionType"], "predict")
+        self.assertIn("def add(", item["body"])
+        # 题面代码 ≠ 答案：禁用键一个都不能出现。
+        for key in ("answer", "expected", "explain", "rootCause", "fix", "acceptance", "reference"):
+            self.assertNotIn(key, item)
 
     def test_today_bucket_sorted_by_code_and_stable(self) -> None:
         for code in ("py.a.overdue", "py.a.weak", "py.a.today"):

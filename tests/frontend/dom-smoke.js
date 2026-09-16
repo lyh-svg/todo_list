@@ -154,13 +154,15 @@ const elementsById = new Map();
         if (wantsElement && !(idMatch && elementsById.has(idMatch[1]))) {
             el = makeEl(tagName, idMatch ? idMatch[1] : '');
             if (classMatch) classMatch[1].split(/\s+/).filter(Boolean).forEach(name => el.classList.add(name));
+            // data-* 与 id 无关：五档自评按钮没有 id，只有 data-grade。
+            // 以前把解析放在 `if (idMatch)` 里面，dataset.grade 恒为 undefined →
+            // Number(undefined)=NaN → 请求体里是 grade:null，断言却照样通过。
+            for (const dataMatch of attrs.matchAll(/data-([\w-]+)="([^"]*)"/g)) {
+                const key = dataMatch[1].replace(/-(\w)/g, (m, c) => c.toUpperCase());
+                el.dataset[key] = dataMatch[2];
+            }
             if (idMatch) {
                 if (/\shidden(\s|>|$)/.test(attrs)) el.hidden = true;
-                // data-* 也要解析：复习自评按钮靠 dataset.grade 传档位，桩里漏掉就会永远点不出请求。
-                for (const dataMatch of attrs.matchAll(/data-([\w-]+)="([^"]*)"/g)) {
-                    const key = dataMatch[1].replace(/-(\w)/g, (m, c) => c.toUpperCase());
-                    el.dataset[key] = dataMatch[2];
-                }
                 elementsById.set(idMatch[1], el);
             }
             if (parent.el) parent.el.appendChild(el);
@@ -254,6 +256,8 @@ const workbenchFixture = {
 const fetchLog = [];
 // 记录整项目保存的请求体：用来断言「保存时不能出现重复节点 ID」这类数据完整性不变量
 const projectPostBodies = [];
+// 记录复习自评的请求体：断言"点第 3 个按钮 = 档位 3"，而不是只断言"发过这个请求"。
+const reviewAnswerBodies = [];
 async function fetchStub(url, options = {}) {
     const path = String(url).split('?')[0];
     fetchLog.push(`${options.method || 'GET'} ${path}`);
@@ -319,13 +323,35 @@ async function fetchStub(url, options = {}) {
         total: 3, learned: 2, answeredToday: 0, streakDays: 3, limit: 10, newPerDay: 2 });
     if (path === '/api/review/queue') return reply(200, { items: [{ code: 'py.a.b', title: '示例知识点',
         minutes: 10, module: '容器', level: '基础', questionType: 'predict',
-        prompt: '写出下面代码的输出', reason: 'today', due: today, taskId: '1103', projectId: 'p1' }],
-        total: 1, truncated: false, limit: 10 });
-    if (path === '/api/review/reveal') return reply(200, { code: 'py.a.b', type: 'predict',
-        title: '示例知识点', prompt: '写出下面代码的输出', expected: ['[1]', '[1, 2]'],
-        explain: '第二次调用复用了同一个列表', pitfalls: ['可变默认参数'], history: [], state: null });
-    if (path === '/api/review/answer') return reply(200, { ok: true, schedule: { due: '2026-09-30',
-        intervalDays: 14, streak: 1, lapses: 0, weak: false, lastGrade: 4 } });
+        prompt: '写出下面代码的输出', body: 'def add(a, b):\n    return a + b\n\nprint(add(1, 2))',
+        reason: 'today', due: today, taskId: '1103', projectId: 'p1' },
+        { code: 'py.a.c', title: '示例知识点二',
+        minutes: 10, module: '容器', level: '基础', questionType: 'debug',
+        prompt: '找出下面代码的问题', body: 'def total(items=[]):\n    items.append(1)\n    return items',
+        reason: 'today', due: today, taskId: '1104', projectId: 'p1' }],
+        total: 2, truncated: false, limit: 10 });
+    if (path === '/api/review/reveal') {
+        // 按请求的题型返回对应的揭示内容：predict 和 debug 的题面代码不一样，
+        // 桩里写死一份会让"第二题"的断言失去意义。
+        let revealRequest = {};
+        try { revealRequest = JSON.parse(options.body || '{}'); } catch (error) { revealRequest = {}; }
+        const predictReveal = { code: 'py.a.b', type: 'predict', title: '示例知识点',
+            prompt: '写出下面代码的输出', expected: ['[1]', '[1, 2]'],
+            code: 'def add(a, b):\n    return a + b\n\nprint(add(1, 2))',
+            explain: '第二次调用复用了同一个列表', pitfalls: ['可变默认参数'], history: [], state: null };
+        const debugReveal = { code: 'py.a.c', type: 'debug', title: '示例知识点二',
+            prompt: '找出下面代码的问题', code: 'def total(items=[]):\n    items.append(1)\n    return items',
+            rootCause: '可变默认参数被复用', fix: 'items=None 再兜底成 []',
+            pitfalls: ['可变默认参数'], history: [], state: null };
+        return reply(200, revealRequest.type === 'debug' ? debugReveal : predictReveal);
+    }
+    if (path === '/api/review/answer') {
+        if (options.body) {
+            try { reviewAnswerBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
+        }
+        return reply(200, { ok: true, schedule: { due: '2026-09-30',
+            intervalDays: 14, streak: 1, lapses: 0, weak: false, lastGrade: 4 } });
+    }
     if (path === '/api/review/session') return reply(200, { ok: true, sessionId: 's-review-1' });
     if (path === '/api/review/points') return reply(200, { points: [{ code: 'py.a.b', title: '示例知识点',
         minutes: 10, module: '容器', level: '基础', origin: 'builtin', due: today, weak: true, lastGrade: 3,
@@ -603,6 +629,12 @@ function step(name, fn) {
     const promptEl = elementsById.get('reviewQuestionPrompt');
     check('会话出题了（有题面）', Boolean(promptEl && textOf(promptEl).trim()),
         textOf(elementsById.get('reviewSessionView')).slice(0, 160));
+    // 队列的 body（题面代码）必须渲染出来，否则 predict/debug 根本没法作答。
+    check('揭示前视图里就有题面代码（def add）', textOf(elementsById.get('reviewSessionView')).includes('def add('),
+        textOf(elementsById.get('reviewQuestionPrompt')).slice(0, 200));
+    check('题面代码渲染成等宽 pre',
+        findAll(elementsById.get('reviewQuestionPrompt'), el => el._tag === 'pre').length === 1,
+        textOf(elementsById.get('reviewQuestionPrompt')).slice(0, 160));
     const beforeReveal = textOf(elementsById.get('reviewSessionView'));
     check('揭示前 DOM 里没有参考答案（active recall）',
         !beforeReveal.includes('参考答案') && !beforeReveal.includes('expected-answer'),
@@ -612,20 +644,91 @@ function step(name, fn) {
         input.value = '我写的回忆';
         input.dispatch('input');
     });
+    // ⑫a 草稿/会话恢复：退出（保存草稿 + 会话进度）后再点复习，
+    //     必须接着同一会话（不再开新会话），输入框里还是刚才没提交的回忆内容。
+    const sessionStartsBefore = fetchLog.filter(line => line === 'POST /api/review/session').length;
+    step('「退出」复习会话不抛异常', () => elementsById.get('reviewSessionExitBtn').dispatch('click'));
+    await sleep(80);
+    step('再次点「开始复习」不抛异常', () => elementsById.get('reviewQueueBtn').dispatch('click'));
+    await sleep(80);
+    check('再次开始复习恢复了上次未提交的回忆内容',
+        elementsById.get('reviewAnswerInput').value === '我写的回忆',
+        `value=${JSON.stringify(elementsById.get('reviewAnswerInput').value)}`);
+    check('恢复的是同一个会话（没有重新开新会话）',
+        fetchLog.filter(line => line === 'POST /api/review/session').length === sessionStartsBefore,
+        JSON.stringify(fetchLog.slice(-4)));
+    const resumedSession = JSON.parse(windowStub.localStorage.getItem('todo_review_session') || 'null');
+    check('恢复后仍停在第 1 题（会话进度 index=0）',
+        Boolean(resumedSession) && Number(resumedSession.index) === 0,
+        String(windowStub.localStorage.getItem('todo_review_session')));
     step('点「看答案」不抛异常', () => elementsById.get('reviewRevealBtn').dispatch('click'));
     await sleep(120);
     const afterReveal = textOf(elementsById.get('reviewSessionView'));
     check('揭示后才出现参考答案与历史', afterReveal.includes('参考答案'), afterReveal.slice(0, 200));
+    check('揭示面板把题面代码与参考答案分开渲染',
+        afterReveal.includes('题面代码') && afterReveal.includes('def add('), afterReveal.slice(0, 240));
     check('揭示后出现五档自评按钮', findAll(elementsById.get('reviewGradeButtons'),
         el => el.classList.contains('review-grade-btn')).length === 5);
+    // 五档按钮必须真的带档位：桩以前漏解析 data-*，请求体里永远是 grade:null，
+    // "点了第 3 个按钮"的断言却照样通过。
+    check('五档自评按钮各自带 dataset.grade',
+        findAll(elementsById.get('reviewGradeButtons'), el => el.classList.contains('review-grade-btn'))
+            .map(el => Number(el.dataset.grade)).join(',') === '1,2,3,4,5',
+        findAll(elementsById.get('reviewGradeButtons'), el => el.classList.contains('review-grade-btn'))
+            .map(el => String(el.dataset.grade)).join(','));
+    const answersBefore = reviewAnswerBodies.length;
     step('选「基本掌握」不抛异常', () => {
         const buttons = findAll(elementsById.get('reviewGradeButtons'),
             el => el.classList.contains('review-grade-btn'));
         if (buttons[2]) buttons[2].dispatch('click');
     });
     await sleep(150);
+    const gradeBody = reviewAnswerBodies[answersBefore];
     check('提交自评后调用了 /api/review/answer',
         fetchLog.includes('POST /api/review/answer'), JSON.stringify(fetchLog.slice(-4)));
+    check('自评请求体带的是第 3 个按钮的档位 grade === 3',
+        Boolean(gradeBody) && Number(gradeBody.grade) === 3,
+        JSON.stringify(reviewAnswerBodies.slice(answersBefore)));
+    check('自评请求体带的是当前题的 code/type',
+        Boolean(gradeBody) && gradeBody.code === 'py.a.b' && gradeBody.type === 'predict',
+        JSON.stringify(reviewAnswerBodies.slice(answersBefore)));
+    // ⑫b 会话进度落盘：队列有 2 题，评完第 1 题后仍在本轮会话里 → index 必须是 1。
+    // （若这一轮已经练完，finishReviewSession 会清掉 key，断言就会退化成"null 也算过"。）
+    const savedSession = JSON.parse(windowStub.localStorage.getItem('todo_review_session') || 'null');
+    check('评完一题后 localStorage 里的会话进度 index 前进到 1',
+        Boolean(savedSession) && Number(savedSession.index) === 1,
+        String(windowStub.localStorage.getItem('todo_review_session')));
+    check('评完第 1 题后自动进入第 2 题',
+        textOf(elementsById.get('reviewSessionProgress')).includes('第 2 / 2 题'),
+        textOf(elementsById.get('reviewSessionProgress')));
+    check('第 2 题也渲染了自己的题面代码',
+        textOf(elementsById.get('reviewQuestionPrompt')).includes('def total('),
+        textOf(elementsById.get('reviewQuestionPrompt')).slice(0, 200));
+    check('进入第 2 题后答案面板重新隐藏（没揭示前不露答案）',
+        elementsById.get('reviewAnswerPanel').hidden === true
+        && elementsById.get('reviewGradeButtons').hidden === true,
+        `answerPanel.hidden=${elementsById.get('reviewAnswerPanel').hidden}`);
+    // 第 2 题（debug）走完，会话结束 → 进度 key 被清掉、总结出现
+    step('第 2 题揭示并自评不抛异常', () => elementsById.get('reviewRevealBtn').dispatch('click'));
+    await sleep(120);
+    check('第 2 题揭示后是 debug 的根因/修法',
+        textOf(elementsById.get('reviewSessionView')).includes('根因')
+        && textOf(elementsById.get('reviewSessionView')).includes('可变默认参数被复用'),
+        textOf(elementsById.get('reviewSessionView')).slice(0, 240));
+    step('第 2 题选「完全不会」不抛异常', () => {
+        const buttons = findAll(elementsById.get('reviewGradeButtons'),
+            el => el.classList.contains('review-grade-btn'));
+        if (buttons[0]) buttons[0].dispatch('click');
+    });
+    await sleep(150);
+    check('第 2 题请求体档位是 1（第 1 个按钮）',
+        Number((reviewAnswerBodies[reviewAnswerBodies.length - 1] || {}).grade) === 1,
+        JSON.stringify(reviewAnswerBodies.slice(-1)));
+    check('练完后清掉了会话进度（下次复习重新取队列）',
+        windowStub.localStorage.getItem('todo_review_session') === null,
+        String(windowStub.localStorage.getItem('todo_review_session')));
+    check('练完后展示本轮总结', textOf(elementsById.get('reviewSessionSummary')).includes('本次复习完成'),
+        textOf(elementsById.get('reviewSessionSummary')).slice(0, 160));
 
     // ⑪ 恢复备份（下拉选择 → 恢复 → 刷新页面）
     step('打开备份下拉不抛异常', () => elementsById.get('databaseBackupPickerButton').dispatch('click'));

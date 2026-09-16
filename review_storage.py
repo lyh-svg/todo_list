@@ -250,6 +250,19 @@ def _prompt_of(connection, code: str, question_type: str) -> str:
     return str((json.loads(row["content_json"]).get(question_type) or {}).get("prompt") or "")
 
 
+def _question_body(connection, code: str, question_type: str) -> str:
+    """题面代码片段：predict/debug 要预测或排查的 `code`，其余题型没有则为空串。
+
+    这是题面的一部分（用户必须看到才能作答），**不是**答案：
+    expected/explain/rootCause/fix 等参考答案字段仍然只在 reveal() 里返回。
+    """
+    row = connection.execute("SELECT content_json FROM review_points WHERE code=?", (code,)).fetchone()
+    if row is None:
+        return ""
+    block = json.loads(row["content_json"]).get(question_type) or {}
+    return str(block.get("code") or "")
+
+
 def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = "", level: str = "",
                 project_id: str = "", task_id: str = "", question_type: str = "",
                 new_per_day: int = 2) -> dict[str, Any]:
@@ -320,6 +333,7 @@ def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = ""
             kind = question_type or pick_question_type(item["code"], today)
             item["questionType"] = kind
             item["prompt"] = _prompt_of(connection, item["code"], kind)
+            item["body"] = _question_body(connection, item["code"], kind)
     return {"items": chosen, "total": len(chosen), "truncated": truncated, "limit": limit}
 
 
