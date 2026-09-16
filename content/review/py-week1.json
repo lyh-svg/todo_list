@@ -4,17 +4,675 @@
   "level": "基础",
   "points": [
     {
+      "code": "py.vars.binding",
+      "title": "变量绑定、动态类型与 isinstance",
+      "minutes": 15,
+      "module": "变量与类型",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1201",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1101",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "变量名和对象之间是什么关系？为什么同一个名字可以先存数字再存字符串？",
+        "answer": [
+          "变量是绑定到对象的名字，赋值只是重新绑定，不改变量本身的“类型”",
+          "类型属于对象，print(type(x)) 看的是当前绑定的对象",
+          "isinstance 沿继承链判断，比 type(x) == T 更宽容",
+          "bool 是 int 的子类，isinstance(True, int) 为 True"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "x = 10\nx = \"十\"\nprint(type(x).__name__)\ny = x\ny += \"!\"\nprint(x, y)\nprint(isinstance(True, int))",
+        "expected": [
+          "str",
+          "十 十!",
+          "True"
+        ],
+        "explain": "名字 x 重新绑定到字符串对象；str 不可变，y += \"!\" 生成新字符串，x 不变；bool 继承自 int。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "count = \"3\"\ntotal = count + 1\nprint(total)",
+        "rootCause": "count 绑定的对象是 str，str + int 会抛 TypeError；动态类型不会替你做隐式转换。",
+        "fix": "先显式转换：total = int(count) + 1；转换前还要校验输入，避免 int(\"abc\") 再次抛错。"
+      },
+      "code_task": {
+        "prompt": "写 parse_count(value)：字符串形式的非负整数转成 int，int（bool 除外）原样返回，其他或无法转换的情况返回 None，绝不抛异常。",
+        "acceptance": [
+          "parse_count(\"3\") 返回 3",
+          "parse_count(3) 返回 3",
+          "parse_count(None) 与 parse_count(\"--1\") 返回 None",
+          "parse_count(True) 返回 None（bool 是 int 子类，要显式排除）"
+        ],
+        "reference": "def parse_count(value):\n    if isinstance(value, str):\n        text = value.strip()\n        if not text.isdigit():\n            return None\n        return int(text)\n    if isinstance(value, int) and not isinstance(value, bool):\n        return value\n    return None"
+      },
+      "pitfalls": [
+        "以为变量自带固定类型",
+        "用 type(x) == int 而不是 isinstance(x, int)",
+        "忘记 bool 是 int 的子类",
+        "期待 \"3\" + 1 自动转型"
+      ]
+    },
+    {
+      "code": "py.vars.truthiness",
+      "title": "真值判断、比较与短路求值",
+      "minutes": 15,
+      "module": "变量与类型",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "哪些值在 if 里是假？and/or 返回的到底是什么？",
+        "answer": [
+          "假值：False、None、0、0.0、0j、空字符串、空容器",
+          "其余对象按 __bool__（或退化的 __len__）判定真假",
+          "and/or 返回的是操作数本身，不是 True/False",
+          "短路：a and b 在 a 为假时根本不求值 b，a or b 在 a 为真时不求值 b"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "print(bool([]), bool([0]), bool('0'))\nprint(0 or 'x', 1 and 'y')",
+        "expected": [
+          "False True True",
+          "x y"
+        ],
+        "explain": "空列表假、含 0 的列表真、'0' 是非空字符串所以真；or/and 返回操作数本身，所以打印出 'x' 和 'y'。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "value = 0\nif value:\n    print('有值')",
+        "rootCause": "0 是假值，用真值判断代替了 None 判断，合法的 0 会被当成“没有值”。",
+        "fix": "改成 if value is not None:；需要区分“缺省”和“零”时永远用 is None 判断。"
+      },
+      "code_task": {
+        "prompt": "写 safe_div(a, b)：b 为 0 或 None 时返回 None，正常时返回浮点结果；再写 has_value(value) 明确区分“是 None”和“假值”。",
+        "acceptance": [
+          "safe_div(6, 2) 返回 3.0",
+          "safe_div(6, 0) 与 safe_div(6, None) 返回 None",
+          "has_value(0) 为 True、has_value(None) 为 False",
+          "变体：safe_div(-1, 2) == -0.5（负数与浮点同样走正常路径）"
+        ],
+        "reference": "def safe_div(a, b):\n    if b is None or b == 0:\n        return None\n    return a / b\n\n\ndef has_value(value):\n    return value is not None"
+      },
+      "pitfalls": [
+        "用真值判断代替 is None",
+        "把 '0' 当成假值",
+        "把 and/or 的返回值当布尔值用",
+        "在短路右侧写有副作用的表达式并期待它一定执行"
+      ]
+    },
+    {
+      "code": "py.vars.str-bytes",
+      "title": "str 与 bytes、编码与解码",
+      "minutes": 10,
+      "module": "变量与类型",
+      "level": "基础",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "str 和 bytes 有什么区别？len 数的是什么？",
+        "answer": [
+          "str 是 Unicode 码点序列，len 数“字符”",
+          "bytes 是 0~255 的字节序列，len 数“字节”",
+          "str -> bytes 用 encode，bytes -> str 用 decode，必须用同一编码",
+          "UTF-8 下一个汉字 3 字节，GBK 下 2 字节；编码不对称会出现乱码或 UnicodeDecodeError"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "s = \"中\"\nb = s.encode(\"utf-8\")\nprint(len(s), len(b))\nprint(list(b))\nprint(b.decode(\"utf-8\") == s)",
+        "expected": [
+          "1 3",
+          "[228, 184, 173]",
+          "True"
+        ],
+        "explain": "str 的 len 是字符数 1；UTF-8 编码后是 3 个字节；用同一编码 decode 能还原。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "text = \"hello\"\ndata = text.encode(\"utf-8\")\nwith open(\"note.txt\", \"w\") as handle:\n    handle.write(data)",
+        "rootCause": "文本模式（\"w\"）的文件对象只接受 str，写入 bytes 会抛 TypeError。",
+        "fix": "要么保持文本模式写 text，要么用二进制模式 open(\"note.txt\", \"wb\") 写 data；两者不能混。"
+      },
+      "code_task": {
+        "prompt": "写 to_bytes(text, encoding=\"utf-8\") 与 decode_text(data, encoding=\"utf-8\")：encode/decode 用同一编码，解码遇到坏字节时用 errors=\"replace\" 不抛异常。",
+        "acceptance": [
+          "decode_text(to_bytes(\"中\")) 等于 \"中\"",
+          "encoding=\"gbk\" 时往返同样成立",
+          "decode_text(b\"\\xe4\\xb8\") 不抛 UnicodeDecodeError",
+          "to_bytes 返回类型是 bytes"
+        ],
+        "reference": "def to_bytes(text, encoding=\"utf-8\"):\n    return text.encode(encoding)\n\n\ndef decode_text(data, encoding=\"utf-8\"):\n    return data.decode(encoding, errors=\"replace\")"
+      },
+      "pitfalls": [
+        "把 len(str) 当字节数",
+        "文本模式和二进制模式混用",
+        "encode/decode 用了不同编码",
+        "解码不传 errors 导致 bad data 直接崩"
+      ]
+    },
+    {
+      "code": "py.vars.operators",
+      "title": "运算符、增强赋值与解包赋值",
+      "minutes": 15,
+      "module": "变量与类型",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "// 和 % 的关系是什么？星号解包和解包赋值各有什么规则？",
+        "answer": [
+          "/ 是浮点除法，// 是向下取整的整除，% 与 // 满足 a == (a // b) * b + a % b",
+          "divmod(a, b) 一次拿到 (商, 余) 元组",
+          "a, *rest = seq 把第一个给 a，其余收集成 list；* 只能出现一次",
+          "浮点数不能直接用 == 比较，要用 math.isclose 或容差"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "print(7 // 2, 7 % 2, 2 ** 3)\nprint(divmod(7, 2))\na, *b = [1, 2, 3, 4]\nprint(a, b)\nx = 5\nx += 2\nprint(x)\nprint(0.1 + 0.2 == 0.3)",
+        "expected": [
+          "3 1 8",
+          "(3, 1)",
+          "1 [2, 3, 4]",
+          "7",
+          "False"
+        ],
+        "explain": "// 向下取整并与 % 配套；divmod 返回元组；星号解包把剩余元素收成 list；浮点运算有二进制误差，0.1+0.2 != 0.3。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "pages = 10\nper_page = 3\nprint(pages / per_page + 1)",
+        "rootCause": "想算“需要几页”，但 / 得到的是浮点数 3.33… 再 +1 = 4.33，而不是向上取整的 4；用 / 不会自动进位。",
+        "fix": "在整数上向上取整：print(-(-pages // per_page))，或 import math 后 math.ceil(pages / per_page)。"
+      },
+      "code_task": {
+        "prompt": "写 split_bill(total_fen, people)：把总金额（单位分）尽量平均分给 people 个人，返回 (每人分到, 剩余)。",
+        "acceptance": [
+          "split_bill(100, 3) == (33, 1)",
+          "split_bill(100, 2) == (50, 0)",
+          "split_bill(0, 5) == (0, 0)",
+          "people <= 0 时抛 ValueError"
+        ],
+        "reference": "def split_bill(total_fen, people):\n    if people <= 0:\n        raise ValueError(\"people 必须为正\")\n    return divmod(total_fen, people)"
+      },
+      "pitfalls": [
+        "用 / 却期待整数结果",
+        "负数取模方向搞反",
+        "用 == 比较浮点结果",
+        "解包时元素个数不匹配导致 ValueError"
+      ]
+    },
+    {
+      "code": "py.list.basics",
+      "title": "列表与元组：索引、切片、可变性、增删改",
+      "minutes": 20,
+      "module": "容器",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1202",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "切片和索引有什么不同？元组真的完全不可变吗？",
+        "answer": [
+          "索引取单个元素，越界抛 IndexError；切片返回新对象，越界只截断不报错",
+          "nums[i] = v 原地改；nums.append/pop/insert/remove/del 都是原地操作",
+          "tuple 本身不可变，但元组里装的可变对象仍可被修改",
+          "a[:] 是浅拷贝，外层新、内层仍共享"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "nums = [1, 2, 3, 4, 5]\nprint(nums[1:4], nums[::2])\nnums[0] = 9\nnums.append(6)\nprint(nums)\nt = (1, [2, 3])\nt[1].append(4)\nprint(t)\nprint(nums[-2:], len(nums))",
+        "expected": [
+          "[2, 3, 4] [1, 3, 5]",
+          "[9, 2, 3, 4, 5, 6]",
+          "(1, [2, 3, 4])",
+          "[5, 6] 6"
+        ],
+        "explain": "切片返回新列表（步长 2 取 1/3/5）；索引赋值与 append 原地修改；元组不可变但里面的 list 可变；负索引从尾部数。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def add_tag(tags):\n    tags = tags + [\"new\"]\n    return tags\n\n\ntags = [\"a\"]\nadd_tag(tags)\nprint(tags)",
+        "rootCause": "tags = tags + [...] 新建了列表并只把局部名字重绑到新列表，调用方的 tags 完全没被改。",
+        "fix": "原地修改用 tags.append(\"new\")；若坚持返回新列表，就让调用方接收返回值 tags = add_tag(tags)。"
+      },
+      "code_task": {
+        "prompt": "写 take_while_positive(nums)：返回从头开始、遇到第一个非正数之前的元素副本；不修改原列表。",
+        "acceptance": [
+          "[1, 2, 0, 3] 返回 [1, 2]",
+          "全是正数时返回全部元素",
+          "返回的是新列表（对结果 append 不影响原列表）",
+          "空列表返回 []"
+        ],
+        "reference": "def take_while_positive(nums):\n    result = []\n    for value in nums:\n        if value <= 0:\n            break\n        result.append(value)\n    return result"
+      },
+      "pitfalls": [
+        "把切片当成原地修改",
+        "以为元组里的 list 也不能改",
+        "pop/remove/del 语义混淆",
+        "索引越界或负索引算错位置"
+      ]
+    },
+    {
+      "code": "py.list.sort-key",
+      "title": "sorted/sort 与 key、稳定性",
+      "minutes": 15,
+      "module": "容器",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1202",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "list.sort() 和 sorted() 有什么区别？key 应该怎么写？",
+        "answer": [
+          "list.sort() 原地排序返回 None；sorted() 返回新列表",
+          "key 接收一个函数，比较的是它的返回值；多字段用元组",
+          "Python 排序稳定：key 相同的元素保持原相对顺序",
+          "降序用 reverse=True，或对数值字段取负"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "rows = [(\"b\", 2), (\"a\", 2), (\"c\", 1)]\nrows.sort(key=lambda row: (row[1], row[0]))\nprint(rows)\nwords = [\"pear\", \"fig\", \"apple\"]\nprint(sorted(words, key=len))\nprint(sorted(words, key=len, reverse=True))",
+        "expected": [
+          "[('c', 1), ('a', 2), ('b', 2)]",
+          "['fig', 'pear', 'apple']",
+          "['apple', 'pear', 'fig']"
+        ],
+        "explain": "key 返回 (分数, 名字) 元组，先按分数升序、同分按名字升序；按长度排序时 fig(3) < pear(4) < apple(5)。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "scores = {\"a\": 3, \"b\": 1, \"c\": 2}\ntop = sorted(scores, key=scores.get)\nprint(top[0])",
+        "rootCause": "sorted 默认升序，key=scores.get 取到的是最小分数的键，top[0] 拿的是最低分而不是最高分。",
+        "fix": "写清意图：sorted(scores, key=lambda name: -scores[name])[0]，或 sorted(scores, key=scores.get, reverse=True)[0]。"
+      },
+      "code_task": {
+        "prompt": "写 rank_items(items)：items 是 (name, score) 列表，按分数从高到低、同分按名字字典序返回名字列表，且不修改入参。",
+        "acceptance": [
+          "rank_items([(\"b\", 1), (\"a\", 1)]) == [\"a\", \"b\"]",
+          "rank_items([(\"a\", 1), (\"b\", 2)]) == [\"b\", \"a\"]",
+          "调用后原 items 顺序不变",
+          "变体：分数为负数时仍按数值降序（rank_items([(\"a\", -1), (\"b\", -2)]) == [\"a\", \"b\"]）"
+        ],
+        "reference": "def rank_items(items):\n    return [name for name, _ in sorted(items, key=lambda item: (-item[1], item[0]))]"
+      },
+      "pitfalls": [
+        "把 key=len() 写成调用结果或漏参数",
+        "以为 sort 返回新列表（拿到 None）",
+        "对 dict.items() 直接排序导致比较到 dict",
+        "误以为排序不稳定而不敢依赖同分顺序"
+      ]
+    },
+    {
+      "code": "py.dict.basics",
+      "title": "dict 键值语义、迭代顺序与哈希约束",
+      "minutes": 20,
+      "module": "容器",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1202",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1203",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "dict 的键有什么要求？为什么 [] 取不存在的键会报错而 get 不会？",
+        "answer": [
+          "键必须可哈希（不可变），list/dict/set 不能当键，tuple 元素都可哈希时才行",
+          "d[k] 键不存在抛 KeyError；d.get(k, default) 返回默认值",
+          "Python 3.7+ 保证按插入顺序迭代 keys/values/items",
+          "遍历时增删键会抛 RuntimeError，需要先收集键再改"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "d = {\"a\": 1, \"b\": 2}\nd[\"c\"] = 3\nprint(list(d))\nprint(d.get(\"x\", 0), \"x\" in d)\nd[\"a\"] = d.get(\"a\", 0) + 10\nprint(d)\nprint(list(d.items())[:2])",
+        "expected": [
+          "['a', 'b', 'c']",
+          "0 False",
+          "{'a': 11, 'b': 2, 'c': 3}",
+          "[('a', 11), ('b', 2)]"
+        ],
+        "explain": "新键追加在末尾、迭代保持插入顺序；get 提供默认值且不影响成员判断；items() 给出 (键, 值) 元组。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "counts = {}\nfor word in [\"a\", \"b\", \"a\"]:\n    counts[word] += 1",
+        "rootCause": "对还不存在的键做 += 会先取值，第一次循环就抛 KeyError。",
+        "fix": "先给初值再累加：counts[word] = counts.get(word, 0) + 1；或直接用 collections.Counter。"
+      },
+      "code_task": {
+        "prompt": "写 invert_map(mapping)：把 {键: 值} 反转成 {值: [键, ...]}，同一值的多个键按字典序排列。",
+        "acceptance": [
+          "invert_map({\"a\": 1, \"b\": 1}) == {1: [\"a\", \"b\"]}",
+          "空 dict 返回 {}",
+          "结果里的值都是 list",
+          "不修改传入的 mapping"
+        ],
+        "reference": "def invert_map(mapping):\n    result = {}\n    for key, value in mapping.items():\n        result.setdefault(value, []).append(key)\n    for keys in result.values():\n        keys.sort()\n    return result"
+      },
+      "pitfalls": [
+        "用 [] 访问可能不存在的键",
+        "以为 dict 无序",
+        "拿 list/dict 当键",
+        "遍历时增删键"
+      ]
+    },
+    {
+      "code": "py.dict.aggregate",
+      "title": "分组聚合与词频统计",
+      "minutes": 20,
+      "module": "容器",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1102",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1204",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "做分组统计时通用的模式是什么？Counter 帮了什么忙？",
+        "answer": [
+          "模式：遍历记录 -> 计算分组键 -> setdefault/get 初始化累加器 -> 累加",
+          "计数用 counts[key] = counts.get(key, 0) + 1，或 Counter(可迭代)",
+          "分组用 groups.setdefault(key, []).append(value)",
+          "Counter.most_common 按计数降序，计数相同则按首次出现顺序，要确定顺序得自己 sorted"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from collections import Counter\n\nwords = \"a b a c b a\".split()\nprint(Counter(words).most_common(2))\ngroups = {}\nfor word in words:\n    groups.setdefault(len(word), []).append(word)\nprint(sorted(groups.items()))",
+        "expected": [
+          "[('a', 3), ('b', 2)]",
+          "[(1, ['a', 'b', 'a', 'c', 'b', 'a'])]"
+        ],
+        "explain": "四个词长度都是 1，分到同一组；most_common(2) 按计数降序取前两名。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "sales = [(\"a\", 10), (\"b\", 5), (\"a\", 3)]\ntotals = {}\nfor name, amount in sales:\n    totals[name] = amount\nprint(totals[\"a\"])",
+        "rootCause": "直接赋值把前一条记录覆盖掉了，聚合变成了“只留最后一条”。",
+        "fix": "改成累加：totals[name] = totals.get(name, 0) + amount。"
+      },
+      "code_task": {
+        "prompt": "写 top_words(text, n)：按空白切词，返回出现次数最多的 n 个 (word, count)；次数相同按字母升序；n <= 0 返回空列表。",
+        "acceptance": [
+          "top_words(\"a b a\", 1) == [(\"a\", 2)]",
+          "次数相同时按字母升序：top_words(\"b a\", 2) == [(\"a\", 1), (\"b\", 1)]",
+          "n 大于词数时返回全部",
+          "变体：n <= 0（含负数）返回 []，空文本返回 []"
+        ],
+        "reference": "from collections import Counter\n\n\ndef top_words(text, n):\n    if n <= 0:\n        return []\n    counts = Counter(text.split())\n    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:n]"
+      },
+      "pitfalls": [
+        "忘记给不存在的键初始化",
+        "用赋值代替累加",
+        "直接依赖 most_common 的同计数顺序",
+        "大小写/标点没归一导致词被拆散"
+      ]
+    },
+    {
+      "code": "py.set.dedupe",
+      "title": "set 运算与去重（含保序去重）",
+      "minutes": 20,
+      "module": "容器",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1202",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1204",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "set 有什么特性？为什么它不能保序、也不能放 list？",
+        "answer": [
+          "set 是“可哈希对象的无序集合”，元素唯一，成员测试平均 O(1)",
+          "元素必须可哈希，list/dict/set 不能放进去；frozenset 可以",
+          "运算：& 交、| 并、- 差、^ 对称差、<= 子集",
+          "1、1.0、True 两两相等且哈希相同，在 set 里算同一个元素"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "nums = [3, 1, 3, 2, 1]\nprint(sorted(set(nums)))\na, b = {1, 2, 3}, {2, 3, 4}\nprint(sorted(a & b), sorted(a | b), sorted(a - b))\nprint(len({1, 1.0, True}))",
+        "expected": [
+          "[1, 2, 3]",
+          "[2, 3] [1, 2, 3, 4] [1]",
+          "1"
+        ],
+        "explain": "set 去重且无序，打印前要 sorted；& | - 是交并差；1、1.0、True 相等且哈希相同，只保留一个。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "seen = set()\n\n\ndef dedupe(items):\n    result = []\n    for item in items:\n        if item not in seen:\n            result.append(item)\n        seen.add(item)\n    return result",
+        "rootCause": "seen 定义在函数外，多次调用之间共享，第二次调用会漏掉第一次见过的元素（跨调用污染）。",
+        "fix": "把 seen = set() 放进函数内部，让它成为每次调用独立的局部状态。"
+      },
+      "code_task": {
+        "prompt": "写 ordered_unique(items)：按首次出现顺序去重，返回新 list；元素必须可哈希。",
+        "acceptance": [
+          "ordered_unique([3, 1, 3, 2]) == [3, 1, 2]",
+          "空列表返回 []（返回的是 list 不是 set）",
+          "返回新列表，原列表不变",
+          "变体：全为重复值时长度为 1（ordered_unique([7, 7, 7]) == [7]）"
+        ],
+        "reference": "def ordered_unique(items):\n    seen = set()\n    result = []\n    for item in items:\n        if item in seen:\n            continue\n        seen.add(item)\n        result.append(item)\n    return result"
+      },
+      "pitfalls": [
+        "依赖 set 的迭代顺序",
+        "把 seen 放到函数外跨调用共享",
+        "把不可哈希对象塞进 set",
+        "混淆 set 与 frozenset 的可变性"
+      ]
+    },
+    {
+      "code": "py.container.selection",
+      "title": "容器选型与复杂度（list/tuple/dict/set/deque）",
+      "minutes": 30,
+      "module": "容器",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1202",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "什么场景该选 list、tuple、dict、set、deque？",
+        "answer": [
+          "list：有序、可重复、按下标访问快，头部插入/删除 O(n)",
+          "tuple：固定不变的小记录，可哈希、可当 dict 键",
+          "dict：键值映射，按 key 查找/插入平均 O(1)，保持插入顺序",
+          "set：只要“是否存在/去重/集合运算”，成员测试平均 O(1)",
+          "deque：两端 O(1) 进出的队列，需要头部弹出时替代 list"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from collections import deque\n\nitems = deque([1, 2, 3])\nitems.appendleft(0)\nprint(list(items))\nitems.pop()\nprint(list(items))\nmapping = {\"a\": 1}\nprint(mapping[\"a\"], mapping.get(\"b\", \"缺失\"))",
+        "expected": [
+          "[0, 1, 2, 3]",
+          "[0, 1, 2]",
+          "1 缺失"
+        ],
+        "explain": "deque 左端 appendleft 与右端 pop 都是 O(1)；dict 按 key 取值 O(1)，get 对缺席返回默认值。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def pop_first(items):\n    return items.pop(0)",
+        "rootCause": "list.pop(0) 之后所有元素都要前移，复杂度 O(n)；高频从头部取数据时选错了容器。",
+        "fix": "改用 collections.deque，用 popleft() 实现 O(1) 头部弹出；只是偶尔取头部则无所谓。"
+      },
+      "code_task": {
+        "prompt": "写 Recent(capacity)：add(item) 只保留最近 capacity 条记录，latest() 返回最新在前的列表；capacity <= 0 抛 ValueError。",
+        "acceptance": [
+          "Recent(2) 连续 add 1、2、3 后 latest() == [3, 2]",
+          "容量没满时 latest() 返回已加入的全部（最新在前）",
+          "Recent(0) 抛 ValueError",
+          "变体：连续 add 大量数据后长度恒等于 capacity（用 deque(maxlen=...) 保证 O(1) 与定长）"
+        ],
+        "reference": "from collections import deque\n\n\nclass Recent:\n    def __init__(self, capacity):\n        if capacity <= 0:\n            raise ValueError(\"capacity 必须为正\")\n        self.items = deque(maxlen=capacity)\n\n    def add(self, item):\n        self.items.append(item)\n\n    def latest(self):\n        return list(reversed(self.items))"
+      },
+      "pitfalls": [
+        "需要头部插入却用 list.insert(0, ...)",
+        "用 list 做大量成员测试",
+        "需要按键查找却存成 list of tuples",
+        "对 deque 用切片或随机下标"
+      ]
+    },
+    {
+      "code": "py.nested.structures",
+      "title": "嵌套结构转换与浅拷贝陷阱",
+      "minutes": 25,
+      "module": "容器",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1102",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1201",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "嵌套列表/字典做转换和复制时最容易踩什么坑？",
+        "answer": [
+          "[[0] * cols] * rows 复制的是同一行的引用，改一行全变",
+          "copy.copy / dict() / a[:] 都是浅拷贝：外层新，嵌套对象仍共享",
+          "需要完全独立用 copy.deepcopy，或手写递归构造",
+          "嵌套结构转换优先用推导式，语义清晰且不容易共享引用"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "import copy\n\nmatrix = [[1, 2], [3, 4]]\nshallow = copy.copy(matrix)\nshallow[0][0] = 99\nprint(matrix)\ndeep = copy.deepcopy(matrix)\ndeep[1][1] = 88\nprint(matrix[1][1], deep[1][1])\nrows = [{\"n\": i} for i in range(2)]\nprint([row[\"n\"] for row in rows])",
+        "expected": [
+          "[[99, 2], [3, 4]]",
+          "4 88",
+          "[0, 1]"
+        ],
+        "explain": "浅拷贝只复制外层 list，内层 list 仍共享，所以改 shallow 影响了 matrix；deepcopy 递归复制，改 deep 不影响原对象。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def make_grid(rows, cols):\n    return [[0] * cols] * rows\n\n\ngrid = make_grid(2, 2)\ngrid[0][0] = 1\nprint(grid)",
+        "rootCause": "[[0] * cols] * rows 让每一行都指向同一个内层 list，改一行等于改所有行。",
+        "fix": "用推导式逐行新建：[[0] * cols for _ in range(rows)]。"
+      },
+      "code_task": {
+        "prompt": "写 flatten(matrix)：把两层嵌套结构摊平成一维新列表；元素本身是 list 就展开，不是就原样放入。",
+        "acceptance": [
+          "flatten([[1, 2], [3]]) == [1, 2, 3]",
+          "flatten([[], [1]]) == [1]",
+          "flatten([1, 2]) == [1, 2]（非嵌套元素直接放入）",
+          "不修改入参 matrix"
+        ],
+        "reference": "def flatten(matrix):\n    result = []\n    for row in matrix:\n        if isinstance(row, list):\n            result.extend(row)\n        else:\n            result.append(row)\n    return result"
+      },
+      "pitfalls": [
+        "用 * 复制嵌套列表",
+        "把浅拷贝当深拷贝",
+        "对含循环引用的结构无脑 deepcopy",
+        "原地修改嵌套结构后发现别名一起变了"
+      ]
+    },
+    {
       "code": "py.mutability.default-arg",
       "title": "可变默认参数与求值时机",
       "minutes": 20,
       "module": "函数",
       "level": "基础",
-      "taskRefs": [{"taskId": "1103", "relation": "introduces"}],
-      "concept": {"prompt": "默认参数什么时候求值？", "answer": ["函数定义时求值一次", "可变对象会在调用间共享"]},
-      "predict": {"prompt": "写出输出并解释", "code": "def add(item, items=[]):\n    items.append(item)\n    return items\nprint(add(1))\nprint(add(2))", "expected": ["[1]", "[1, 2]"], "explain": "第二次调用复用了定义时创建的同一个列表"},
-      "debug": {"prompt": "找出 bug", "code": "def cache(k, store={}):\n    return store.setdefault(k, [])", "rootCause": "store 在函数定义时创建一次，被所有调用共享", "fix": "改成 store=None，函数体内 store = {} if store is None else store"},
-      "code_task": {"prompt": "用 None 哨兵重写", "acceptance": ["多次调用互不影响", "带一个 unittest 用例"], "reference": "def add(item, items=None):\n    items = [] if items is None else items\n    items.append(item)\n    return items"},
-      "pitfalls": ["默认值是可变对象", "把默认值当每次新建", "调用侧共享同一列表"]
+      "taskRefs": [
+        {
+          "taskId": "1103",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1303",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "默认参数什么时候求值？为什么可变默认值会在调用之间累积？",
+        "answer": [
+          "默认值在函数定义时求值一次，保存在函数对象里",
+          "可变默认值（list/dict/set）被所有未显式传参的调用共享",
+          "每次调用都要新对象就用 None 哨兵，在函数体内新建",
+          "想显式使用共享缓存时，共享是特性；区分不了就别用可变默认值"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def add(item, items=[]):\n    items.append(item)\n    return items\n\n\nprint(add(1))\nprint(add(2))\nprint(add(3, []))\nprint(add(4))",
+        "expected": [
+          "[1]",
+          "[1, 2]",
+          "[3]",
+          "[1, 2, 4]"
+        ],
+        "explain": "默认列表在 def 执行时创建一次并被所有未传参的调用共享；第 3 行显式传了新列表所以是独立的 [3]；第 4 行又回到那个共享列表，于是变成 [1, 2, 4]。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def cache(key, store={}):\n    if key not in store:\n        store[key] = []\n    return store[key]\n\n\nprint(cache(\"a\"))\nprint(cache(\"b\"))\nprint(cache(\"a\"))",
+        "rootCause": "store 在函数定义时创建一次并被所有调用共享，看起来像缓存，实际是不可控的跨调用状态：测试之间会互相污染，进程内不同业务也会串数据。",
+        "fix": "改成 store=None 哨兵：def cache(key, store=None): store = {} if store is None else store；确实需要共享缓存就显式传入同一个 dict，别藏在默认值里。"
+      },
+      "code_task": {
+        "prompt": "用 None 哨兵重写 add(item, items=None)，并写测试证明多次调用互不影响、显式传入时按传入的列表来。",
+        "acceptance": [
+          "连续调用 add(1)、add(2) 分别返回 [1] 和 [2]",
+          "add(1, shared) 会把元素加进 shared 并返回它",
+          "函数不会修改自己新建的默认列表以外的任何东西",
+          "带一个 unittest 用例覆盖“两次调用结果独立”"
+        ],
+        "reference": "def add(item, items=None):\n    if items is None:\n        items = []\n    items.append(item)\n    return items"
+      },
+      "pitfalls": [
+        "默认值是可变对象",
+        "把默认值当每次新建",
+        "调用侧共享同一列表",
+        "在默认值里藏缓存导致测试互相污染"
+      ]
     }
   ]
 }
