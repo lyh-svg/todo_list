@@ -267,6 +267,56 @@ class ReviewHttpTests(unittest.TestCase):
         self.assertEqual(self.dump_review_tables(), before,
                          "不含 review 的旧快照不能动现有复习表")
 
+    def test_import_review_snapshot_only_adds_never_deletes(self) -> None:
+        """规格 §10.7 的"只增不删"：导入不含本地行的 review 快照，本地行必须原样保留。
+
+        合并导入的快照可能来自另一台机器（没有这台机器本地的知识点/作答）。若导入按
+        "整表替换"实现，用户本地的复习进度与作答历史会被静默清空；同时快照里出现的行
+        必须真的被写入/更新，而不是因为"只增"就整份忽略。
+        """
+        # 先留一份快照（此时还没有本地独有行）。
+        snapshot = storage.export_projects_snapshot()
+        self.assertTrue(snapshot["review"]["points"], "快照里应有知识点，否则用例失去意义")
+
+        # 本地新增：一个快照里没有的知识点 + 一条作答。
+        local_code = "py.local.extra"
+        with storage.open_state_database() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO review_points "
+                "(code,title,minutes,module,level,origin,content_json,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (local_code, "本地独有知识点", 5, "本地", "基础", "local", "{}", TODAY, TODAY))
+            connection.execute(
+                "INSERT INTO review_attempts "
+                "(id,code,task_id,project_id,question_type,grade,answer,ai_verdict,"
+                "reviewed_on,duration_ms,session_id,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("local-attempt-1", local_code, "", "", "concept", 5, "本地独有作答",
+                 "", TODAY, 700, "", TODAY))
+
+        # 快照里出现的行要被 upsert：改一行标题，导入后库里必须变成新标题。
+        updated = snapshot["review"]["points"][0]
+        updated_code = str(updated["code"])
+        updated["title"] = "被快照更新过的标题"
+
+        status, result = self.call("/api/import", "POST", {
+            "projects": snapshot["projects"], "mode": "merge",
+            "review": snapshot["review"]})
+        self.assertEqual(status, 200)
+        self.assertGreater(result["review"]["points"], 0)
+
+        after = self.dump_review_tables()
+        self.assertIn(local_code, {row[0] for row in after["review_points"]},
+                      "导入不能删掉快照里没有的本地知识点")
+        self.assertIn("local-attempt-1", {row[0] for row in after["review_attempts"]},
+                      "导入不能删掉快照里没有的本地作答")
+        with storage.open_state_database() as connection:
+            row = connection.execute(
+                "SELECT title FROM review_points WHERE code=?", (updated_code,)).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["title"], "被快照更新过的标题",
+                         "快照里出现的行必须被写入/更新")
+
 
 class ReviewBootstrapTests(unittest.TestCase):
     """启动导入课程库：空库幂等播种；内容文件缺失/损坏不阻断启动（同一个临时库）。

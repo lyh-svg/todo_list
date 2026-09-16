@@ -2426,6 +2426,13 @@ body.modal-open { overflow: hidden; }
 .extra-ask { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-light); }
 .extra-ask select { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 .review-ai-group { display: flex; align-items: center; gap: 5px; margin-left: auto; padding-left: 8px; border-left: 1px solid var(--border); }
+/* AI 判分入口与结果面板：与 .utility-secondary-btn 同一套边框/文字色，避免裸样式。 */
+.review-ai-grade { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed #d1d5db; }
+.review-ai-grade .utility-secondary-btn { min-height: 30px; padding: 0 10px; font-size: 12px; }
+.review-ai-verdict { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: #f7f9fc; color: #536176; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.review-ai-verdict > div + div { margin-top: 4px; }
 /* ===== 摘要清单: 大弹窗 + 网格卡片 ===== */
 .utility-modal .utility-dialog.utility-wide { width: min(96vw, 1120px); max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column; }
 .utility-modal .utility-dialog.utility-wide .utility-body { overflow-y: auto; flex: 1; }

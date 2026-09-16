@@ -3218,6 +3218,10 @@ let knowledgePoints = [];
         showToast(`已清理 ${candidates.length} 个任务的验收记录`);
     }
 
+    // 「选择备份文件」解析出的 review 快照（导出文件附带的 5 张复习表），供导入预览/确认使用。
+    // 旧备份没有这个键时是 undefined —— 请求体里不会多出该字段，向后兼容。
+    let pendingImportReview;
+
     async function importBackup(file) {
         if (!file) return;
         try {
@@ -3229,6 +3233,12 @@ let knowledgePoints = [];
             }
             const imported = extractProjects(payload);
             if (!imported) throw new Error('备份文件格式不正确');
+            // 导出文件里还附带 5 张复习表的 review 快照：先存到模块级状态，确认导入时
+            // 随请求体一起转发给 /api/import（否则"导出 → 导入"会静默丢掉复习进度与作答历史）。
+            // 纯 projects 数组或旧备份没有这个键 → undefined，请求体里不会多出 review。
+            pendingImportReview = payload && !Array.isArray(payload) && typeof payload === 'object'
+                ? payload.review
+                : undefined;
             await openImportPreview(imported);
         } catch (error) {
             console.error('导入备份失败', error);
@@ -3329,6 +3339,19 @@ let knowledgePoints = [];
             });
         };
 
+        // 导入请求体：除了 projects/mode/keepAiHistory，还要把导出文件里的 review 快照原样
+        // 转发给后端（/api/import 会把它 upsert 进 5 张复习表，只增不删）。旧备份没有这个键时
+        // 不添加该字段，后端 payload.get("review") 为 None → 原样跳过，保持向后兼容。
+        const importRequestBody = () => {
+            const body = {
+                projects: nextProjects.map(serializeProject),
+                mode: state.mode,
+                keepAiHistory: state.keepAiHistory,
+            };
+            if (pendingImportReview !== undefined) body.review = pendingImportReview;
+            return JSON.stringify(body);
+        };
+
         const refresh = async () => {
             report.replaceChildren();
             const loading = document.createElement('p');
@@ -3339,11 +3362,7 @@ let knowledgePoints = [];
                 const response = await apiFetch('/api/import/preview', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        projects: nextProjects.map(serializeProject),
-                        mode: state.mode,
-                        keepAiHistory: state.keepAiHistory,
-                    }),
+                    body: importRequestBody(),
                 });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(payload.error || '预览失败');
@@ -3368,11 +3387,7 @@ let knowledgePoints = [];
                 const response = await apiFetch('/api/import', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        projects: nextProjects.map(serializeProject),
-                        mode: state.mode,
-                        keepAiHistory: state.keepAiHistory,
-                    }),
+                    body: importRequestBody(),
                 });
                 const result = await response.json().catch(() => ({}));
                 if (!response.ok || !Array.isArray(result.projects)) {

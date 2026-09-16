@@ -311,8 +311,12 @@ const projectPostBodies = [];
 const reviewAnswerBodies = [];
 // 记录 AI 判分的请求体：断言入口真的把当前题/答案 POST 给了 /api/review/ai-grade。
 const reviewAiGradeBodies = [];
+// 记录 /api/import 的请求体：断言导出文件里的 review 快照被原样转发（旧备份不能凭空多出该键）。
+const importBodies = [];
 // 模拟"没配置 AI key"：置 true 后 /api/review/ai-grade 返回 503（走 toast 分支）。
 let aiGradeUnavailable = false;
+// null 表示用默认的「还有缺漏」verdict；测试用它切换 correct:true / 空 verdict 两个分支。
+let aiGradeVerdict = null;
 // 记录生成回流的请求体：验收失败必须带 remedial:true + gap，验收通过则不带。
 const reviewGenerateBodies = [];
 async function fetchStub(url, options = {}) {
@@ -356,7 +360,11 @@ async function fetchStub(url, options = {}) {
             aiHistory: { nodesWithAssessment: 0, nodesWithReview: 0, policy: '保留' }
         }
     });
-    if (path === '/api/import') return reply(200, { backup: 'before-import-smoke.zip',
+    if (path === '/api/import') {
+        if (options.body) {
+            try { importBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
+        }
+        return reply(200, { backup: 'before-import-smoke.zip',
         ok: true,
         // 导入响应是"导入后的完整项目列表"：真实服务会把已有项目一起回传，
         // 这里带上默认课程项目，后面的验收场景才有一个未缓存的默认课程可打开。
@@ -366,7 +374,8 @@ async function fetchStub(url, options = {}) {
                    { id: 'p-assess', name: '验收项目', description: '', createdAt: today,
                      assessmentEnabled: true, archived: false, reviewEnabled: false,
                      stats: { total: 2, remaining: 2, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 }]
-    });
+        });
+    }
     if (path === '/api/project/plan') return reply(200, {
         ok: true,
         plan: { description: '冒烟用 AI 计划', tree: [{ type: 'week', text: '第1周：AI 规划', children: [
@@ -436,7 +445,8 @@ async function fetchStub(url, options = {}) {
             try { reviewAiGradeBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
         }
         if (aiGradeUnavailable) return reply(503, { error: '未配置 AI，判分不可用（复习本身不受影响）' });
-        return reply(200, { ok: true, verdict: {
+        // aiGradeVerdict 非 null 时用它（覆盖 correct:true / 空 verdict 两个边界分支）。
+        return reply(200, { ok: true, verdict: aiGradeVerdict || {
             correct: false, missing: ['没有讲清第二次调用复用了同一个列表'],
             wrongAt: '把 add(1, 2) 的输出写成了 [1]',
             hint: '对照默认参数在定义时求值这一点',
@@ -711,6 +721,15 @@ function step(name, fn) {
     elementsById.get('newProjectPlanToggle').checked = false;
 
     // ⑩ 导入 JSON（文件选择框 → 确认 → POST /api/import）
+    // 导出的备份里除了 projects 还带 5 张复习表的 review 快照；前端必须原样转发给 /api/import，
+    // 否则"导出 → 导入"在 UI 路径上会静默丢掉复习进度与作答历史。
+    // 弹窗在 DOM 桩里 innerHTML='' 清不掉旧子节点（见 app.js 同款注释），第二次打开导入预览时
+    // utilityBody 里会同时留着上一次的「确认导入」，必须点最后（最新）那一个。
+    const clickImportConfirm = () => {
+        const buttons = findAll(elementsById.get('utilityBody'), el => el.textContent === '确认导入');
+        const button = buttons[buttons.length - 1];
+        if (button) button.dispatch('click');
+    };
     const importPayload = {
         schemaVersion: 2,
         projects: [{
@@ -722,7 +741,19 @@ function step(name, fn) {
                      type: 'item', text: '导入进来的任务', completed: false, completedAt: null,
                      optional: false, assessmentRequired: false, assessmentHistory: 0, assessment: null,
                      createdAt: today, children: [] }] }] }]
-        }]
+        }],
+        review: {
+            points: [{ code: 'py.imp.b', title: '导入的知识点', minutes: 5, module: '容器', level: '基础',
+                       origin: 'builtin', content: { prompt: '导入的题面' },
+                       createdAt: today, updatedAt: today }],
+            pointTasks: [{ code: 'py.imp.b', taskId: 'imp-i', projectId: 'imp-1', relation: 'import' }],
+            states: [{ code: 'py.imp.b', due: today, intervalDays: 3, streak: 1, lapses: 0,
+                       lastGrade: 4, weak: false, lastReviewedAt: today }],
+            attempts: [{ id: 'imp-a1', code: 'py.imp.b', taskId: '', projectId: '',
+                         questionType: 'concept', grade: 4, answer: '导入的作答', aiVerdict: '',
+                         reviewedOn: today, durationMs: 900, sessionId: '', createdAt: today }],
+            sessions: [],
+        },
     };
     elementsById.get('importInput').files = [{ name: 'backup.json', text: async () => JSON.stringify(importPayload) }];
     step('选择要导入的 JSON 文件不抛异常', () => elementsById.get('importInput').dispatch('change'));
@@ -735,14 +766,29 @@ function step(name, fn) {
         previewText.includes('新增项目') && previewText.includes('将被移除')
         && previewText.includes('AI 历史') && previewText.includes('导入方式'),
         previewText.slice(0, 200));
-    step('点「确认导入」不抛异常', () => {
-        const buttons = findAll(elementsById.get('utilityBody'), el => el.textContent === '确认导入');
-        if (buttons[0]) buttons[0].dispatch('click');
-    });
+    step('点「确认导入」不抛异常', clickImportConfirm);
     await sleep(150);
     check('确认后才真正调用 /api/import', fetchLog.includes('POST /api/import'), JSON.stringify(fetchLog.slice(-4)));
+    check('导入请求体带上备份里的 review 快照（points/states/attempts 都在）',
+        importBodies.length === 1 && Boolean(importBodies[0].review)
+        && Array.isArray(importBodies[0].review.points) && importBodies[0].review.points[0].code === 'py.imp.b'
+        && Array.isArray(importBodies[0].review.states) && importBodies[0].review.states[0].code === 'py.imp.b'
+        && Array.isArray(importBodies[0].review.attempts) && importBodies[0].review.attempts[0].id === 'imp-a1',
+        JSON.stringify(importBodies.slice(-1)).slice(0, 260));
     check('导入后列表显示导入的项目', textOf(elementsById.get('projectGrid')).includes('导入的项目'),
         textOf(elementsById.get('projectGrid')).slice(0, 160));
+
+    // 旧备份（没有 review 键）必须照常导入，且请求体里不能凭空多出 review。
+    const legacyPayload = { schemaVersion: 2, projects: importPayload.projects };
+    elementsById.get('importInput').files = [{ name: 'legacy-backup.json', text: async () => JSON.stringify(legacyPayload) }];
+    step('导入不含 review 的旧备份不抛异常', () => elementsById.get('importInput').dispatch('change'));
+    await sleep(120);
+    step('确认旧备份导入不抛异常', clickImportConfirm);
+    await sleep(150);
+    check('不含 review 的旧备份仍能导入，且请求体里没有 review 键',
+        importBodies.length === 2 && !('review' in importBodies[1])
+        && Array.isArray(importBodies[1].projects) && importBodies[1].projects.length === 1,
+        `count=${importBodies.length} last=${JSON.stringify(importBodies.slice(-1)).slice(0, 160)}`);
 
     // ⑫ 复习页改版：顶栏「复习」先开复习页（按知识点分组 + 筛选），
     //     再点「开始今日复习」进会话；会话仍是一次一题 → 先回忆 → 揭示 → 5 档自评。
@@ -858,6 +904,10 @@ function step(name, fn) {
     check('揭示前 DOM 里没有参考答案（active recall）',
         !beforeReveal.includes('参考答案') && !beforeReveal.includes('expected-answer'),
         beforeReveal.slice(0, 200));
+    check('揭示前 AI 判分入口不可见（还没作答不该判分）',
+        elementsById.get('reviewAiGradeRow').hidden === true
+        && elementsById.get('reviewAiGradeResult').hidden === true,
+        `row.hidden=${elementsById.get('reviewAiGradeRow').hidden}`);
     step('填写回忆内容不抛异常', () => {
         const input = elementsById.get('reviewAnswerInput');
         input.value = '我写的回忆';
@@ -917,6 +967,23 @@ function step(name, fn) {
         && aiVerdictText.includes('把 add(1, 2) 的输出写成了 [1]')
         && aiVerdictText.includes('对照默认参数在定义时求值'),
         aiVerdictText.slice(0, 240) || '（面板为空）');
+    // verdict 的两个边界分支：correct:true 要报「要点基本覆盖」；空 verdict（后端 AI 调用失败
+    // 时返回 {}）必须给明确说明，而不是渲染出一个像「判错了」的空面板。
+    aiGradeVerdict = { correct: true };
+    if (aiGradeBtn) step('点「AI 判分」（correct:true）不抛异常', () => aiGradeBtn.dispatch('click'));
+    await sleep(120);
+    check('verdict correct:true 渲染成「要点基本覆盖」',
+        elementsById.get('reviewAiGradeResult').hidden === false
+        && textOf(elementsById.get('reviewAiGradeResult')).includes('要点基本覆盖'),
+        textOf(elementsById.get('reviewAiGradeResult')).slice(0, 160) || '（面板为空）');
+    aiGradeVerdict = {};
+    if (aiGradeBtn) step('点「AI 判分」（空 verdict）不抛异常', () => aiGradeBtn.dispatch('click'));
+    await sleep(120);
+    check('空 verdict 渲染明确说明（不是空面板）',
+        elementsById.get('reviewAiGradeResult').hidden === false
+        && textOf(elementsById.get('reviewAiGradeResult')).includes('AI 没有返回判分结果'),
+        textOf(elementsById.get('reviewAiGradeResult')).slice(0, 160) || '（面板为空）');
+    aiGradeVerdict = null;
     // 未配置 AI key（503）：只 toast 提示，不抛异常，也不能顺手提交一次自评。
     aiGradeUnavailable = true;
     const answersBeforeUnavailable = reviewAnswerBodies.length;
@@ -963,6 +1030,12 @@ function step(name, fn) {
         elementsById.get('reviewAnswerPanel').hidden === true
         && elementsById.get('reviewGradeButtons').hidden === true,
         `answerPanel.hidden=${elementsById.get('reviewAnswerPanel').hidden}`);
+    // 这一句只有在 renderReviewQuestion() 里复位 reviewAiGradeRow.hidden 时才成立：
+    // 上一题揭示后它被设成 false，不复位的话第 2 题没揭示就能点 AI 判分。
+    check('进入第 2 题后 AI 判分入口重新隐藏（揭示前不可判分）',
+        elementsById.get('reviewAiGradeRow').hidden === true
+        && elementsById.get('reviewAiGradeResult').hidden === true,
+        `row.hidden=${elementsById.get('reviewAiGradeRow').hidden} result.hidden=${elementsById.get('reviewAiGradeResult').hidden}`);
     // 第 2 题（debug）走完，会话结束 → 进度 key 被清掉、总结出现
     step('第 2 题揭示并自评不抛异常', () => elementsById.get('reviewRevealBtn').dispatch('click'));
     await sleep(120);
