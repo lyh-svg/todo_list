@@ -53,16 +53,23 @@ def point(code, task_id="", relation="introduces", *, project_id="", title="示�
     }
 
 
-# 测试用知识点库：1202 同时有 introduces + exercises（验证排序），
+# 测试用知识点库：9202 同时有 introduces + exercises（验证排序），
 # 1101 只有 exercises（验证"测试型任务也能回流"），另一个点同时挂 1104/1504（元任务）。
+# 种子任务 id 用 9xxx 假号段：真实课程库（Task 15 的 40 点）会把知识点挂到
+# 1202/1101/1103 等真实任务上，种子点若复用真实 id，points_for_task 会把内置点
+# 一起返回，断言就变成依赖课程库内容而不是生成逻辑本身。
+SEED_TASK_ID = "9202"
+SEED_PROJECT_ID = "p-9202"
 META_POINT = point("py.gen.meta", title="元任务点")
 META_POINT["taskRefs"] = [
     {"taskId": "1104", "projectId": "", "relation": "introduces"},
     {"taskId": "1504", "projectId": "", "relation": "exercises"},
 ]
 SEED_POINTS = [
-    point("py.gen.intro", "1202", "introduces", project_id="p-1202", title="1202 引入点"),
-    point("py.gen.exercise", "1202", "exercises", project_id="p-1202", title="1202 练习点"),
+    point("py.gen.intro", SEED_TASK_ID, "introduces", project_id=SEED_PROJECT_ID,
+          title="9202 引入点"),
+    point("py.gen.exercise", SEED_TASK_ID, "exercises", project_id=SEED_PROJECT_ID,
+          title="9202 练习点"),
     point("py.gen.only-exercise", "1101", "exercises", title="1101 练习点"),
     META_POINT,
 ]
@@ -83,7 +90,7 @@ class PointsForTaskTests(unittest.TestCase):
         reset_review_data()
 
     def test_introduced_points_come_first(self) -> None:
-        points = review_storage.points_for_task("1202")
+        points = review_storage.points_for_task(SEED_TASK_ID)
         relations = [entry["relation"] for entry in points]
         self.assertEqual(sorted(set(relations)), ["exercises", "introduces"])
         first_exercise = relations.index("exercises")
@@ -92,13 +99,13 @@ class PointsForTaskTests(unittest.TestCase):
         self.assertEqual([entry["code"] for entry in points], ["py.gen.intro", "py.gen.exercise"])
 
     def test_points_carry_display_fields(self) -> None:
-        entry = {item["code"]: item for item in review_storage.points_for_task("1202")}["py.gen.intro"]
-        self.assertEqual(entry["title"], "1202 引入点")
+        entry = {item["code"]: item for item in review_storage.points_for_task(SEED_TASK_ID)}["py.gen.intro"]
+        self.assertEqual(entry["title"], "9202 引入点")
         self.assertEqual(entry["minutes"], 10)
         self.assertEqual(entry["module"], "容器")
         self.assertEqual(entry["level"], "基础")
         self.assertEqual(entry["relation"], "introduces")
-        self.assertEqual(entry["projectId"], "p-1202")
+        self.assertEqual(entry["projectId"], SEED_PROJECT_ID)
 
     def test_exercises_only_task_still_yields_points(self) -> None:
         points = review_storage.points_for_task("1101")
@@ -355,7 +362,8 @@ class ReviewGenerateHttpTests(unittest.TestCase):
 
     def test_generate_without_ai_returns_preplanned_points(self) -> None:
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": ""}, clear=False):
-            status, payload = self.call("/api/review/generate", {"taskId": "1202", "projectId": "p-1202"})
+            status, payload = self.call("/api/review/generate", {"taskId": SEED_TASK_ID,
+                                                                 "projectId": SEED_PROJECT_ID})
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["usedAi"])
@@ -390,21 +398,21 @@ class ReviewGenerateHttpTests(unittest.TestCase):
     def test_generate_remedial_marks_weak_and_reports_inserted(self) -> None:
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
             status, payload = self.call("/api/review/generate",
-                                        {"taskId": "1202", "projectId": "p-1202",
+                                        {"taskId": SEED_TASK_ID, "projectId": SEED_PROJECT_ID,
                                          "taskText": "可变默认参数", "count": 2,
                                          "gap": "说不清默认参数求值时机", "remedial": True})
         self.assertEqual(status, 200)
         self.assertTrue(payload["usedAi"])
         self.assertEqual(payload["inserted"], 2)
         remedial = [entry["code"] for entry in payload["created"]
-                    if entry["code"].startswith("py.ai.1202.remedial.")]
+                    if entry["code"].startswith(f"py.ai.{SEED_TASK_ID}.remedial.")]
         self.assertEqual(len(remedial), 2)
         # 该任务所有相关知识点（含预规划点）都要进薄弱点列表。
-        for code in ("py.gen.intro", "py.gen.exercise", "py.ai.1202.remedial.1"):
+        for code in ("py.gen.intro", "py.gen.exercise", f"py.ai.{SEED_TASK_ID}.remedial.1"):
             self.assertTrue(review_storage.read_state(code)["weak"], code)
 
     def test_generate_remedial_repeat_is_unchanged_and_stays_weak(self) -> None:
-        body = {"taskId": "1202", "projectId": "p-1202", "taskText": "可变默认参数",
+        body = {"taskId": SEED_TASK_ID, "projectId": SEED_PROJECT_ID, "taskText": "可变默认参数",
                 "count": 2, "gap": "说不清求值时机", "remedial": True}
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
             first = self.call("/api/review/generate", body)[1]
@@ -412,12 +420,12 @@ class ReviewGenerateHttpTests(unittest.TestCase):
         self.assertEqual(first["inserted"], 2)
         self.assertEqual(second["inserted"], 0, "补漏题已存在时不能重复计为新增")
         self.assertEqual(second["unchanged"], 2)
-        self.assertTrue(review_storage.read_state("py.ai.1202.remedial.1")["weak"])
+        self.assertTrue(review_storage.read_state(f"py.ai.{SEED_TASK_ID}.remedial.1")["weak"])
 
     def test_generate_remedial_without_ai_still_marks_weak(self) -> None:
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": ""}, clear=False):
             status, payload = self.call("/api/review/generate",
-                                        {"taskId": "1202", "projectId": "p-1202",
+                                        {"taskId": SEED_TASK_ID, "projectId": SEED_PROJECT_ID,
                                          "taskText": "可变默认参数", "remedial": True,
                                          "gap": "没讲清机制"})
         self.assertEqual(status, 200)
