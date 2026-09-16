@@ -53,9 +53,11 @@ class ReviewHttpTests(unittest.TestCase):
             headers["Content-Type"] = "application/json"
         connection.request(method, path, body=payload, headers=headers)
         response = connection.getresponse()
-        data = json.loads(response.read().decode("utf-8") or "{}")
+        raw = response.read().decode("utf-8")
         connection.close()
-        return response.status, data
+        if not raw and response.status < 400:
+            self.fail(f"{path} 返回 {response.status} 但 body 为空")
+        return response.status, json.loads(raw or "{}")
 
     def test_summary_and_queue(self) -> None:
         status, summary = self.call(f"/api/review/summary?today={TODAY}")
@@ -69,10 +71,16 @@ class ReviewHttpTests(unittest.TestCase):
         status, queue = self.call(f"/api/review/queue?today={TODAY}&limit=5")
         self.assertEqual(status, 200)
         for item in queue["items"]:
-            self.assertNotIn("answer", item)
-            self.assertNotIn("expected", item)
-            self.assertNotIn("rootCause", item)
-            self.assertNotIn("reference", item)
+            for key in (
+                "answer",
+                "expected",
+                "explain",
+                "rootCause",
+                "fix",
+                "acceptance",
+                "reference",
+            ):
+                self.assertNotIn(key, item)
 
     def test_points_and_history(self) -> None:
         status, points = self.call("/api/review/points?limit=5")
@@ -92,6 +100,10 @@ class ReviewHttpTests(unittest.TestCase):
     def test_requires_session_token(self) -> None:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=10)
         connection.request("GET", f"/api/review/summary?today={TODAY}")
+        self.assertEqual(connection.getresponse().status, 401)
+        connection.close()
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=10)
+        connection.request("GET", f"/api/review/queue?today={TODAY}&limit=5")
         self.assertEqual(connection.getresponse().status, 401)
         connection.close()
 
