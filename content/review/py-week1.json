@@ -536,7 +536,7 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "def pop_first(items):\n    return items.pop(0)",
+        "code": "from collections import deque\n\n\ndef pop_first(items):\n    return items.pop(0)\n\n\nqueue = list(range(1000))\nprint(pop_first(queue), len(queue))\n\nfast = deque(range(1000))\nprint(fast.popleft(), len(fast))\n# 两次输出一样（0 999）：功能没问题，问题在代价。\n# list.pop(0) 要把后面所有元素整体前移，连续弹出 n 次是 O(n^2)；\n# deque.popleft() 每次 O(1)，n 次共 O(n)。",
         "rootCause": "list.pop(0) 之后所有元素都要前移，复杂度 O(n)；高频从头部取数据时选错了容器。",
         "fix": "改用 collections.deque，用 popleft() 实现 O(1) 头部弹出；只是偶尔取头部则无所谓。"
       },
@@ -822,8 +822,8 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "def cache(key, store={}):\n    if key not in store:\n        store[key] = []\n    return store[key]\n\n\nprint(cache(\"a\"))\nprint(cache(\"b\"))\nprint(cache(\"a\"))",
-        "rootCause": "store 在函数定义时创建一次并被所有调用共享，看起来像缓存，实际是不可控的跨调用状态：测试之间会互相污染，进程内不同业务也会串数据。",
+        "code": "def cache(key, store={}):\n    if key not in store:\n        store[key] = []\n    return store[key]\n\n\ncache(\"a\").append(\"第一次写入\")\nprint(cache(\"a\"))\nprint(cache(\"a\") is cache(\"a\"))",
+        "rootCause": "store 在函数定义时创建一次并被所有调用共享，看起来像缓存，实际是不可控的跨调用状态：cache(\"a\") 返回的列表被就地修改后，下一次 cache(\"a\") 拿到的还是同一个列表（is 为 True），测试之间会互相污染，进程内不同业务也会串数据。",
         "fix": "改成 store=None 哨兵：def cache(key, store=None): store = {} if store is None else store；确实需要共享缓存就显式传入同一个 dict，别藏在默认值里。"
       },
       "code_task": {
@@ -834,7 +834,7 @@
           "函数不会修改自己新建的默认列表以外的任何东西",
           "带一个 unittest 用例覆盖“两次调用结果独立”"
         ],
-        "reference": "def add(item, items=None):\n    if items is None:\n        items = []\n    items.append(item)\n    return items"
+        "reference": "import unittest\n\n\ndef add(item, items=None):\n    if items is None:\n        items = []\n    items.append(item)\n    return items\n\n\nclass AddTests(unittest.TestCase):\n    def test_calls_are_independent(self):\n        self.assertEqual(add(1), [1])\n        self.assertEqual(add(2), [2])\n\n    def test_explicit_list_is_used(self):\n        shared = []\n        self.assertIs(add(1, shared), shared)\n        self.assertEqual(shared, [1])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
       },
       "pitfalls": [
         "默认值是可变对象",
@@ -1261,8 +1261,8 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "def handle(command):\n    match command:\n        case [\"go\", steps]:\n            return steps\n        case [\"go\", steps] if steps > 0:\n            return steps * 2\n        case _:\n            return 0",
-        "rootCause": "第一个 case 的捕获模式能匹配所有 [\"go\", 任意值]，它排在前面，带守卫的分支永远不可达，负数也走了第一条。",
+        "code": "def handle(command):\n    match command:\n        case [\"go\", steps]:\n            return steps\n        case [\"go\", steps] if steps > 0:\n            return steps * 2\n        case _:\n            return 0\n\n\nprint(handle([\"go\", 3]))\nprint(handle([\"go\", -1]))",
+        "rootCause": "第一个 case 的捕获模式能匹配所有 [\"go\", 任意值]，它排在前面，带守卫的分支永远不可达，负数也走了第一条：handle([\"go\", 3]) 返回 3（期望 6），handle([\"go\", -1]) 返回 -1（期望 0）。",
         "fix": "把带守卫的分支放到前面，或给第一个 case 加守卫，让“更具体的模式”先匹配。"
       },
       "code_task": {
@@ -1693,8 +1693,8 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "def save(path, text):\n    try:\n        with open(path, \"w\") as handle:\n            handle.write(text)\n    except Exception:\n        pass",
-        "rootCause": "裸 except Exception + pass 把权限不足、磁盘写满、编码错误全部吃掉，调用方以为保存成功，数据却丢了。",
+        "code": "def save(path, text):\n    try:\n        with open(path, \"w\") as handle:\n            handle.write(text)\n    except Exception:\n        pass\n\n\nsave(\"no_such_dir/note.txt\", \"hello\")\nprint(\"保存完成\")",
+        "rootCause": "片段里父目录不存在，open 抛 FileNotFoundError，却被 except Exception: pass 直接吞掉；权限不足、磁盘写满、编码错误同样会被吃掉。调用方看到“保存完成”，数据却丢了。",
         "fix": "只捕获明确的 IOError/OSError，记录日志后重新抛出（或返回明确的失败结果），其余异常不要拦。"
       },
       "code_task": {
@@ -2018,8 +2018,8 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "# pkg/a.py\nfrom pkg.b import helper\n\n\ndef run():\n    return helper()\n\n\n# pkg/b.py\nfrom pkg.a import run\n\n\ndef helper():\n    return \"ok\"",
-        "rootCause": "a 与 b 互相导入：先导入 a 时 b 又会去导入 a，此时 a 的 run 还没定义，导入直接失败（或拿到不完整的模块）。",
+        "code": "# 真实项目里这是 pkg/a.py 与 pkg/b.py 两个文件；这里写进临时包后真实导入\nimport importlib\nimport sys\nimport tempfile\nfrom pathlib import Path\n\nwith tempfile.TemporaryDirectory() as work:\n    pkg = Path(work) / \"pkg\"\n    pkg.mkdir()\n    (pkg / \"__init__.py\").write_text(\"\", encoding=\"utf-8\")\n    (pkg / \"a.py\").write_text(\n        \"from pkg.b import helper\\n\\n\\ndef run():\\n    return helper()\\n\",\n        encoding=\"utf-8\",\n    )\n    (pkg / \"b.py\").write_text(\n        \"from pkg.a import run\\n\\n\\ndef helper():\\n    return 'ok'\\n\",\n        encoding=\"utf-8\",\n    )\n    sys.path.insert(0, work)\n    try:\n        importlib.import_module(\"pkg.a\")\n    finally:\n        sys.path.remove(work)",
+        "rootCause": "a 与 b 互相导入：先导入 a 时 b 又会去导入 a，此时 a 的 run 还没定义，import 直接以 ImportError（partially initialized module 'pkg.a'）失败。片段把两个文件落进临时包真实复现了这条循环导入。",
         "fix": "把共享逻辑下沉到独立的第三个模块，或把导入放进函数内部延迟执行，只保留顶层的类型导入。"
       },
       "code_task": {
@@ -2077,8 +2077,8 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "import pandas",
-        "rootCause": "直接 import 第三方库却不在依赖文件里声明，本地能跑是因为碰巧装过；换环境或 CI 立刻 ImportError。",
+        "code": "# 业务模块顶部直接 import 了第三方库，但它没有写进 requirements.txt / pyproject.toml\nimport not_installed_pkg",
+        "rootCause": "import 的依赖没有声明在 requirements.txt / pyproject.toml 里，换一台机器、换一个 venv 或上 CI 就立刻 ModuleNotFoundError；本地能跑只是因为碰巧装过。",
         "fix": "在 requirements.txt / pyproject.toml 里声明依赖并在 venv 中安装；提交锁定的版本，避免“我机器上能跑”。"
       },
       "code_task": {

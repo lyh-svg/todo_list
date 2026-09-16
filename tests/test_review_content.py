@@ -21,7 +21,7 @@ GOOD_POINT = {
               "fix": "改成 store=None，函数体内 store = {} if store is None else store"},
     "code_task": {"prompt": "用 None 哨兵重写",
                   "acceptance": ["多次调用互不影响", "带一个 unittest 用例"],
-                  "reference": "def add(item, items=None):\n    items = [] if items is None else items\n    items.append(item)\n    return items"},
+                  "reference": "import unittest\n\n\ndef add(item, items=None):\n    items = [] if items is None else items\n    items.append(item)\n    return items\n\n\nclass AddTests(unittest.TestCase):\n    def test_calls_are_independent(self):\n        self.assertEqual(add(1), [1])\n        self.assertEqual(add(2), [2])"},
     "pitfalls": ["默认值是可变对象", "把默认值当每次新建", "调用侧共享同一列表"],
 }
 
