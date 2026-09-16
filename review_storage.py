@@ -425,8 +425,8 @@ def recent_attempts(kind: str, today: str, limit: int = 10) -> list[dict[str, An
              "answer": row["answer"], "reviewedOn": row["reviewed_on"]} for row in rows]
 
 
-def history(code: str, limit: int = 20) -> dict[str, Any]:
-    """单个知识点的详情：内容元数据 + 易错点 + 最近作答 + 当前调度状态；code 不存在抛 ValueError。"""
+def _history_detail(code: str, limit: int = 20) -> tuple[dict[str, Any], dict[str, Any]]:
+    """一次查询返回 (内容 JSON, 历史详情)，供 history/reveal 复用同一份解析结果。"""
     with _connection() as connection:
         point = connection.execute(
             "SELECT title,content_json,module,level,minutes FROM review_points WHERE code=?",
@@ -437,42 +437,44 @@ def history(code: str, limit: int = 20) -> dict[str, Any]:
             "SELECT question_type,grade,answer,ai_verdict,reviewed_on,duration_ms FROM review_attempts "
             "WHERE code=? ORDER BY created_at DESC LIMIT ?", (str(code), max(1, min(100, int(limit))))).fetchall()
     content = json.loads(point["content_json"])
-    return {"code": str(code), "title": point["title"], "module": point["module"],
-            "level": point["level"], "minutes": int(point["minutes"]),
-            "pitfalls": content.get("pitfalls") or [],
-            "attempts": [{"questionType": row["question_type"], "grade": int(row["grade"]),
-                          "answer": row["answer"], "aiVerdict": row["ai_verdict"],
-                          "reviewedOn": row["reviewed_on"], "durationMs": int(row["duration_ms"])}
-                         for row in rows],
-            "state": read_state(str(code))}
+    detail = {"code": str(code), "title": point["title"], "module": point["module"],
+              "level": point["level"], "minutes": int(point["minutes"]),
+              "pitfalls": content.get("pitfalls") or [],
+              "attempts": [{"questionType": row["question_type"], "grade": int(row["grade"]),
+                            "answer": row["answer"], "aiVerdict": row["ai_verdict"],
+                            "reviewedOn": row["reviewed_on"], "durationMs": int(row["duration_ms"])}
+                           for row in rows],
+              "state": read_state(str(code))}
+    return content, detail
+
+
+def history(code: str, limit: int = 20) -> dict[str, Any]:
+    """单个知识点的详情：内容元数据 + 易错点 + 最近作答 + 当前调度状态；code 不存在抛 ValueError。"""
+    return _history_detail(code, limit)[1]
 
 
 def reveal(code: str, question_type: str) -> dict[str, Any]:
-    """揭示答案：这是唯一会返回参考答案/历史答案的入口。"""
+    """揭示答案：这是唯一会返回参考答案/历史答案的入口。
+
+    题型自带字段（含 predict/debug 要预测或排查的 `code` 题面片段）原样保留；
+    知识点 code 改用 `pointCode` 单独暴露，避免覆盖题面片段。
+    """
     if question_type not in review_content.QUESTION_TYPES:
         raise ValueError("题型不正确")
-    data = history(code, limit=20)
-    point = _point_content(str(code))
-    block = dict(point.get(question_type) or {})
-    block.update({"code": str(code), "type": question_type, "title": data["title"],
-                  "pitfalls": data["pitfalls"], "history": data["attempts"],
-                  "state": data["state"]})
+    content, detail = _history_detail(str(code), 20)
+    block = dict(content.get(question_type) or {})
+    block.update({"pointCode": str(code), "type": question_type, "title": detail["title"],
+                  "pitfalls": detail["pitfalls"], "history": detail["attempts"],
+                  "state": detail["state"]})
     return block
 
 
-def _point_content(code: str) -> dict[str, Any]:
-    with _connection() as connection:
-        row = connection.execute(
-            "SELECT content_json FROM review_points WHERE code=?", (str(code),)).fetchone()
-    if row is None:
-        raise ValueError("知识点不存在")
-    return json.loads(row["content_json"])
-
-
 def finish_session(session_id: str, *, answered: int, grade_counts: dict[int, int],
-                   duration_ms: int) -> None:
+                   duration_ms: int) -> int:
+    """标记会话结束并返回受影响行数：0 表示 sessionId 不存在，调用方应据此报错。"""
     with storage.state_lock(), _connection() as connection:
-        connection.execute(
+        cursor = connection.execute(
             "UPDATE review_sessions SET finished_at=?,answered=?,grade_counts_json=?,duration_ms=? WHERE id=?",
             (_now(), max(0, int(answered or 0)), _json({str(k): int(v) for k, v in (grade_counts or {}).items()}),
              max(0, int(duration_ms or 0)), str(session_id)))
+        return int(cursor.rowcount)

@@ -845,8 +845,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 today = optional_iso_date(str(payload.get("today") or ""))
                 if not today:
                     raise ValueError("today 必须是 YYYY-MM-DD")
+                try:
+                    grade = int(payload.get("grade") or 0)
+                except (TypeError, ValueError):
+                    raise ValueError("自评档位必须是 1~5") from None
                 schedule = review_storage.apply_grade(
-                    code, kind, int(payload.get("grade") or 0), today=today,
+                    code, kind, grade, today=today,
                     answer=str(payload.get("answer") or ""),
                     duration_ms=int(payload.get("durationMs") or 0),
                     session_id=str(payload.get("sessionId") or ""),
@@ -859,11 +863,20 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     session_id = review_storage.start_session(int(payload.get("planned") or 0))
                     self.send_json(200, {"ok": True, "sessionId": session_id})
                 elif action == "finish":
-                    review_storage.finish_session(
+                    raw_counts = payload.get("gradeCounts") or {}
+                    if not isinstance(raw_counts, dict):
+                        raise ValueError("gradeCounts 必须是对象")
+                    try:
+                        grade_counts = {int(k): int(v) for k, v in raw_counts.items()}
+                    except (TypeError, ValueError):
+                        raise ValueError("gradeCounts 必须是 1~5 档位的次数映射") from None
+                    updated = review_storage.finish_session(
                         str(payload.get("sessionId") or ""),
                         answered=int(payload.get("answered") or 0),
-                        grade_counts={int(k): int(v) for k, v in (payload.get("gradeCounts") or {}).items()},
+                        grade_counts=grade_counts,
                         duration_ms=int(payload.get("durationMs") or 0))
+                    if not updated:
+                        raise ValueError("会话不存在")
                     self.send_json(200, {"ok": True})
                 else:
                     raise ValueError("不支持的会话操作")

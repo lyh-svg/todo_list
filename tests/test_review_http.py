@@ -23,6 +23,8 @@ import review_storage  # noqa: E402
 import storage  # noqa: E402
 
 TODAY = "2026-09-16"
+CONTENT_PATH = APP_DIR / "content" / "review" / "py-week1.json"
+MUTABLE_DEFAULT = "py.mutability.default-arg"
 
 
 class _QuietHandler(local_server.TodoHandler):
@@ -136,16 +138,57 @@ class ReviewHttpTests(unittest.TestCase):
         status, payload = self.call("/api/review/answer", "POST", {
             "code": code, "type": "concept", "grade": 9, "today": TODAY})
         self.assertEqual(status, 400)
+        status, payload = self.call("/api/review/answer", "POST", {
+            "code": code, "type": "concept", "grade": "abc", "today": TODAY})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "自评档位必须是 1~5")
 
     def test_session_lifecycle_over_http(self) -> None:
         status, started = self.call("/api/review/session", "POST", {"action": "start", "planned": 3})
         self.assertEqual(status, 200)
         session_id = started["sessionId"]
+        status, payload = self.call("/api/review/session", "POST", {
+            "action": "finish", "sessionId": session_id, "gradeCounts": ["3"]})
+        self.assertEqual(status, 400)
         status, finished = self.call("/api/review/session", "POST", {
             "action": "finish", "sessionId": session_id, "answered": 2,
             "gradeCounts": {"3": 1, "4": 1}, "durationMs": 4000})
         self.assertEqual(status, 200)
         self.assertTrue(finished["ok"])
+
+    def _content_point(self, code: str) -> dict:
+        data = json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
+        return next(point for point in data["points"] if point["code"] == code)
+
+    def test_reveal_predict_preserves_question_code(self) -> None:
+        status, payload = self.call("/api/review/reveal", "POST",
+                                   {"code": MUTABLE_DEFAULT, "type": "predict"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["pointCode"], MUTABLE_DEFAULT)
+        self.assertEqual(payload["code"], self._content_point(MUTABLE_DEFAULT)["predict"]["code"])
+        self.assertIn("def add(item, items=[])", payload["code"])
+
+    def test_reveal_debug_preserves_question_code(self) -> None:
+        status, payload = self.call("/api/review/reveal", "POST",
+                                   {"code": MUTABLE_DEFAULT, "type": "debug"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["pointCode"], MUTABLE_DEFAULT)
+        self.assertEqual(payload["code"], self._content_point(MUTABLE_DEFAULT)["debug"]["code"])
+        self.assertIn("def cache(", payload["code"])
+
+    def test_reveal_concept_has_no_question_code(self) -> None:
+        status, payload = self.call("/api/review/reveal", "POST",
+                                   {"code": MUTABLE_DEFAULT, "type": "concept"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["pointCode"], MUTABLE_DEFAULT)
+        self.assertFalse(payload.get("code"))
+
+    def test_finish_unknown_session_is_400(self) -> None:
+        status, payload = self.call("/api/review/session", "POST", {
+            "action": "finish", "sessionId": "nope", "answered": 1,
+            "gradeCounts": {"3": 1}, "durationMs": 1000})
+        self.assertEqual(status, 400)
+        self.assertFalse(payload.get("ok"))
 
 
 if __name__ == "__main__":
