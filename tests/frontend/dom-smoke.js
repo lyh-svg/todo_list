@@ -1,5 +1,6 @@
 // 前端运行时冒烟测试：用最小 DOM 桩真实加载 index.html + api-client.js + study-tools.js + app.js，
-// 然后模拟点击（今日工作台 → 返回、打开项目、完成任务、打开元数据、批量模式、快速添加、提醒开关），
+// 然后模拟点击（今日工作台 → 返回、打开项目、完成任务、打开元数据、批量模式、快速添加、提醒开关、
+// 复习会话：开始复习 → 先回忆 → 揭示答案 → 五档自评），
 // 断言：① 任何一步都不抛异常；② 任意时刻只有一个视图处于 active。
 //
 // 只读：不修改仓库文件。
@@ -44,8 +45,20 @@ function makeEl(tag = 'div', id = '') {
         hasAttribute() { return false; }, focus() {}, blur() {}, scrollIntoView() {}, click() { this.dispatch('click'); },
         addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); },
         removeEventListener(type, fn) { this._listeners[type] = (this._listeners[type] || []).filter(f => f !== fn); },
+        // 真实 DOM 的事件会冒泡：复习自评/批量操作都用容器上的事件委托。
+        // 桩以前只在目标元素自身跑监听器，委托处理器永远不会被触发。
         dispatch(type, event = {}) {
-            (this._listeners[type] || []).forEach(fn => fn({ target: this, currentTarget: this, stopPropagation() {}, preventDefault() {}, key: '', ...event }));
+            const evt = {
+                type, target: this, currentTarget: this,
+                stopPropagation() { evt._stopped = true; }, preventDefault() {}, key: '',
+                ...event,
+            };
+            let node = this;
+            while (node) {
+                (node._listeners[type] || []).forEach(fn => fn({ ...evt, currentTarget: node }));
+                if (evt._stopped) break;
+                node = node._parentElement || null;
+            }
         },
         appendChild(child) { if (child) { child.parentElement = this; this._children.push(child); } return child; },
         append(...children) { children.forEach(c => this.appendChild(c)); },
@@ -85,7 +98,21 @@ function makeEl(tag = 'div', id = '') {
             if (classOnly) return findAll(this, child => child.classList.contains(classOnly[1]));
             return [];
         },
-        closest() { return null; },
+        // 真实 DOM 会顺着祖先链找匹配元素：顶栏/列表的批量选中与复习自评都靠它。
+        // 桩以前直接返回 null，事件委托就没法被测到。
+        closest(selector) {
+            const text = String(selector || '').trim();
+            const classOnly = /^\.([\w-]+)$/.exec(text);
+            const idOnly = /^#([\w-]+)$/.exec(text);
+            let node = this;
+            while (node) {
+                if (classOnly && node.classList.contains(classOnly[1])) return node;
+                if (idOnly && node.id === idOnly[1]) return node;
+                if (!classOnly && !idOnly && node._tag === text) return node;
+                node = node._parentElement || null;
+            }
+            return null;
+        },
         getContext() { return { drawImage() {}, clearRect() {}, fillRect() {} }; },
         toBlob(cb) { cb(null); },
         getBoundingClientRect() { return { top: 0, left: 0, width: 100, height: 20 }; },
@@ -99,13 +126,48 @@ function makeEl(tag = 'div', id = '') {
     return el;
 }
 
+// 桩以前把每个带 id 的标签都建成孤立元素，textOf(view) 永远只看到视图元素自己的 textContent，
+// 于是「揭示前/后整个视图里有没有答案」这种断言形同虚设。这里按标签顺序重建父子关系：
+// 带 id 的元素都进树；无 id 但直接挂在 id 元素下的元素也进树（只到这一层，
+// 否则 index.html 里几十个纯样式 div 会挤进 children，把既有断言的计数搅乱）。
 const elementsById = new Map();
-for (const match of html.matchAll(/<[^>]*id="([^"]+)"[^>]*>/g)) {
-    const el = makeEl('div', match[1]);
-    const classMatch = match[0].match(/class="([^"]*)"/);
-    if (classMatch) classMatch[1].split(/\s+/).filter(Boolean).forEach(name => el.classList.add(name));
-    if (/\shidden(\s|>|$)/.test(match[0])) el.hidden = true;
-    elementsById.set(match[1], el);
+{
+    const tokenRe = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|[^>"])*)>/g;
+    const stack = [{ depth: 0, el: null, loose: false }];
+    const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+        'meta', 'param', 'source', 'track', 'wbr']);
+    let match;
+    while ((match = tokenRe.exec(html)) !== null) {
+        const closing = match[1] === '/';
+        const tagName = match[2].toLowerCase();
+        const attrs = match[3] || '';
+        const parent = stack[stack.length - 1];
+        if (closing) {
+            while (stack.length > 1 && stack[stack.length - 1].depth > parent.depth) stack.pop();
+            if (stack.length > 1) stack.pop();
+            continue;
+        }
+        const idMatch = /\sid="([^"]+)"/.exec(attrs);
+        const classMatch = /\sclass="([^"]*)"/.exec(attrs);
+        const wantsElement = Boolean(idMatch) || (Boolean(classMatch) && Boolean(parent.el) && !parent.loose);
+        let el = null;
+        if (wantsElement && !(idMatch && elementsById.has(idMatch[1]))) {
+            el = makeEl(tagName, idMatch ? idMatch[1] : '');
+            if (classMatch) classMatch[1].split(/\s+/).filter(Boolean).forEach(name => el.classList.add(name));
+            if (idMatch) {
+                if (/\shidden(\s|>|$)/.test(attrs)) el.hidden = true;
+                // data-* 也要解析：复习自评按钮靠 dataset.grade 传档位，桩里漏掉就会永远点不出请求。
+                for (const dataMatch of attrs.matchAll(/data-([\w-]+)="([^"]*)"/g)) {
+                    const key = dataMatch[1].replace(/-(\w)/g, (m, c) => c.toUpperCase());
+                    el.dataset[key] = dataMatch[2];
+                }
+                elementsById.set(idMatch[1], el);
+            }
+            if (parent.el) parent.el.appendChild(el);
+        }
+        const selfClosing = /\/\s*$/.test(attrs) || VOID_TAGS.has(tagName);
+        if (!selfClosing) stack.push({ depth: tokenRe.lastIndex, el, loose: Boolean(el) ? !idMatch : parent.loose });
+    }
 }
 
 const documentListeners = {};
@@ -253,6 +315,23 @@ async function fetchStub(url, options = {}) {
     if (path === '/api/settings') return reply(200, { settings: {
         trashRetentionDays: 7, autoArchiveEnabled: false, autoArchiveDays: 30,
         reviewDailyLimit: 10, reviewNewPerDay: 2 } });
+    if (path === '/api/review/summary') return reply(200, { dueToday: 1, overdue: 1, upcoming: 0, weak: 1,
+        total: 3, learned: 2, answeredToday: 0, streakDays: 3, limit: 10, newPerDay: 2 });
+    if (path === '/api/review/queue') return reply(200, { items: [{ code: 'py.a.b', title: '示例知识点',
+        minutes: 10, module: '容器', level: '基础', questionType: 'predict',
+        prompt: '写出下面代码的输出', reason: 'today', due: today, taskId: '1103', projectId: 'p1' }],
+        total: 1, truncated: false, limit: 10 });
+    if (path === '/api/review/reveal') return reply(200, { code: 'py.a.b', type: 'predict',
+        title: '示例知识点', prompt: '写出下面代码的输出', expected: ['[1]', '[1, 2]'],
+        explain: '第二次调用复用了同一个列表', pitfalls: ['可变默认参数'], history: [], state: null });
+    if (path === '/api/review/answer') return reply(200, { ok: true, schedule: { due: '2026-09-30',
+        intervalDays: 14, streak: 1, lapses: 0, weak: false, lastGrade: 4 } });
+    if (path === '/api/review/session') return reply(200, { ok: true, sessionId: 's-review-1' });
+    if (path === '/api/review/points') return reply(200, { points: [{ code: 'py.a.b', title: '示例知识点',
+        minutes: 10, module: '容器', level: '基础', origin: 'builtin', due: today, weak: true, lastGrade: 3,
+        pitfalls: ['可变默认参数'] }], total: 1, limit: 200, offset: 0 });
+    if (path === '/api/review/history') return reply(200, { code: 'py.a.b', title: '示例知识点',
+        module: '容器', level: '基础', minutes: 10, pitfalls: [], attempts: [], state: null });
     if (path === '/api/memos') return reply(200, { memos: [], databaseBytes: 0 });
     if (path === '/api/inbox/add') return reply(200, { ok: true, node: { ...projectFixture.tree[0].children[0].children[0], id: 'i-new', text: '新任务' }, revision: 2, projectId: 'inbox' });
     if (path === '/api/batch') return reply(200, { ok: true, changed: 1, spawned: 0, failed: [], projects: [] });
@@ -308,7 +387,7 @@ loadScript('js/study-tools.js');
 loadScript('js/app.js');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const VIEWS = ['projectsView', 'detailView', 'reviewView', 'workbenchView'];
+const VIEWS = ['projectsView', 'detailView', 'reviewView', 'reviewSessionView', 'knowledgeView', 'workbenchView'];
 function activeViews() {
     return VIEWS.filter(id => {
         const el = elementsById.get(id);
@@ -516,6 +595,37 @@ function step(name, fn) {
     check('确认后才真正调用 /api/import', fetchLog.includes('POST /api/import'), JSON.stringify(fetchLog.slice(-4)));
     check('导入后列表显示导入的项目', textOf(elementsById.get('projectGrid')).includes('导入的项目'),
         textOf(elementsById.get('projectGrid')).slice(0, 160));
+
+    // ⑫ 复习会话：一次一题 → 先回忆 → 揭示 → 5 档自评（揭示前 DOM 里不能有答案）
+    step('点击「开始复习」不抛异常', () => elementsById.get('reviewQueueBtn').dispatch('click'));
+    await sleep(120);
+    check('复习会话视图打开', activeViews().includes('reviewSessionView'), JSON.stringify(activeViews()));
+    const promptEl = elementsById.get('reviewQuestionPrompt');
+    check('会话出题了（有题面）', Boolean(promptEl && textOf(promptEl).trim()),
+        textOf(elementsById.get('reviewSessionView')).slice(0, 160));
+    const beforeReveal = textOf(elementsById.get('reviewSessionView'));
+    check('揭示前 DOM 里没有参考答案（active recall）',
+        !beforeReveal.includes('参考答案') && !beforeReveal.includes('expected-answer'),
+        beforeReveal.slice(0, 200));
+    step('填写回忆内容不抛异常', () => {
+        const input = elementsById.get('reviewAnswerInput');
+        input.value = '我写的回忆';
+        input.dispatch('input');
+    });
+    step('点「看答案」不抛异常', () => elementsById.get('reviewRevealBtn').dispatch('click'));
+    await sleep(120);
+    const afterReveal = textOf(elementsById.get('reviewSessionView'));
+    check('揭示后才出现参考答案与历史', afterReveal.includes('参考答案'), afterReveal.slice(0, 200));
+    check('揭示后出现五档自评按钮', findAll(elementsById.get('reviewGradeButtons'),
+        el => el.classList.contains('review-grade-btn')).length === 5);
+    step('选「基本掌握」不抛异常', () => {
+        const buttons = findAll(elementsById.get('reviewGradeButtons'),
+            el => el.classList.contains('review-grade-btn'));
+        if (buttons[2]) buttons[2].dispatch('click');
+    });
+    await sleep(150);
+    check('提交自评后调用了 /api/review/answer',
+        fetchLog.includes('POST /api/review/answer'), JSON.stringify(fetchLog.slice(-4)));
 
     // ⑪ 恢复备份（下拉选择 → 恢复 → 刷新页面）
     step('打开备份下拉不抛异常', () => elementsById.get('databaseBackupPickerButton').dispatch('click'));

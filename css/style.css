@@ -2410,3 +2410,17 @@ body.modal-open { overflow: hidden; }
 .assessment-question-btn { white-space: nowrap; padding: 5px 10px; }
 .extra-ask { width: 100%; margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); flex-wrap: nowrap; gap: 8px; }
 .extra-count { font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.review-session-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.review-card { background: var(--panel-bg, #fff); border-radius: 12px; padding: 18px; }
+.review-meta { color: #6b7280; font-size: 13px; margin-bottom: 8px; }
+.review-prompt { font-size: 16px; line-height: 1.6; margin-bottom: 12px; white-space: pre-wrap; }
+.review-card textarea { width: 100%; font-family: inherit; font-size: 14px; padding: 10px; border-radius: 8px;
+  border: 1px solid #d1d5db; box-sizing: border-box; }
+.review-actions-row { margin: 12px 0; }
+.review-answer { border-top: 1px dashed #d1d5db; padding-top: 12px; margin-top: 8px; white-space: pre-wrap; }
+.review-answer h4 { margin: 10px 0 6px; font-size: 14px; }
+.review-grades { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.review-grade-btn { padding: 8px 12px; border-radius: 8px; border: 1px solid #d1d5db; background: #f9fafb;
+  cursor: pointer; }
+.review-grade-btn:hover { background: #eef2ff; }
+.review-summary { background: var(--panel-bg, #fff); border-radius: 12px; padding: 18px; }

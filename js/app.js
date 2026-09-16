@@ -32,6 +32,18 @@ const reviewBackBtn = document.getElementById('reviewBackBtn');
 const reviewBody = document.getElementById('reviewBody');
 const reviewSubline = document.getElementById('reviewSubline');
 const projectReviewToggle = document.getElementById('projectReviewToggle');
+// 第七批：复习会话视图（一次一题、先回忆后揭示、五档自评）
+const reviewSessionView = document.getElementById('reviewSessionView');
+const reviewSessionProgress = document.getElementById('reviewSessionProgress');
+const reviewSessionExitBtn = document.getElementById('reviewSessionExitBtn');
+const reviewQuestionCard = document.getElementById('reviewQuestionCard');
+const reviewQuestionMeta = document.getElementById('reviewQuestionMeta');
+const reviewQuestionPrompt = document.getElementById('reviewQuestionPrompt');
+const reviewAnswerInput = document.getElementById('reviewAnswerInput');
+const reviewRevealBtn = document.getElementById('reviewRevealBtn');
+const reviewAnswerPanel = document.getElementById('reviewAnswerPanel');
+const reviewGradeButtons = document.getElementById('reviewGradeButtons');
+const reviewSessionSummary = document.getElementById('reviewSessionSummary');
     const exportBtn = document.getElementById('exportBtn');
     const viewBar = document.getElementById('viewBar');
     const viewChips = document.getElementById('viewChips');
@@ -78,7 +90,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     // 所有视图切换都走这里：避免新增视图后忘记在别处移除 active
     function activateView(activeView) {
-        [projectsView, detailView, reviewView, workbenchView].forEach(view => {
+        [projectsView, detailView, reviewView, reviewSessionView, workbenchView].forEach(view => {
             if (view) view.classList.toggle('active', view === activeView);
         });
     }
@@ -6293,6 +6305,197 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         };
     }
 
+    // ---------- 第七批：复习会话（一次一题、先回忆后揭示、五档自评、草稿恢复） ----------
+    // 硬不变量：参考答案与历史答案只在 revealReviewAnswer() 里渲染，
+    // renderReviewQuestion() 绝不把答案写进 DOM —— 否则"先回忆"就失去意义。
+    const GRADE_LABELS = { 1: '完全不会', 2: '看过但说不清', 3: '基本掌握', 4: '可以独立写代码', 5: '可以讲给别人听' };
+    let reviewSessionState = { sessionId: '', items: [], index: 0, startedAt: 0, gradeCounts: {}, revealed: false };
+    let reviewDraftTimer = null;
+
+    function reviewDraftKey(code, type) {
+        return `todo_review_draft:${reviewSessionState.sessionId}:${code}:${type}`;
+    }
+
+    // 草稿：切题/退出/提交前都存一次，刷新后还能接上自己的回忆内容。
+    function saveReviewDraft() {
+        const item = reviewSessionState.items[reviewSessionState.index];
+        if (!item || !reviewAnswerInput) return;
+        try {
+            localStorage.setItem(reviewDraftKey(item.code, item.questionType), reviewAnswerInput.value || '');
+        } catch (error) { /* 隐私模式等忽略 */ }
+    }
+
+    function restoreReviewDraft(item) {
+        reviewAnswerInput.value = '';
+        try {
+            reviewAnswerInput.value = localStorage.getItem(reviewDraftKey(item.code, item.questionType)) || '';
+        } catch (error) { /* 忽略 */ }
+    }
+
+    async function startReviewSession() {
+        let payload;
+        try {
+            const response = await apiFetch(`/api/review/queue?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' });
+            payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取复习队列失败');
+        } catch (error) {
+            showToast(error.message || '读取复习队列失败，请重试');
+            return;
+        }
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        if (items.length === 0) {
+            showToast('今天没有要复习的知识点，去知识点库挑一个练也行');
+            activateView(reviewView);
+            return;
+        }
+        // 会话 id 失败不阻塞练习：离线也能一题一题过，只是统计不上报。
+        let sessionId = '';
+        try {
+            const started = await callApi('/api/review/session', 'POST', { action: 'start', planned: items.length });
+            sessionId = started.sessionId || '';
+        } catch (error) { sessionId = ''; }
+        reviewSessionState = { sessionId: sessionId, items: items, index: 0, startedAt: Date.now(), gradeCounts: {}, revealed: false };
+        activateView(reviewSessionView);
+        renderReviewQuestion();
+    }
+
+    function renderReviewQuestion() {
+        const item = reviewSessionState.items[reviewSessionState.index];
+        if (!item) { finishReviewSession(); return; }
+        reviewSessionState.revealed = false;
+        reviewSessionSummary.hidden = true;
+        reviewQuestionCard.hidden = false;
+        reviewSessionProgress.textContent = `第 ${reviewSessionState.index + 1} / ${reviewSessionState.items.length} 题`;
+        reviewQuestionMeta.textContent = `${item.title} · ${item.module || '未分类'} · ${item.minutes} 分钟 · ${item.reason === 'new' ? '新知识点' : '复习'}`;
+        reviewQuestionPrompt.textContent = item.prompt || '（这道题没有题面）';
+        restoreReviewDraft(item);
+        reviewAnswerPanel.hidden = true;
+        reviewAnswerPanel.replaceChildren();
+        reviewGradeButtons.hidden = true;
+        reviewRevealBtn.disabled = false;
+    }
+
+    async function revealReviewAnswer() {
+        const item = reviewSessionState.items[reviewSessionState.index];
+        if (!item || reviewSessionState.revealed) return;
+        reviewRevealBtn.disabled = true;
+        saveReviewDraft();
+        let data;
+        try {
+            data = await callApi('/api/review/reveal', 'POST', { code: item.code, type: item.questionType });
+        } catch (error) {
+            reviewRevealBtn.disabled = false;
+            showToast(error.message || '读取答案失败，请重试');
+            return;
+        }
+        reviewSessionState.revealed = true;
+        const parts = [];
+        const heading = document.createElement('h4');
+        heading.textContent = '参考答案';
+        parts.push(heading);
+        const expected = Array.isArray(data.expected) ? data.expected : [];
+        const answerLines = Array.isArray(data.answer) ? data.answer : [];
+        [].concat(answerLines, expected).forEach(line => {
+            const block = document.createElement('div');
+            block.className = 'expected-answer';
+            block.textContent = String(line);
+            parts.push(block);
+        });
+        if (data.explain) {
+            const explain = document.createElement('div');
+            explain.textContent = `解释：${data.explain}`;
+            parts.push(explain);
+        }
+        if (data.rootCause) {
+            const cause = document.createElement('div');
+            cause.textContent = `根因：${data.rootCause}（修法：${data.fix || ''}）`;
+            parts.push(cause);
+        }
+        if (data.reference) {
+            const reference = document.createElement('div');
+            reference.textContent = `参考实现：${data.reference}`;
+            parts.push(reference);
+        }
+        if (Array.isArray(data.pitfalls) && data.pitfalls.length > 0) {
+            const pitfallTitle = document.createElement('h4');
+            pitfallTitle.textContent = '易错点';
+            parts.push(pitfallTitle);
+            data.pitfalls.forEach(text => {
+                const line = document.createElement('div');
+                line.textContent = `· ${text}`;
+                parts.push(line);
+            });
+        }
+        const history = Array.isArray(data.history) ? data.history : [];
+        if (history.length > 0) {
+            const historyTitle = document.createElement('h4');
+            historyTitle.textContent = '历史答案';
+            parts.push(historyTitle);
+            history.slice(0, 5).forEach(entry => {
+                const line = document.createElement('div');
+                line.textContent = `${entry.reviewedOn} · ${GRADE_LABELS[entry.grade] || entry.grade} · ${entry.answer || '（没写）'}`;
+                parts.push(line);
+            });
+        }
+        reviewAnswerPanel.replaceChildren(...parts);
+        reviewAnswerPanel.hidden = false;
+        reviewGradeButtons.hidden = false;
+    }
+
+    async function gradeReviewQuestion(grade) {
+        const item = reviewSessionState.items[reviewSessionState.index];
+        if (!item || !reviewSessionState.revealed) return;
+        const answer = reviewAnswerInput.value || '';
+        try {
+            await callApi('/api/review/answer', 'POST', {
+                code: item.code, type: item.questionType, grade: grade, answer: answer,
+                durationMs: Date.now() - reviewSessionState.startedAt,
+                sessionId: reviewSessionState.sessionId,
+                taskId: item.taskId || '', projectId: item.projectId || '',
+                today: todayStr(),
+            });
+        } catch (error) {
+            // 保存失败就停在当前题：答案还留在输入框里，重选档位即可重试。
+            showToast(error.message || '保存作答失败，答案还留在输入框里');
+            return;
+        }
+        try { localStorage.removeItem(reviewDraftKey(item.code, item.questionType)); } catch (error) { /* 忽略 */ }
+        reviewSessionState.gradeCounts[grade] = (reviewSessionState.gradeCounts[grade] || 0) + 1;
+        reviewSessionState.index += 1;
+        if (reviewSessionState.index >= reviewSessionState.items.length) finishReviewSession();
+        else renderReviewQuestion();
+        loadReviewCounts();
+    }
+
+    async function finishReviewSession() {
+        const counts = reviewSessionState.gradeCounts;
+        const answered = Object.values(counts).reduce((sum, value) => sum + value, 0);
+        try {
+            await callApi('/api/review/session', 'POST', {
+                action: 'finish', sessionId: reviewSessionState.sessionId, answered: answered,
+                gradeCounts: counts, durationMs: Date.now() - reviewSessionState.startedAt,
+            });
+        } catch (error) { /* 总结照常展示 */ }
+        reviewQuestionCard.hidden = true;
+        reviewSessionSummary.hidden = false;
+        const lines = ['本次复习完成'];
+        lines.push(`共 ${answered} 题，用时 ${Math.round((Date.now() - reviewSessionState.startedAt) / 60000 * 10) / 10} 分钟`);
+        Object.keys(GRADE_LABELS).forEach(grade => {
+            const count = counts[grade] || 0;
+            if (count) lines.push(`${GRADE_LABELS[grade]}：${count} 题`);
+        });
+        const summary = document.createElement('div');
+        const title = document.createElement('h3');
+        title.textContent = lines[0];
+        summary.appendChild(title);
+        lines.slice(1).forEach(line => {
+            const block = document.createElement('div');
+            block.textContent = line;
+            summary.appendChild(block);
+        });
+        reviewSessionSummary.replaceChildren(summary);
+    }
+
     async function showReviewQueue() {
         try {
             await settleSaves();
@@ -9035,8 +9238,20 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (e.key === 'Enter') createProjectBtn.click();
         });
         backBtn.addEventListener('click', showProjectsView);
-        reviewQueueBtn.addEventListener('click', () => { showReviewQueue(); });
+        // 顶栏「复习」现在直接进复习会话（第七批）：先回忆 → 揭示 → 五档自评。
+        // 旧的复习队列页仍然可达（会话退出按钮 / 队列内操作后的回跳）。
+        reviewQueueBtn.addEventListener('click', () => { startReviewSession(); });
         reviewBackBtn.addEventListener('click', () => { showProjectsView(); });
+        reviewSessionExitBtn.addEventListener('click', () => { saveReviewDraft(); showReviewQueue(); });
+        reviewRevealBtn.addEventListener('click', revealReviewAnswer);
+        reviewAnswerInput.addEventListener('input', () => {
+            clearTimeout(reviewDraftTimer);
+            reviewDraftTimer = setTimeout(saveReviewDraft, 500);
+        });
+        reviewGradeButtons.addEventListener('click', (event) => {
+            const button = event.target.closest('.review-grade-btn');
+            if (button) gradeReviewQuestion(Number(button.dataset.grade));
+        });
         workbenchBackBtn.addEventListener('click', () => { showProjectsView(); });
         workbenchRefreshBtn.addEventListener('click', () => showWorkbench());
         openWorkbenchBtn.addEventListener('click', () => showWorkbench());

@@ -228,6 +228,29 @@
 </div>
 <div class="review-body" id="reviewBody"></div>
 </div>
+<div class="view" id="reviewSessionView">
+<div class="review-session-head">
+<button type="button" id="reviewSessionExitBtn" class="utility-secondary-btn">退 出</button>
+<span class="review-subline" id="reviewSessionProgress"></span>
+</div>
+<div class="review-card" id="reviewQuestionCard">
+<div class="review-meta" id="reviewQuestionMeta"></div>
+<div class="review-prompt" id="reviewQuestionPrompt"></div>
+<textarea id="reviewAnswerInput" rows="6" placeholder="先自己回忆或写出代码，再看答案"></textarea>
+<div class="review-actions-row">
+<button type="button" id="reviewRevealBtn" class="utility-primary-btn">看答案</button>
+</div>
+<div class="review-answer" id="reviewAnswerPanel" hidden></div>
+<div class="review-grades" id="reviewGradeButtons" hidden>
+<button type="button" class="review-grade-btn" data-grade="1">完全不会</button>
+<button type="button" class="review-grade-btn" data-grade="2">看过但说不清</button>
+<button type="button" class="review-grade-btn" data-grade="3">基本掌握</button>
+<button type="button" class="review-grade-btn" data-grade="4">可以独立写代码</button>
+<button type="button" class="review-grade-btn" data-grade="5">可以讲给别人听</button>
+</div>
+</div>
+<div class="review-summary" id="reviewSessionSummary" hidden></div>
+</div>
 <div class="view" id="workbenchView">
 <div class="review-header">
 <button class="back-btn" id="workbenchBackBtn" type="button" aria-label="返回">←</button>
