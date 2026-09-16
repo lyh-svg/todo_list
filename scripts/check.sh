@@ -7,6 +7,14 @@
 # 说明：所有测试都用临时数据库，不会碰 data/ 下的真实数据。
 set -uo pipefail
 
+# 检查链一律在临时库上跑：即使某个测试模块忘了设 TODO_*，也绝不会碰真实 data/（2026-09-17 事故后补）
+TODO_GUARD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/todo-check-XXXXXX")
+export TODO_SQLITE_FILE="$TODO_GUARD_DIR/todo.sqlite3"
+export TODO_SQLITE_BACKUP_DIR="$TODO_GUARD_DIR/backups"
+export TODO_MEMO_SQLITE_FILE="$TODO_GUARD_DIR/memo.sqlite3"
+export TODO_SUMMARY_SQLITE_FILE="$TODO_GUARD_DIR/summary.sqlite3"
+trap 'rm -rf "$TODO_GUARD_DIR"' EXIT
+
 APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$APP"
 MODE="${1:-full}"
