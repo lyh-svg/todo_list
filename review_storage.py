@@ -447,6 +447,28 @@ def history(code: str, limit: int = 20) -> dict[str, Any]:
             "state": read_state(str(code))}
 
 
+def reveal(code: str, question_type: str) -> dict[str, Any]:
+    """揭示答案：这是唯一会返回参考答案/历史答案的入口。"""
+    if question_type not in review_content.QUESTION_TYPES:
+        raise ValueError("题型不正确")
+    data = history(code, limit=20)
+    point = _point_content(str(code))
+    block = dict(point.get(question_type) or {})
+    block.update({"code": str(code), "type": question_type, "title": data["title"],
+                  "pitfalls": data["pitfalls"], "history": data["attempts"],
+                  "state": data["state"]})
+    return block
+
+
+def _point_content(code: str) -> dict[str, Any]:
+    with _connection() as connection:
+        row = connection.execute(
+            "SELECT content_json FROM review_points WHERE code=?", (str(code),)).fetchone()
+    if row is None:
+        raise ValueError("知识点不存在")
+    return json.loads(row["content_json"])
+
+
 def finish_session(session_id: str, *, answered: int, grade_counts: dict[int, int],
                    duration_ms: int) -> None:
     with storage.state_lock(), _connection() as connection:

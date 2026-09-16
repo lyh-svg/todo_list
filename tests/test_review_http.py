@@ -108,5 +108,45 @@ class ReviewHttpTests(unittest.TestCase):
         connection.close()
 
 
+    def review_point_code(self) -> str:
+        status, points = self.call("/api/review/points?limit=1")
+        self.assertEqual(status, 200)
+        return points["points"][0]["code"]
+
+    def test_reveal_returns_answers_only_when_called(self) -> None:
+        code = self.review_point_code()
+        status, payload = self.call("/api/review/reveal", "POST", {"code": code, "type": "predict"})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["expected"])
+        self.assertTrue(payload["explain"])
+        self.assertTrue(payload["pitfalls"])
+
+    def test_answer_updates_schedule(self) -> None:
+        code = self.review_point_code()
+        status, payload = self.call("/api/review/answer", "POST", {
+            "code": code, "type": "concept", "grade": 4, "answer": "我的回答",
+            "durationMs": 1200, "sessionId": "", "today": TODAY})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["schedule"]["intervalDays"], 14)
+        status, history = self.call(f"/api/review/history?code={code}")
+        self.assertEqual(history["attempts"][0]["answer"], "我的回答")
+
+    def test_answer_rejects_bad_grade(self) -> None:
+        code = self.review_point_code()
+        status, payload = self.call("/api/review/answer", "POST", {
+            "code": code, "type": "concept", "grade": 9, "today": TODAY})
+        self.assertEqual(status, 400)
+
+    def test_session_lifecycle_over_http(self) -> None:
+        status, started = self.call("/api/review/session", "POST", {"action": "start", "planned": 3})
+        self.assertEqual(status, 200)
+        session_id = started["sessionId"]
+        status, finished = self.call("/api/review/session", "POST", {
+            "action": "finish", "sessionId": session_id, "answered": 2,
+            "gradeCounts": {"3": 1, "4": 1}, "durationMs": 4000})
+        self.assertEqual(status, 200)
+        self.assertTrue(finished["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

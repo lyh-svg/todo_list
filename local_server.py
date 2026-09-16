@@ -27,6 +27,7 @@ import ai_service
 import memo_storage
 import summary_storage
 import review_storage
+import review_content
 
 APP_DIR = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
@@ -742,7 +743,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         "/api/memo", "/api/memos/database-import",
                         "/api/trash",
                         "/api/summary",
-                        "/api/project/plan"}:
+                        "/api/project/plan",
+                        "/api/review/reveal", "/api/review/answer", "/api/review/session"}:
             self.discard_body(length)
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -830,6 +832,41 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     self.send_json(200, {"ok": True, "name": create_full_backup(f"before-{safe}")})
                 else:
                     raise ValueError("不支持的备份操作")
+            elif path == "/api/review/reveal":
+                code = str(payload.get("code") or "").strip()
+                kind = str(payload.get("type") or "").strip()
+                if not code or kind not in review_content.QUESTION_TYPES:
+                    raise ValueError("知识点或题型不正确")
+                data = review_storage.reveal(code, kind)
+                self.send_json(200, data)
+            elif path == "/api/review/answer":
+                code = str(payload.get("code") or "").strip()
+                kind = str(payload.get("type") or "").strip()
+                today = optional_iso_date(str(payload.get("today") or ""))
+                if not today:
+                    raise ValueError("today 必须是 YYYY-MM-DD")
+                schedule = review_storage.apply_grade(
+                    code, kind, int(payload.get("grade") or 0), today=today,
+                    answer=str(payload.get("answer") or ""),
+                    duration_ms=int(payload.get("durationMs") or 0),
+                    session_id=str(payload.get("sessionId") or ""),
+                    task_id=str(payload.get("taskId") or ""),
+                    project_id=str(payload.get("projectId") or ""))
+                self.send_json(200, {"ok": True, "schedule": schedule})
+            elif path == "/api/review/session":
+                action = str(payload.get("action") or "")
+                if action == "start":
+                    session_id = review_storage.start_session(int(payload.get("planned") or 0))
+                    self.send_json(200, {"ok": True, "sessionId": session_id})
+                elif action == "finish":
+                    review_storage.finish_session(
+                        str(payload.get("sessionId") or ""),
+                        answered=int(payload.get("answered") or 0),
+                        grade_counts={int(k): int(v) for k, v in (payload.get("gradeCounts") or {}).items()},
+                        duration_ms=int(payload.get("durationMs") or 0))
+                    self.send_json(200, {"ok": True})
+                else:
+                    raise ValueError("不支持的会话操作")
             elif path == "/api/project":
                 project = payload.get("project")
                 if not isinstance(project, dict):
