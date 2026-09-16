@@ -233,13 +233,14 @@ def apply_grade(code: str, question_type: str, grade: int, *, today: str,
 
 
 def pick_question_type(code: str, today: str) -> str:
-    """题型轮换：优先选这个知识点最近最少用过的题型（都没用过就按固定顺序）。"""
+    """题型轮换：优先选这个知识点最近最少用过的题型（都没用过就按 QUESTION_TYPES 声明顺序）。"""
     with _connection() as connection:
         rows = connection.execute(
             "SELECT question_type, MAX(created_at) AS last_at FROM review_attempts "
             "WHERE code=? GROUP BY question_type", (str(code),)).fetchall()
     last_used = {row["question_type"]: str(row["last_at"]) for row in rows}
-    return min(review_content.QUESTION_TYPES, key=lambda kind: (last_used.get(kind, ""), kind))
+    return min(review_content.QUESTION_TYPES,
+               key=lambda kind: (last_used.get(kind, ""), review_content.QUESTION_TYPES.index(kind)))
 
 
 def _prompt_of(connection, code: str, question_type: str) -> str:
@@ -252,9 +253,17 @@ def _prompt_of(connection, code: str, question_type: str) -> str:
 def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = "", level: str = "",
                 project_id: str = "", task_id: str = "", question_type: str = "",
                 new_per_day: int = 2) -> dict[str, Any]:
-    """每日队列：逾期 → 今日 → 薄弱 → 新知识点（限量）→ 即将到期。上限硬约束，绝不一次全塞。"""
+    """每日队列：逾期 → 今日 → 薄弱 → 新知识点（限量）→ 即将到期。上限硬约束，绝不一次全塞。
+
+    `total` 是本次实际返回的条数（等于 `len(items)`，已被 `limit` 截断）。
+    `truncated` 只表示"候选超过 limit 被截断"，**不**包含 `new_per_day` 主动丢弃的新知识点：
+    `new_per_day` 是每日配额而非截断，配额丢弃不会让 `truncated` 变成 True。
+    `question_type` 显式传入时必须是 `review_content.QUESTION_TYPES` 之一，否则抛 `ValueError("题型不正确")`。
+    """
     limit = max(1, min(50, int(limit or 10)))
     new_per_day = max(0, min(5, int(new_per_day or 0)))
+    if question_type and question_type not in review_content.QUESTION_TYPES:
+        raise ValueError("题型不正确")
     where, params = ["1=1"], []
     if code:
         where.append("p.code=?")
@@ -276,8 +285,10 @@ def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = ""
         rows = connection.execute(
             f"SELECT p.code,p.title,p.minutes,p.module,p.level,COALESCE(s.due,'') AS due,"
             f"COALESCE(s.weak,0) AS weak,COALESCE(s.interval_days,0) AS interval_days,"
-            f"(SELECT task_id FROM review_point_tasks t WHERE t.code=p.code LIMIT 1) AS task_id,"
-            f"(SELECT project_id FROM review_point_tasks t WHERE t.code=p.code LIMIT 1) AS project_id "
+            f"(SELECT task_id FROM review_point_tasks t WHERE t.code=p.code "
+            f"ORDER BY relation, task_id LIMIT 1) AS task_id,"
+            f"(SELECT project_id FROM review_point_tasks t WHERE t.code=p.code "
+            f"ORDER BY relation, task_id LIMIT 1) AS project_id "
             f"FROM review_points p LEFT JOIN review_states s ON s.code=p.code WHERE {clause}",
             params).fetchall()
         buckets: dict[str, list[dict]] = {"overdue": [], "today": [], "weak": [], "new": [], "upcoming": []}
@@ -297,6 +308,7 @@ def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = ""
             else:
                 buckets["upcoming"].append(dict(item, reason="upcoming"))
         buckets["overdue"].sort(key=lambda entry: (entry["due"], entry["code"]))
+        buckets["today"].sort(key=lambda entry: (entry["due"], entry["code"]))
         buckets["weak"].sort(key=lambda entry: (entry["due"], entry["code"]))
         buckets["upcoming"].sort(key=lambda entry: (entry["due"], entry["code"]))
         buckets["new"].sort(key=lambda entry: entry["code"])

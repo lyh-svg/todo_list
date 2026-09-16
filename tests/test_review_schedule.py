@@ -163,14 +163,30 @@ class QueueTests(unittest.TestCase):
     def test_queue_never_returns_answers(self) -> None:
         self._set_state("py.a.today", TODAY)
         item = review_storage.build_queue(TODAY, limit=1)["items"][0]
-        self.assertNotIn("answer", item)
-        self.assertNotIn("expected", item)
-        self.assertNotIn("rootCause", item)
+        for key in ("answer", "expected", "explain", "rootCause", "fix", "acceptance", "reference"):
+            self.assertNotIn(key, item)
         self.assertTrue(item["prompt"])
+
+    def test_today_bucket_sorted_by_code_and_stable(self) -> None:
+        for code in ("py.a.overdue", "py.a.weak", "py.a.today"):
+            self._set_state(code, TODAY)
+        first = review_storage.build_queue(TODAY, limit=5, new_per_day=0)
+        codes = [item["code"] for item in first["items"]]
+        self.assertEqual([item["reason"] for item in first["items"]], ["today"] * 3)
+        self.assertEqual(codes, sorted(codes))
+        second = review_storage.build_queue(TODAY, limit=5, new_per_day=0)
+        self.assertEqual(codes, [item["code"] for item in second["items"]])
+
+    def test_rejects_invalid_explicit_question_type(self) -> None:
+        with self.assertRaises(ValueError):
+            review_storage.build_queue(TODAY, question_type="essay")
 
     def test_question_type_rotation_prefers_least_used(self) -> None:
         review_storage.apply_grade("py.a.today", "concept", 3, today=TODAY)
         self.assertNotEqual(review_storage.pick_question_type("py.a.today", TODAY), "concept")
+
+    def test_question_type_defaults_to_concept_for_fresh_point(self) -> None:
+        self.assertEqual(review_storage.pick_question_type("py.a.today", TODAY), "concept")
 
     def test_session_lifecycle(self) -> None:
         session_id = review_storage.start_session(planned=3)
