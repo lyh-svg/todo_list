@@ -26,6 +26,7 @@ import storage as storage_service
 import ai_service
 import memo_storage
 import summary_storage
+import review_storage
 
 APP_DIR = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
@@ -452,6 +453,57 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 self.send_json(200, {"views": list_saved_views()})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取筛选视图失败：{error}"})
+            return
+        if path.startswith("/api/review/"):
+            try:
+                params = query_params(self)
+                raw_today = str(params.get("today", [""])[0] or "").strip()
+                today = optional_iso_date(raw_today)
+                if raw_today and not today:
+                    raise ValueError("参数 today 必须是 YYYY-MM-DD")
+                server_today = datetime.date.today().isoformat()
+                if path == "/api/review/summary":
+                    self.send_json(200, review_storage.summary(today or server_today))
+                    return
+                if path == "/api/review/queue":
+                    limit = int_param(params, "limit", required=False, default=0)
+                    new_per_day = int_param(params, "newPerDay", required=False, default=-1)
+                    settings = review_storage.summary(today or server_today)
+                    queue = review_storage.build_queue(
+                        today or server_today,
+                        limit or settings["limit"],
+                        code=(params.get("code", [""])[0] or "").strip(),
+                        module=(params.get("module", [""])[0] or "").strip(),
+                        level=(params.get("level", [""])[0] or "").strip(),
+                        project_id=(params.get("projectId", [""])[0] or "").strip(),
+                        task_id=(params.get("taskId", [""])[0] or "").strip(),
+                        question_type=(params.get("type", [""])[0] or "").strip(),
+                        new_per_day=settings["newPerDay"] if new_per_day < 0 else new_per_day,
+                    )
+                    self.send_json(200, queue)
+                    return
+                if path == "/api/review/points":
+                    limit = int_param(params, "limit", required=False, default=200)
+                    offset = int_param(params, "offset", required=False, default=0)
+                    self.send_json(200, review_storage.list_points(
+                        module=(params.get("module", [""])[0] or "").strip(),
+                        level=(params.get("level", [""])[0] or "").strip(),
+                        query=(params.get("query", [""])[0] or "").strip(),
+                        limit=limit, offset=offset))
+                    return
+                if path == "/api/review/history":
+                    code = required_param(params, "code")
+                    limit = int_param(params, "limit", required=False, default=20)
+                    self.send_json(200, review_storage.history(code, limit=limit))
+                    return
+            except ValueError as error:
+                message = str(error)
+                self.send_json(404 if "不存在" in message else 400, {"error": message})
+                return
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"复习接口失败：{error}"})
+                return
+            self.send_json(404, {"error": "接口不存在"})
             return
         if path == "/api/reviews":
             # 跨项目复习队列：服务端直接算，前端不用再把每个项目的整棵树拉下来（第六批 item 3）
