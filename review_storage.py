@@ -133,7 +133,11 @@ def _add_days(day: str, days: int) -> str:
 
 def next_schedule(grade: int, *, interval_days: int, streak: int, lapses: int,
                   today: str, answered_today: bool) -> dict[str, Any]:
-    """五档自评 → 下次复习日。grade 1 当天可再来一次（当天已答过就顺延到明天）。"""
+    """五档自评 → 下次复习日。grade 1 当天可再来一次（当天已答过就顺延到明天）。
+
+    `lapses` 由 `apply_grade` 维护：连续两次 grade ≥ 4 时会被归零并持久化，
+    使薄弱点恢复后不会被历史失误重新标记。
+    """
     grade = int(grade)
     if grade not in GRADE_BASE:
         raise ValueError("自评档位必须是 1~5")
@@ -152,11 +156,11 @@ def next_schedule(grade: int, *, interval_days: int, streak: int, lapses: int,
         if grade == 3:
             interval = GRADE_BASE[3]
         elif grade == 4:
-            interval = min(MAX_INTERVAL_4, max(GRADE_BASE[4], interval_days * 2 if interval_days >= 7 else 14))
+            interval = min(MAX_INTERVAL_4, max(GRADE_BASE[4], int(interval_days * 1.5)))
         else:
             interval = min(MAX_INTERVAL_5, max(GRADE_BASE[5], interval_days * 2 if interval_days >= 14 else 30))
         due = _add_days(today, interval)
-    weak = bool(lapses >= WEAK_LAPSES) if grade <= 2 else bool(lapses >= WEAK_LAPSES)
+    weak = bool(lapses >= WEAK_LAPSES)
     return {"due": due, "intervalDays": interval, "streak": streak, "lapses": lapses,
             "weak": weak, "lastGrade": grade}
 
@@ -212,14 +216,17 @@ def apply_grade(code: str, question_type: str, grade: int, *, today: str,
              max(0, int(duration_ms or 0)), str(session_id or ""), _now()))
         grades = _recent_grades(connection, code, 3)
         weak = schedule["weak"]
+        lapses = schedule["lapses"]
         if len([value for value in grades if value <= 2]) >= 2:
             weak = True
         elif len(grades) >= 2 and all(value >= 4 for value in grades[:2]):
             weak = False
+            lapses = 0
         connection.execute(
             "UPDATE review_states SET due=?,interval_days=?,streak=?,lapses=?,last_grade=?,weak=?,"
             "last_reviewed_at=? WHERE code=?",
-            (schedule["due"], schedule["intervalDays"], schedule["streak"], schedule["lapses"],
+            (schedule["due"], schedule["intervalDays"], schedule["streak"], lapses,
              int(grade), 1 if weak else 0, _now(), code))
         schedule["weak"] = bool(weak)
+        schedule["lapses"] = lapses
     return schedule

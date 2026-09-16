@@ -54,7 +54,7 @@ class NextScheduleTests(unittest.TestCase):
     def test_high_grades_grow_interval_with_caps(self) -> None:
         grown = review_storage.next_schedule(
             4, interval_days=14, streak=1, lapses=0, today=TODAY, answered_today=False)
-        self.assertEqual(grown["intervalDays"], 28)
+        self.assertEqual(grown["intervalDays"], 21)
         capped = review_storage.next_schedule(
             4, interval_days=40, streak=5, lapses=0, today=TODAY, answered_today=False)
         self.assertEqual(capped["intervalDays"], 60)
@@ -102,6 +102,20 @@ class ApplyGradeTests(unittest.TestCase):
         review_storage.apply_grade("py.a.b", "debug", 4, today=TODAY)
         review_storage.apply_grade("py.a.b", "code_task", 5, today=TODAY)
         self.assertFalse(review_storage.read_state("py.a.b")["weak"])
+
+    def test_recovery_sticks_after_two_good_grades(self) -> None:
+        review_storage.apply_grade("py.a.b", "concept", 1, today=TODAY)
+        review_storage.apply_grade("py.a.b", "predict", 2, today=TODAY)
+        self.assertTrue(review_storage.read_state("py.a.b")["weak"])
+        review_storage.apply_grade("py.a.b", "debug", 4, today=TODAY)
+        review_storage.apply_grade("py.a.b", "code_task", 4, today=TODAY)
+        state = review_storage.read_state("py.a.b")
+        self.assertFalse(state["weak"])
+        self.assertEqual(state["lapses"], 0)
+        review_storage.apply_grade("py.a.b", "predict", 3, today=TODAY)
+        state = review_storage.read_state("py.a.b")
+        self.assertFalse(state["weak"])
+        self.assertEqual(state["lapses"], 0)
 
     def test_rejects_out_of_range_grade(self) -> None:
         with self.assertRaises(ValueError):
