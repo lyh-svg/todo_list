@@ -332,6 +332,116 @@ def start_session(planned: int) -> str:
     return session_id
 
 
+REVIEW_DAILY_LIMIT_RANGE = (5, 15)
+REVIEW_NEW_PER_DAY_RANGE = (0, 5)
+
+
+def _settings() -> dict[str, Any]:
+    """复习相关的应用设置（内部契约，供 HTTP 层复用）：缺失或损坏时回落默认值并夹到合法区间。
+
+    Task 9 之前 `read_app_settings()` 还没有 `reviewDailyLimit`/`reviewNewPerDay` 两个键，
+    此时走 `or` 默认值分支，因此本任务返回 `{"limit": 10, "newPerDay": 2}`。
+    """
+    settings = storage.read_app_settings() or {}
+    try:
+        limit = int(settings.get("reviewDailyLimit") or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        new_per_day = int(settings.get("reviewNewPerDay") or 2)
+    except (TypeError, ValueError):
+        new_per_day = 2
+    return {"limit": max(REVIEW_DAILY_LIMIT_RANGE[0], min(REVIEW_DAILY_LIMIT_RANGE[1], limit)),
+            "newPerDay": max(REVIEW_NEW_PER_DAY_RANGE[0], min(REVIEW_NEW_PER_DAY_RANGE[1], new_per_day))}
+
+
+def streak_days(today: str) -> int:
+    """连续复习天数：从 `today` 往回数连续的 `reviewed_on` 日期，遇到第一个断链停止。
+
+    `today` 当天没有作答时返回 0（不把"昨天及以前"当作未断的连续段）。
+    """
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT reviewed_on FROM review_attempts ORDER BY reviewed_on DESC LIMIT 400").fetchall()
+    days = [str(row["reviewed_on"]) for row in rows]
+    streak = 0
+    cursor = date.fromisoformat(today)
+    for day in days:
+        if day == cursor.isoformat():
+            streak += 1
+            cursor = cursor - timedelta(days=1)
+        elif day < cursor.isoformat():
+            break
+    return streak
+
+
+def summary(today: str) -> dict[str, Any]:
+    """复习页顶部统计：`due` 非空视为已学（learned），按 overdue/dueToday/upcoming 分桶。"""
+    settings = _settings()
+    with _connection() as connection:
+        total = int(connection.execute("SELECT COUNT(*) FROM review_points").fetchone()[0])
+        rows = connection.execute(
+            "SELECT COALESCE(s.due,'') AS due, COALESCE(s.weak,0) AS weak FROM review_points p "
+            "LEFT JOIN review_states s ON s.code=p.code").fetchall()
+        answered_today = int(connection.execute(
+            "SELECT COUNT(*) FROM review_attempts WHERE reviewed_on=?", (today,)).fetchone()[0])
+    due_today = overdue = upcoming = weak = learned = 0
+    for row in rows:
+        due = str(row["due"] or "")
+        if row["weak"]:
+            weak += 1
+        if not due:
+            continue
+        learned += 1
+        if due < today:
+            overdue += 1
+        elif due == today:
+            due_today += 1
+        else:
+            upcoming += 1
+    return {"dueToday": due_today, "overdue": overdue, "upcoming": upcoming, "weak": weak,
+            "total": total, "learned": learned, "answeredToday": answered_today,
+            "streakDays": streak_days(today), **settings}
+
+
+def recent_attempts(kind: str, today: str, limit: int = 10) -> list[dict[str, Any]]:
+    """最近答错（grade<=2）/ 已掌握（grade>=4）的作答记录，按作答时间倒序。
+
+    `kind` 只区分 `wrong` 与其他值（其他值即 `mastered` 语义）；`today` 由调用方传入以便测试固定时钟。
+    """
+    condition = "grade<=2" if kind == "wrong" else "grade>=4"
+    with _connection() as connection:
+        rows = connection.execute(
+            f"SELECT a.id,a.code,a.question_type,a.grade,a.answer,a.reviewed_on,p.title "
+            f"FROM review_attempts a LEFT JOIN review_points p ON p.code=a.code "
+            f"WHERE {condition} ORDER BY a.created_at DESC LIMIT ?", (max(1, min(50, int(limit))),)).fetchall()
+    return [{"id": row["id"], "code": row["code"], "title": row["title"] or row["code"],
+             "questionType": row["question_type"], "grade": int(row["grade"]),
+             "answer": row["answer"], "reviewedOn": row["reviewed_on"]} for row in rows]
+
+
+def history(code: str, limit: int = 20) -> dict[str, Any]:
+    """单个知识点的详情：内容元数据 + 易错点 + 最近作答 + 当前调度状态；code 不存在抛 ValueError。"""
+    with _connection() as connection:
+        point = connection.execute(
+            "SELECT title,content_json,module,level,minutes FROM review_points WHERE code=?",
+            (str(code),)).fetchone()
+        if point is None:
+            raise ValueError("知识点不存在")
+        rows = connection.execute(
+            "SELECT question_type,grade,answer,ai_verdict,reviewed_on,duration_ms FROM review_attempts "
+            "WHERE code=? ORDER BY created_at DESC LIMIT ?", (str(code), max(1, min(100, int(limit))))).fetchall()
+    content = json.loads(point["content_json"])
+    return {"code": str(code), "title": point["title"], "module": point["module"],
+            "level": point["level"], "minutes": int(point["minutes"]),
+            "pitfalls": content.get("pitfalls") or [],
+            "attempts": [{"questionType": row["question_type"], "grade": int(row["grade"]),
+                          "answer": row["answer"], "aiVerdict": row["ai_verdict"],
+                          "reviewedOn": row["reviewed_on"], "durationMs": int(row["duration_ms"])}
+                         for row in rows],
+            "state": read_state(str(code))}
+
+
 def finish_session(session_id: str, *, answered: int, grade_counts: dict[int, int],
                    duration_ms: int) -> None:
     with storage.state_lock(), _connection() as connection:

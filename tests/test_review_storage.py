@@ -101,5 +101,39 @@ class ReviewStorageTests(unittest.TestCase):
         self.assertEqual(result["unchanged"], 1)
 
 
+class SummaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            for table in ("review_points", "review_states", "review_attempts"):
+                connection.execute(f"DELETE FROM {table}")
+        review_storage.import_content([point(code="py.a.b")])
+
+    def test_summary_counts_buckets(self) -> None:
+        with storage.open_state_database() as connection:
+            connection.execute("UPDATE review_states SET due='2026-09-10' WHERE code='py.a.b'")
+        data = review_storage.summary("2026-09-16")
+        self.assertEqual(data["overdue"], 1)
+        self.assertEqual(data["dueToday"], 0)
+        self.assertEqual(data["learned"], 1)
+
+    def test_recent_wrong_and_mastered(self) -> None:
+        review_storage.apply_grade("py.a.b", "concept", 1, today="2026-09-16", answer="错的")
+        review_storage.apply_grade("py.a.b", "predict", 5, today="2026-09-16")
+        self.assertEqual(len(review_storage.recent_attempts("wrong", "2026-09-16")), 1)
+        self.assertEqual(len(review_storage.recent_attempts("mastered", "2026-09-16")), 1)
+
+    def test_history_returns_answers_and_pitfalls(self) -> None:
+        review_storage.apply_grade("py.a.b", "concept", 2, today="2026-09-16", answer="我写的")
+        data = review_storage.history("py.a.b")
+        self.assertEqual(data["attempts"][0]["answer"], "我写的")
+        self.assertEqual(data["pitfalls"], ["易错点"])
+
+    def test_streak_counts_consecutive_days(self) -> None:
+        review_storage.apply_grade("py.a.b", "concept", 3, today="2026-09-15")
+        review_storage.apply_grade("py.a.b", "predict", 3, today="2026-09-16")
+        self.assertEqual(review_storage.streak_days("2026-09-16"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
