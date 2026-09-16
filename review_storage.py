@@ -109,10 +109,14 @@ def points_for_task(task_id: str) -> list[dict[str, Any]]:
 
 
 def mark_weak(codes: list[str]) -> int:
-    """把给定 code 的 `review_states.weak` 置 1（不存在则忽略），返回影响行数。
+    """把给定 code 的 `review_states.weak` 置 1、`lapses` 抬到薄弱阈值（不存在则忽略），返回影响行数。
 
     验收失败时用它把该任务关联的知识点推进薄弱点列表；不新建状态行——
     "知识点存在但还没学过"与"这个 code 根本不存在"都不该被凭空标弱。
+
+    只置 `weak=1` 稳不住：下一次任意 grade 3 的复习会按 `lapses<2` 把 weak 归 False。
+    因此同时把 `lapses` 抬到至少 `WEAK_LAPSES`，让它一直留在薄弱点列表，直到连续两次 ≥4
+    的复习按既有规则同时把 weak 与 lapses 清零。
     """
     keys: list[str] = []
     seen: set[str] = set()
@@ -126,7 +130,8 @@ def mark_weak(codes: list[str]) -> int:
     placeholders = ",".join("?" for _ in keys)
     with storage.state_lock(), _connection() as connection:
         cursor = connection.execute(
-            f"UPDATE review_states SET weak=1 WHERE code IN ({placeholders})", keys)
+            f"UPDATE review_states SET weak=1, lapses=MAX(lapses,{WEAK_LAPSES}) "
+            f"WHERE code IN ({placeholders})", keys)
         return int(cursor.rowcount)
 
 

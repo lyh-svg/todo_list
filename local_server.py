@@ -885,6 +885,13 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 task_id = str(payload.get("taskId") or "").strip()
                 if not task_id:
                     raise ValueError("缺少 taskId")
+                # 纯元任务（1104/1504）不挂知识点：points_for_task 恒为空会让"len(created) < wanted"
+                # 的闸门恒开、remedial 分支更是显式绕过，于是 AI 补充会凭空生成复习项。
+                # 绑定约束是元任务不生成复习项，所以在取到 task_id 后立刻早退，remedial 也不例外。
+                if task_id in review_storage.META_TASK_IDS:
+                    self.send_json(200, {"ok": True, "inserted": 0, "unchanged": 0,
+                                         "created": [], "usedAi": False})
+                    return
                 try:
                     wanted = int(payload.get("count") or 3)
                 except (TypeError, ValueError):

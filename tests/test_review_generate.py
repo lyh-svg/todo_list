@@ -143,6 +143,28 @@ class MarkWeakTests(unittest.TestCase):
         self.assertEqual(review_storage.mark_weak([]), 0)
         self.assertEqual(review_storage.mark_weak(["   ", ""]), 0)
 
+    def test_mark_weak_survives_one_grade3_and_clears_after_two_grade4(self) -> None:
+        """验收失败标弱必须稳得住：一次 grade 3 抹不掉，连续两次 ≥4 才按既有规则清零。"""
+        code = "py.gen.intro"
+        with storage.open_state_database() as connection:
+            connection.execute("DELETE FROM review_attempts WHERE code=?", (code,))
+        review_storage.mark_weak([code])
+        state = review_storage.read_state(code)
+        self.assertTrue(state["weak"])
+        self.assertGreaterEqual(state["lapses"], 2, "标弱同时要把 lapses 抬到薄弱阈值")
+
+        review_storage.apply_grade(code, "concept", 3, today="2026-09-16")
+        self.assertTrue(review_storage.read_state(code)["weak"],
+                        "一次 grade 3 不能抹掉验收失败留下的薄弱标记")
+
+        review_storage.apply_grade(code, "predict", 4, today="2026-09-17")
+        self.assertTrue(review_storage.read_state(code)["weak"], "单次 grade 4 还不够")
+
+        review_storage.apply_grade(code, "debug", 4, today="2026-09-18")
+        state = review_storage.read_state(code)
+        self.assertFalse(state["weak"], "连续两次 ≥4 才按既有规则清零")
+        self.assertEqual(state["lapses"], 0)
+
 
 class AiCodeNamespaceTests(unittest.TestCase):
     """AI 生成的 code 只能落在 py.ai. 命名空间，绝不能覆盖内置知识点。"""
@@ -159,6 +181,16 @@ class AiCodeNamespaceTests(unittest.TestCase):
                 generated = ai_service.generate_review_points(
                     task_id=REAL_TASK_ID, project_id="p-1", task_text="默认参数", count=3)
         self.assertEqual(generated, [], "模型返回内置 code 时必须被过滤，不能覆盖内置内容")
+
+    def test_generate_drops_codes_that_belong_to_another_task(self) -> None:
+        """模型返回 py.ai.<别的taskId>.<n> 时必须丢弃，否则会覆盖别的任务已有的 AI 点。"""
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key", "TODO_AI_MOCK": ""}, clear=False):
+            with mock.patch.object(ai_service, "_post_json",
+                                   return_value={"points": [ai_draft(), ai_draft("py.ai.9999.1")]}):
+                generated = ai_service.generate_review_points(
+                    task_id="1301", project_id="p-2", task_text="闭包", count=3)
+        self.assertEqual([entry["code"] for entry in generated], ["py.ai.1301.1"],
+                         "别的任务的 code 必须被丢弃，只有当前任务的点能留下来")
 
 
 def ai_draft(code=None):
@@ -314,6 +346,13 @@ class ReviewGenerateHttpTests(unittest.TestCase):
         connection.close()
         return response.status, json.loads(raw or "{}")
 
+    def stored_ai_codes(self, task_id: str) -> list[str]:
+        with storage.open_state_database() as connection:
+            rows = connection.execute(
+                "SELECT code FROM review_points WHERE code LIKE ?",
+                (f"py.ai.{task_id}.%",)).fetchall()
+        return [row["code"] for row in rows]
+
     def test_generate_without_ai_returns_preplanned_points(self) -> None:
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": ""}, clear=False):
             status, payload = self.call("/api/review/generate", {"taskId": "1202", "projectId": "p-1202"})
@@ -387,6 +426,46 @@ class ReviewGenerateHttpTests(unittest.TestCase):
         # 没有 AI 也把该任务已有的知识点标弱（补漏题本身退化为空，但薄弱点列表照常更新）。
         for code in ("py.gen.intro", "py.gen.exercise"):
             self.assertTrue(review_storage.read_state(code)["weak"], code)
+
+    def test_generate_meta_task_returns_nothing_and_writes_nothing(self) -> None:
+        """纯元任务（1104）不挂知识点：AI 可用也不能生成，更不能入库。"""
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
+            status, payload = self.call("/api/review/generate",
+                                        {"taskId": "1104", "projectId": "p-meta",
+                                         "taskText": "纯元任务", "count": 3})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["inserted"], 0)
+        self.assertEqual(payload["unchanged"], 0)
+        self.assertEqual(payload["created"], [])
+        self.assertFalse(payload["usedAi"])
+        self.assertEqual(self.stored_ai_codes("1104"), [], "元任务不能留下任何 py.ai.1104.* 行")
+
+    def test_generate_meta_task_remedial_cannot_bypass_gate(self) -> None:
+        """remedial=true 也不能绕过元任务闸门。"""
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
+            status, payload = self.call("/api/review/generate",
+                                        {"taskId": "1504", "projectId": "p-meta",
+                                         "taskText": "纯元任务", "remedial": True,
+                                         "gap": "验收失败"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["inserted"], 0)
+        self.assertEqual(payload["created"], [])
+        self.assertFalse(payload["usedAi"])
+        self.assertEqual(self.stored_ai_codes("1504"), [], "补漏分支也不能给元任务写入")
+
+    def test_generate_ignores_ai_points_named_for_another_task(self) -> None:
+        """接口层确证：模型给的别的任务 code 不会写进库。"""
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key", "TODO_AI_MOCK": ""}, clear=False):
+            with mock.patch.object(ai_service, "_post_json",
+                                   return_value={"points": [ai_draft(), ai_draft("py.ai.9999.1")]}):
+                status, payload = self.call("/api/review/generate",
+                                            {"taskId": "88888", "projectId": "p-9",
+                                             "taskText": "闭包", "count": 3})
+        self.assertEqual(status, 200)
+        self.assertEqual([entry["code"] for entry in payload["created"]], ["py.ai.88888.1"])
+        self.assertEqual(payload["inserted"], 1)
+        self.assertEqual(self.stored_ai_codes("9999"), [])
 
     def test_generate_missing_task_id_is_400(self) -> None:
         status, payload = self.call("/api/review/generate", {"projectId": "p-1"})

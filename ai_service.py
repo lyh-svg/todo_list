@@ -727,6 +727,9 @@ def generate_review_points(*, task_id: str, project_id: str, task_text: str, cou
     生成结果先过 `review_content.normalize_points` 清洗，再保证每个点都有一条回指当前任务的
     taskRef（模型漏写时补 exercises），最后逐条过 `validate_points` 闸门——不合格的点直接丢弃，
     不让整次生成失败（AI 是可选增强，不是完成任务的阻塞项）。
+
+    code 还必须限定在当前任务自己的命名空间（`py.ai.<taskId>.`）：模型若返回
+    `py.ai.<别的taskId>.<n>`，直接丢弃——否则 `import_content` 会把它当成更新，覆盖别的 AI 点。
     """
     count = _review_point_count(count)
     focus = str(gap or "").strip() or task_text.strip()
@@ -770,7 +773,11 @@ def generate_review_points(*, task_id: str, project_id: str, task_text: str, cou
         if isinstance(point, dict):
             point.setdefault("code", f"{fallback_prefix}.{index}")
     points = []
+    expected_prefix = f"py.ai.{task_id}."
     for point in review_content.normalize_points(draft):
+        if task_id and not point["code"].startswith(expected_prefix):
+            # 别的任务的 AI 点：丢弃，绝不能靠"覆盖别人"来给当前任务补点。
+            continue
         if task_id and not any(ref["taskId"] == task_id for ref in point["taskRefs"]):
             point["taskRefs"].append({"taskId": task_id, "projectId": project_id, "relation": "exercises"})
         if not review_content.validate_points([point]):
