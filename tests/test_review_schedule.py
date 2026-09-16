@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -120,6 +121,64 @@ class ApplyGradeTests(unittest.TestCase):
     def test_rejects_out_of_range_grade(self) -> None:
         with self.assertRaises(ValueError):
             review_storage.apply_grade("py.a.b", "concept", 9, today=TODAY)
+
+
+class QueueTests(unittest.TestCase):
+    def setUp(self) -> None:
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            for table in ("review_points", "review_states", "review_attempts", "review_sessions"):
+                connection.execute(f"DELETE FROM {table}")
+        for code in ("py.a.overdue", "py.a.today", "py.a.weak", "py.a.future", "py.a.new"):
+            seed(code)
+
+    def _set_state(self, code, due, weak=0, interval=0):
+        with storage.open_state_database() as connection:
+            connection.execute(
+                "UPDATE review_states SET due=?,weak=?,interval_days=? WHERE code=?",
+                (due, weak, interval, code))
+
+    def test_queue_orders_overdue_then_today_then_weak(self) -> None:
+        self._set_state("py.a.overdue", "2026-09-10")
+        self._set_state("py.a.today", TODAY)
+        self._set_state("py.a.weak", "2026-10-30", weak=1)
+        self._set_state("py.a.future", "2026-10-01")
+        queue = review_storage.build_queue(TODAY, limit=3, new_per_day=0)
+        self.assertEqual([item["code"] for item in queue["items"]],
+                         ["py.a.overdue", "py.a.today", "py.a.weak"])
+        self.assertEqual([item["reason"] for item in queue["items"]], ["overdue", "today", "weak"])
+
+    def test_queue_respects_limit_and_reports_truncation(self) -> None:
+        self._set_state("py.a.overdue", "2026-09-10")
+        self._set_state("py.a.today", TODAY)
+        queue = review_storage.build_queue(TODAY, limit=1)
+        self.assertEqual(len(queue["items"]), 1)
+        self.assertTrue(queue["truncated"])
+
+    def test_queue_includes_new_points_up_to_new_per_day(self) -> None:
+        queue = review_storage.build_queue(TODAY, limit=5, new_per_day=1)
+        reasons = [item["reason"] for item in queue["items"]]
+        self.assertEqual(reasons.count("new"), 1, reasons)
+
+    def test_queue_never_returns_answers(self) -> None:
+        self._set_state("py.a.today", TODAY)
+        item = review_storage.build_queue(TODAY, limit=1)["items"][0]
+        self.assertNotIn("answer", item)
+        self.assertNotIn("expected", item)
+        self.assertNotIn("rootCause", item)
+        self.assertTrue(item["prompt"])
+
+    def test_question_type_rotation_prefers_least_used(self) -> None:
+        review_storage.apply_grade("py.a.today", "concept", 3, today=TODAY)
+        self.assertNotEqual(review_storage.pick_question_type("py.a.today", TODAY), "concept")
+
+    def test_session_lifecycle(self) -> None:
+        session_id = review_storage.start_session(planned=3)
+        review_storage.finish_session(session_id, answered=2, grade_counts={3: 1, 4: 1}, duration_ms=5000)
+        with storage.open_state_database() as connection:
+            row = connection.execute("SELECT * FROM review_sessions WHERE id=?", (session_id,)).fetchone()
+        self.assertEqual(row["answered"], 2)
+        self.assertEqual(json.loads(row["grade_counts_json"]), {"3": 1, "4": 1})
 
 
 if __name__ == "__main__":

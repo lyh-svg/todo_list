@@ -230,3 +230,100 @@ def apply_grade(code: str, question_type: str, grade: int, *, today: str,
         schedule["weak"] = bool(weak)
         schedule["lapses"] = lapses
     return schedule
+
+
+def pick_question_type(code: str, today: str) -> str:
+    """题型轮换：优先选这个知识点最近最少用过的题型（都没用过就按固定顺序）。"""
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT question_type, MAX(created_at) AS last_at FROM review_attempts "
+            "WHERE code=? GROUP BY question_type", (str(code),)).fetchall()
+    last_used = {row["question_type"]: str(row["last_at"]) for row in rows}
+    return min(review_content.QUESTION_TYPES, key=lambda kind: (last_used.get(kind, ""), kind))
+
+
+def _prompt_of(connection, code: str, question_type: str) -> str:
+    row = connection.execute("SELECT content_json FROM review_points WHERE code=?", (code,)).fetchone()
+    if row is None:
+        return ""
+    return str((json.loads(row["content_json"]).get(question_type) or {}).get("prompt") or "")
+
+
+def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = "", level: str = "",
+                project_id: str = "", task_id: str = "", question_type: str = "",
+                new_per_day: int = 2) -> dict[str, Any]:
+    """每日队列：逾期 → 今日 → 薄弱 → 新知识点（限量）→ 即将到期。上限硬约束，绝不一次全塞。"""
+    limit = max(1, min(50, int(limit or 10)))
+    new_per_day = max(0, min(5, int(new_per_day or 0)))
+    where, params = ["1=1"], []
+    if code:
+        where.append("p.code=?")
+        params.append(str(code))
+    if module:
+        where.append("p.module=?")
+        params.append(module)
+    if level:
+        where.append("p.level=?")
+        params.append(level)
+    if task_id:
+        where.append("EXISTS (SELECT 1 FROM review_point_tasks t WHERE t.code=p.code AND t.task_id=?)")
+        params.append(str(task_id))
+    if project_id:
+        where.append("EXISTS (SELECT 1 FROM review_point_tasks t WHERE t.code=p.code AND t.project_id=?)")
+        params.append(str(project_id))
+    clause = " AND ".join(where)
+    with _connection() as connection:
+        rows = connection.execute(
+            f"SELECT p.code,p.title,p.minutes,p.module,p.level,COALESCE(s.due,'') AS due,"
+            f"COALESCE(s.weak,0) AS weak,COALESCE(s.interval_days,0) AS interval_days,"
+            f"(SELECT task_id FROM review_point_tasks t WHERE t.code=p.code LIMIT 1) AS task_id,"
+            f"(SELECT project_id FROM review_point_tasks t WHERE t.code=p.code LIMIT 1) AS project_id "
+            f"FROM review_points p LEFT JOIN review_states s ON s.code=p.code WHERE {clause}",
+            params).fetchall()
+        buckets: dict[str, list[dict]] = {"overdue": [], "today": [], "weak": [], "new": [], "upcoming": []}
+        for row in rows:
+            due = str(row["due"] or "")
+            item = {"code": row["code"], "title": row["title"], "minutes": int(row["minutes"]),
+                    "module": row["module"], "level": row["level"], "due": due,
+                    "taskId": row["task_id"] or "", "projectId": row["project_id"] or ""}
+            if not due:
+                buckets["new"].append(dict(item, reason="new"))
+            elif due < today:
+                buckets["overdue"].append(dict(item, reason="overdue"))
+            elif due == today:
+                buckets["today"].append(dict(item, reason="today"))
+            elif row["weak"]:
+                buckets["weak"].append(dict(item, reason="weak"))
+            else:
+                buckets["upcoming"].append(dict(item, reason="upcoming"))
+        buckets["overdue"].sort(key=lambda entry: (entry["due"], entry["code"]))
+        buckets["weak"].sort(key=lambda entry: (entry["due"], entry["code"]))
+        buckets["upcoming"].sort(key=lambda entry: (entry["due"], entry["code"]))
+        buckets["new"].sort(key=lambda entry: entry["code"])
+        ordered = (buckets["overdue"] + buckets["today"] + buckets["weak"]
+                   + buckets["new"][:new_per_day] + buckets["upcoming"])
+        truncated = len(ordered) > limit
+        chosen = ordered[:limit]
+        for item in chosen:
+            kind = question_type or pick_question_type(item["code"], today)
+            item["questionType"] = kind
+            item["prompt"] = _prompt_of(connection, item["code"], kind)
+    return {"items": chosen, "total": len(chosen), "truncated": truncated, "limit": limit}
+
+
+def start_session(planned: int) -> str:
+    session_id = str(uuid.uuid4())
+    with storage.state_lock(), _connection() as connection:
+        connection.execute(
+            "INSERT INTO review_sessions(id,started_at,planned) VALUES(?,?,?)",
+            (session_id, _now(), max(0, int(planned or 0))))
+    return session_id
+
+
+def finish_session(session_id: str, *, answered: int, grade_counts: dict[int, int],
+                   duration_ms: int) -> None:
+    with storage.state_lock(), _connection() as connection:
+        connection.execute(
+            "UPDATE review_sessions SET finished_at=?,answered=?,grade_counts_json=?,duration_ms=? WHERE id=?",
+            (_now(), max(0, int(answered or 0)), _json({str(k): int(v) for k, v in (grade_counts or {}).items()}),
+             max(0, int(duration_ms or 0)), str(session_id)))
