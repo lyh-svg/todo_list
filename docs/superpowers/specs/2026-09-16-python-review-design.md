@@ -8,7 +8,8 @@
 
 1. **不另起课程目录**：知识点从你现有 168 个任务里拆出来，知识点记 `taskRefs`（来自哪些任务），完成任务时按它精确生成复习项。
 2. **粒度**：一个知识点 = **半小时内能拿下**（10～30 分钟），适当合并；复习时**一次只出 1 道题**（2～3 分钟），按题型轮换。
-3. **规模**：第 1 周合并后 **40 个知识点 / 200 道题**；全 8 周约 **260～320 个知识点 / 约 1300～1600 道题**。
+2b. **覆盖优先（你的取向：目的是学习）**：知识点与题目**宁多勿漏**——任务涉及的机制必须覆盖到，额外补一些相关知识点也没问题；五类题是**最低配置**，同一个点可以有多道变体题。
+3. **规模**：第 1 周合并后 **40 个知识点 / ≥200 道题**（五类题是下限，按覆盖优先可加变体）；全 8 周约 **260～320 个知识点 / 约 1300～1600 道题**。
 4. **这一批（第 7 批）**：复习引擎 + 第 1 周全部内容（含任务隐含但必需的前置）。
 5. **存储**：扩展**原来的库**（`data/todo.sqlite3`，`SCHEMA_VERSION` 7 → 8，新增知识点/题目/作答/会话表），知识点与题目以数据文件随仓库发布、启动时按 `code` 幂等导入。旧的 `review_due` 数据不动。
 6. **复习独立于任务完成**：任务只是触发器，掌握程度只由会话里的主动作答决定。
@@ -47,7 +48,7 @@
 
 | 批次 | 内容 | 任务数 | 知识点（估） | 题量（×5） |
 | --- | --- | --- | --- | --- |
-| 第 7 批 | 复习引擎 + **第 1 周**（基础层） | 21 | **40** | 200 |
+| 第 7 批 | 复习引擎 + **第 1 周**（基础层） | 21 | **40** | **≥200** |
 | 第 8 批 | 第 2 周 对象模型与协议 | 21 | ~35 | ~175 |
 | 第 9 批 | 第 3 周 函数、闭包与装饰器 | 21 | ~32 | ~160 |
 | 第 10 批 | 第 4 周 迭代器、生成器与惰性流水线 | 21 | ~32 | ~160 |
@@ -157,7 +158,7 @@
 - **状态机**：`出题 → 我写（可选）→ 揭示答案/历史 → 5 档自评 → 下一题 → 结束总结`。
 - **一次一题**：一个知识点一次只出一道题，按题型轮换（概念 → 预测 → 排查 → 编程，易错点随题展示）；同一知识点不连出两题。
 - **硬不变量（可自动化断言）**：自评提交前，参考答案与历史答案**不得出现在 DOM**——这是"主动回忆而不是重读"的机器判据。
-- **5 档 → 下次间隔**：完全不会 → 当天/次日（记一次失误）；看过但说不清 → 1～3 天；基本掌握 → 7 天；可以独立写代码 → 14～30 天；可以讲给别人听 → 30～60 天。答对逐步拉长，答错回退。
+- **5 档 → 下次间隔**：完全不会 → 当天/次日（记一次失误，间隔回退到 1 天）；看过但说不清 → 1～3 天；基本掌握 → 7 天；可以独立写代码 → 14 天起逐步拉长（上限 60 天）；可以讲给别人听 → 30 天起（上限 90 天）。详细规则见 §13。
 - **每日限量**：默认 5～15 项（可设置），**逾期项按到期排队、绝不一次全塞**；今日必须复习 / 即将到期 / 已逾期分开显示。
 - **筛选**：逾期、项目、标签、题型、Python 模块、周次、薄弱知识点。
 - **AI 判分（可选按钮）**：只在点击时调用，返回"缺什么 / 错在哪 / 补漏建议"，不改变自评档位。
@@ -199,4 +200,115 @@
 | 粒度 | 知识点 10～30 分钟掌握；复习一道题 2～3 分钟；适当合并 |
 | 测试型/口述型任务 | 引用已有点生成复习项（`exercises`），不新增点 |
 | 纯元任务 | 不挂知识点、不生成复习项（`1104`、`1504`） |
-| 存储 | 扩展主库（`SCHEMA_VERSION` 7 → 8） |
+| 存储 | 扩展主库（`SCHEMA_VERSION` 7 → 8）；**已确认不打算回退旧版本** |
+| 内容密度 | **覆盖优先**：宁可多写知识点/题目，允许补充任务原文没点名的相关知识点；五类题是下限 |
+
+## 12. 数据模型与接口（主库，v8）
+
+```sql
+-- 知识点（内置 + AI 补充 + 额外补充）
+CREATE TABLE review_points (
+  code TEXT PRIMARY KEY,                 -- py.mutability.default-arg
+  title TEXT NOT NULL,
+  minutes INTEGER NOT NULL DEFAULT 10,   -- 10~30
+  module TEXT NOT NULL DEFAULT '',       -- Python 模块（筛选用）
+  level TEXT NOT NULL DEFAULT '基础',     -- 基础/实用/进阶
+  origin TEXT NOT NULL DEFAULT 'builtin',-- builtin / builtin-extra / ai
+  content_json TEXT NOT NULL,            -- 五类题 + 易错点（结构见 §6）
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+-- 知识点 ↔ 任务（多对多；补充知识点可以没有 taskRef）
+CREATE TABLE review_point_tasks (
+  code TEXT NOT NULL, task_id TEXT NOT NULL, project_id TEXT NOT NULL,
+  relation TEXT NOT NULL,                -- introduces / exercises
+  PRIMARY KEY (code, task_id, project_id)
+);
+-- 复习状态（每个知识点一行）
+CREATE TABLE review_states (
+  code TEXT PRIMARY KEY,
+  due TEXT NOT NULL DEFAULT '',          -- 空 = 还没学过/没排期
+  interval_days INTEGER NOT NULL DEFAULT 0,
+  streak INTEGER NOT NULL DEFAULT 0,     -- 连续答对
+  lapses INTEGER NOT NULL DEFAULT 0,     -- 累计"完全不会"
+  last_grade INTEGER NOT NULL DEFAULT 0,
+  weak INTEGER NOT NULL DEFAULT 0,
+  last_reviewed_at TEXT NOT NULL DEFAULT ''
+);
+-- 作答历史（历史答案与错误记录靠它）
+CREATE TABLE review_attempts (
+  id TEXT PRIMARY KEY, code TEXT NOT NULL,
+  task_id TEXT NOT NULL DEFAULT '', project_id TEXT NOT NULL DEFAULT '',
+  question_type TEXT NOT NULL,           -- concept / predict / debug / code
+  grade INTEGER NOT NULL,                -- 5 档自评 1~5
+  answer TEXT NOT NULL DEFAULT '',       -- 我写的（可为空）
+  ai_verdict TEXT NOT NULL DEFAULT '',   -- 可选 AI 判分（JSON）
+  reviewed_on TEXT NOT NULL,             -- 本机日期（与现有复习计数同口径）
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+);
+CREATE TABLE review_sessions (
+  id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '',
+  planned INTEGER NOT NULL DEFAULT 0, answered INTEGER NOT NULL DEFAULT 0,
+  grade_counts_json TEXT NOT NULL DEFAULT '{}', duration_ms INTEGER NOT NULL DEFAULT 0
+);
+-- 索引：review_states(due)、review_states(weak)、review_attempts(code, created_at)、review_attempts(reviewed_on)
+```
+
+设置项（沿用 `app_state.settings`）：`reviewDailyLimit`（5～15，默认 10）、`reviewNewPerDay`（每日新知识点名额，默认 2，可关）。
+
+接口：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/api/review/summary?today=` | 分组计数（今日必复/即将到期/已逾期/薄弱/最近答错/最近掌握）+ 连续天数 + 今日进度 |
+| GET | `/api/review/queue?today=&limit=&module=&level=&projectId=&tag=&type=&include=` | 今日题目队列（**只给题面，不含答案**） |
+| POST | `/api/review/reveal` | `{code, type}` → 参考答案要点、易错点、我的历史答案（**只有调它才拿得到答案**） |
+| POST | `/api/review/answer` | `{code, type, grade, answer, durationMs, sessionId}` → 记录 + 更新调度 → 返回下次复习日 |
+| POST | `/api/review/ai-grade` | 可选 AI 判分：`{code, type, answer}` → 缺什么/错在哪/补漏建议 |
+| POST | `/api/review/generate` | `{taskId, projectId}` → AI 补充知识点/补漏题（3～5 项，幂等入库，`origin='ai'`） |
+| GET | `/api/review/points?module=&level=&query=&limit=&offset=` | 知识点库浏览（含掌握度、taskRefs），支持"立即练一次" |
+| GET | `/api/review/history?code=&limit=` | 某知识点的历史答案与错误记录 |
+| POST | `/api/review/plan` | 生成/刷新今日计划（默认由 queue 即算即出） |
+
+## 13. 会话状态机与调度细节
+
+状态机：
+
+```
+idle → loading(取队列) → asking(题面 + 输入框)
+asking   --写--> drafting（本地草稿，可随时揭示）
+drafting --看答案--> revealing（POST /reveal：参考答案 + 易错点 + 历史答案）
+revealing --选 5 档--> recording（POST /answer）→ next
+next：队列还有 → asking；没有 → summary（结束总结）
+任意状态 --退出--> 存草稿并回复习页；下次进同一题恢复草稿
+```
+
+- **一次一题**：一个知识点一次只出 1 道题，题型轮换（概念 → 预测 → 排查 → 编程；易错点随题展示），同一知识点不连出两题。
+- **五档 → 间隔**：完全不会(1) → 当天（当天已答过则次日）+ `lapses+1`；说不清(2) → 1～3 天；基本掌握(3) → 7 天；能独立写(4) → 14 天，之后每次 +7～×1.5，上限 60；能讲给别人(5) → 30 天，上限 90。
+- **答错回退**：grade ≤ 2 时间隔退回 1 天（不归零重来）；连续答对则逐步拉长。
+- **薄弱点**：`lapses ≥ 2` 或最近 3 次里 2 次 grade ≤ 2 → `weak=1`；连续 2 次 grade ≥ 4 → `weak=0`。薄弱点在队列里加权优先。
+- **每日队列组装**：逾期（按 due 升序）→ 今日到期 → `weak` 补足 → 未学过的新知识点（每日最多 `reviewNewPerDay` 个）→ 即将到期（按最久未复习）。**上限硬约束，绝不把逾期一次全塞。**
+- **未学过的补充知识点**：默认不进每日队列（避免塞满），但可以在知识点库页"立即练一次"；练完按五档排期。
+- **结束总结**：本次题数、各档分布、用时、正确率、新进薄弱点、下次复习日、"最近答错/最近掌握"更新。
+
+## 14. 边界与错误处理
+
+- **没有 API key**：内置内容完全可用；`generate` / `ai-grade` 返回明确错误，前端按钮禁用并说明原因（离线也能复习）。
+- **服务不可用/断网**：题目已在内存，会话可继续；`answer` 写入失败时保留输入并提示重试（不丢答案）。
+- **刷新/中途退出**：草稿存本地（key 含 sessionId + code + type），回来恢复未提交答案。
+- **时区**：沿用 `todayStr()` 的前端日期并随请求传给服务端（与现有复习计数、`/api/reviews` 同口径）。
+- **大数据量**：`queue` 只返回限额内题目；`points` 分页；`history` 限制条数。
+- **降级**：AI 生成失败不影响已完成任务产生复习项（预规划的内置知识点仍然生效）。
+
+## 15. 设计点 → 测试映射
+
+| 设计点 | 测试 |
+| --- | --- |
+| §6 内容校验 | 校验器单测 + 反向验证（写坏一条必须失败） |
+| §7 答案不提前出现 | 前端脚本断言：`reveal` 之前 DOM 里没有答案文本 |
+| §13 调度 | 五档→间隔、回退、薄弱点判定、每日上限、逾期不全塞、一次一题/题型轮换 |
+| §3 生成回流 | 完成任务 → 3～5 项且来自 `taskRefs`；`introduces`/`exercises` 都生效；元任务不生成；验收失败 → 补漏题 |
+| §9 存储 | v7→v8 迁移（副本上跑）、旧数据不变、`quick_check=ok`、备份/恢复/导出往返 |
+| §9 写锁 | 基准：保存 1 万任务 + 同时答题的耗时 |
+| §12 接口 | HTTP 层测试：非法参数 400、缺 key 时生成接口明确报错 |
+| 全流程 | Playwright：出题 → 写 → 揭示 → 自评 → 下一题 → 总结 |
