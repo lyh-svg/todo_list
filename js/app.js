@@ -2885,7 +2885,7 @@ let knowledgePoints = [];
                 // 验收通过 → 走生成回流（默认课程每个任务都 assessmentRequired，勾选直接进验收，
                 // 不在这里调用的话"完成任务 → 生成复习项"在默认路径上永远不会发生）。
                 // 项目对象在进入本分支时就取好了：showProjectsView() 会把内存里的树换成列表摘要。
-                maybeGenerateReviewItems(completedProject, completedNode);
+                await maybeGenerateReviewItems(completedProject, completedNode);
             } catch (error) {
                 assessmentResult.hidden = false;
                 assessmentResult.classList.add('failed');
@@ -2971,7 +2971,7 @@ let knowledgePoints = [];
                     assessmentAnswer.value = '';
                     assessmentServiceStatus.textContent = '本题未通过，请根据反馈修改后再次提交';
                     // 问题阶段失败 → 同样针对失败点生成补漏题（失败只 warn，不阻断）。
-                    maybeGenerateRemedial(owningProjectOfNode(assessmentNode), assessmentNode, result);
+                    await maybeGenerateRemedial(owningProjectOfNode(assessmentNode), assessmentNode, result);
                     return;
                 }
                 if (assessmentQuestionIndex + 1 < assessmentQuestionItems.length) {
@@ -3016,13 +3016,13 @@ let knowledgePoints = [];
                 await showProjectsView();
                 showToast('已通过');
                 // 验收通过 → 走生成回流（与跳过实现阶段的路径同一处理，见 toggleNodeCompleted 只负责非验收任务）。
-                maybeGenerateReviewItems(passedProject, passedNode);
+                await maybeGenerateReviewItems(passedProject, passedNode);
             } else {
                 renderDetail();
                 showAssessmentResult(result);
                 assessmentServiceStatus.textContent = '尚未通过，请按反馈补漏';
                 // 验收失败 → 针对失败点生成补漏题，相关知识点进薄弱点列表（失败只 warn）。
-                maybeGenerateRemedial(owningProjectOfNode(assessmentNode), assessmentNode, result);
+                await maybeGenerateRemedial(owningProjectOfNode(assessmentNode), assessmentNode, result);
             }
         } catch (error) {
             showAssessmentLive(false);
@@ -4545,13 +4545,13 @@ let knowledgePoints = [];
         renderUndoButtons();
     }
 
-    async function callApi(path, method, body) {
-        const options = { method: method || 'POST' };
+    async function callApi(path, method, body, options = {}) {
+        const requestOptions = { method: method || 'POST', ...options };
         if (body !== undefined && body !== null) {
-            options.headers = { 'Content-Type': 'application/json' };
-            options.body = JSON.stringify(body);
+            requestOptions.headers = { 'Content-Type': 'application/json' };
+            requestOptions.body = JSON.stringify(body);
         }
-        const response = await apiFetch(path, options);
+        const response = await apiFetch(path, requestOptions);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || '操作失败');
         return payload;
@@ -4560,12 +4560,14 @@ let knowledgePoints = [];
     // 完成任务后的生成回流：按 taskRefs 生成复习项，AI 只做补充。
     // 纯增强：任何失败都只 warn，绝不打断勾选/保存或弹错误提示刷屏。
     // 只有真的写入了新知识点（inserted>0）才提示；已挂过点的任务静默，避免每次完成都误报"已生成 N 个"。
+    // 调用处必须 await：keepalive 让请求在关页/刷新时也能发完（体量很小），await 则保证
+    // 验收/保存流程不会在请求还没发出去时就"结束"。
     async function maybeGenerateReviewItems(project, node) {
         if (!project || !node) return;
         try {
             const payload = await callApi('/api/review/generate', 'POST', {
                 taskId: node.id, projectId: project.id, taskText: node.text || '', count: 3,
-            });
+            }, { keepalive: true });
             const inserted = Number(payload.inserted) || 0;
             if (inserted > 0) showToast(`已生成 ${inserted} 个复习知识点`);
         } catch (error) {
@@ -4592,7 +4594,7 @@ let knowledgePoints = [];
             await callApi('/api/review/generate', 'POST', {
                 taskId: node.id, projectId: project.id, taskText: node.text || '',
                 gap: assessmentGapText(result), remedial: true, count: 2,
-            });
+            }, { keepalive: true });
         } catch (error) {
             console.warn('生成补漏题失败', error);
         }
@@ -5993,7 +5995,7 @@ let knowledgePoints = [];
         utilityBody.appendChild(form);
     }
 
-    function toggleNodeCompleted(node) {
+    async function toggleNodeCompleted(node) {
         // 先判断能不能走节点级 patch（此时还没改动，JSON 与基线可比）
         const patchSafe = canUseNodePatch(owningProjectOfNode(node));
         if (node.type === 'item') {
@@ -6017,15 +6019,14 @@ let knowledgePoints = [];
                     ops.push({ op: 'append', parentId: findNodeParentIdIn(owner, node.id),
                                node: outcome.spawned });
                 }
-                saveNodeChange(owner, ops, () => saveProjects()).then(() => {
-                    // patch 路径下服务端已完成，重绘一次让统计/父节点状态跟上
-                    refreshAfterToggle(owner, node);
-                    if (node.completed) maybeGenerateReviewItems(owner, node);
-                });
+                await saveNodeChange(owner, ops, () => saveProjects());
+                // patch 路径下服务端已完成，重绘一次让统计/父节点状态跟上
+                refreshAfterToggle(owner, node);
+                if (node.completed) await maybeGenerateReviewItems(owner, node);
             } else {
                 saveProjects();
                 refreshAfterToggle(owner, node);
-                if (node.completed) maybeGenerateReviewItems(owner, node);
+                if (node.completed) await maybeGenerateReviewItems(owner, node);
             }
             return;
         }
@@ -7859,7 +7860,7 @@ let knowledgePoints = [];
         try {
             await withWorkbenchNode(item, async (node) => {
                 const before = node.completed;
-                toggleNodeCompleted(node);
+                await toggleNodeCompleted(node);
                 if (node.completed === before) return;
                 // 必须先等这次改动真正落库再重画看板：saveProjects() 只是排 250ms 防抖，
                 // 立刻 GET /api/workbench 拿到的还是旧数据，看起来像"点了没反应"。
@@ -8422,15 +8423,19 @@ let knowledgePoints = [];
         // 题型筛选也要作用于那两组作答记录：记录里带 questionType，可直接按当前题型过滤
         // （它们不属于范围筛选，所以放在 scope 过滤之前）。
         const type = (reviewTypeFilter && reviewTypeFilter.value) || '';
-        const matchesType = entry => !type || entry.questionType === type;
+        // 模块筛选同样要作用于这两组：它们来自 /api/review/summary 的作答记录（队列已被服务端
+        // 按 module 收窄，这里拿不到队列），记录带 module；模块为空表示全部。
+        const moduleName = (reviewModuleFilter && reviewModuleFilter.value) || '';
+        const matchesAttempt = entry => (!type || entry.questionType === type)
+            && (!moduleName || entry.module === moduleName);
         let groups = [
             { title: '今日必须复习', items: state.dueToday || [] },
             { title: '即将到期', items: state.upcoming || [] },
             { title: '已逾期', items: state.overdue || [] },
             { title: '薄弱知识点', items: state.weak || [] },
             { title: '新知识点', items: state.newItems || [] },
-            { title: '最近答错', items: (state.recentWrong || []).filter(matchesType), attempt: true },
-            { title: '最近掌握', items: (state.recentMastered || []).filter(matchesType), attempt: true },
+            { title: '最近答错', items: (state.recentWrong || []).filter(matchesAttempt), attempt: true },
+            { title: '最近掌握', items: (state.recentMastered || []).filter(matchesAttempt), attempt: true },
         ];
         if (scope) {
             groups = groups.filter(entry => entry.title === scopedTitles[scope]);

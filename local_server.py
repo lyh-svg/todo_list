@@ -764,7 +764,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
             request_limit = 30 * 1024 * 1024
         elif path == "/api/memo":
             request_limit = MAX_MEMO_REQUEST_BYTES
-        elif path in {"/api/project", "/api/import"}:
+        elif path in {"/api/project", "/api/import", "/api/import/preview"}:
+            # 预览与真正导入必须同档：预览过去落在 5MiB 的 AI 限额分支，
+            # 带 review 附件的大快照会 413，前端拿不到预览就禁用确认按钮，整条导入路径不可用。
             request_limit = MAX_STATE_REQUEST_BYTES
         else:
             request_limit = MAX_AI_REQUEST_BYTES

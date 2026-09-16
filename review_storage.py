@@ -504,11 +504,11 @@ def recent_attempts(kind: str, today: str, limit: int = 10) -> list[dict[str, An
     condition = "grade<=2" if kind == "wrong" else "grade>=4"
     with _connection() as connection:
         rows = connection.execute(
-            f"SELECT a.id,a.code,a.question_type,a.grade,a.answer,a.reviewed_on,p.title "
+            f"SELECT a.id,a.code,a.question_type,a.grade,a.answer,a.reviewed_on,p.title,p.module "
             f"FROM review_attempts a LEFT JOIN review_points p ON p.code=a.code "
             f"WHERE {condition} ORDER BY a.created_at DESC LIMIT ?", (max(1, min(50, int(limit))),)).fetchall()
     return [{"id": row["id"], "code": row["code"], "title": row["title"] or row["code"],
-             "questionType": row["question_type"], "grade": int(row["grade"]),
+             "module": row["module"] or "", "questionType": row["question_type"], "grade": int(row["grade"]),
              "answer": row["answer"], "reviewedOn": row["reviewed_on"]} for row in rows]
 
 

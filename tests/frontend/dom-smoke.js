@@ -322,6 +322,13 @@ let aiGradeUnavailable = false;
 let aiGradeVerdict = null;
 // 记录生成回流的请求体：验收失败必须带 remedial:true + gap，验收通过则不带。
 const reviewGenerateBodies = [];
+// 记录生成回流每次请求的 options：断言 keepalive:true（关页/刷新不丢请求）。
+const reviewGenerateOptions = [];
+// 非 null 时把 /api/review/generate 挂在可控 promise 上：用来断言调用处真的 await 了
+// （没 await 时验收流程会立刻收尾，提交按钮提前恢复可用）。
+let generateHold = null;
+// 置 true 后 /api/review/generate 返回 500：断言生成回流失败只 warn，不阻断验收流程。
+let generateFails = false;
 async function fetchStub(url, options = {}) {
     const path = String(url).split('?')[0];
     fetchLog.push(`${options.method || 'GET'} ${path}`);
@@ -406,9 +413,10 @@ async function fetchStub(url, options = {}) {
     if (path === '/api/review/summary') return reply(200, { dueToday: 1, overdue: 1, upcoming: 0, weak: 1,
         total: 3, learned: 2, answeredToday: 0, streakDays: 3, limit: 10, newPerDay: 2,
         // 最近答错/最近掌握是"作答记录"：带题型/档位/日期/答案，复习页不能再靠知识点 lastGrade 兜底。
-        recentWrong: [{ id: 'a1', code: 'py.a.b', title: '答错的知识点', questionType: 'concept',
+        // module 是模块筛选作用于这两组的前提（修复前记录里根本没有这个字段）。
+        recentWrong: [{ id: 'a1', code: 'py.a.b', title: '答错的知识点', module: '容器', questionType: 'concept',
             grade: 1, answer: '我写错的答案', reviewedOn: '2026-09-10' }],
-        recentMastered: [{ id: 'a2', code: 'py.a.d', title: '掌握的知识点', questionType: 'predict',
+        recentMastered: [{ id: 'a2', code: 'py.a.d', title: '掌握的知识点', module: '函数', questionType: 'predict',
             grade: 5, answer: '我写对的答案', reviewedOn: '2026-09-12' }] });
     if (path === '/api/review/queue') return reply(200, { items: [{ code: 'py.a.b', title: '示例知识点',
         minutes: 10, module: '容器', level: '基础', questionType: 'predict',
@@ -466,14 +474,22 @@ async function fetchStub(url, options = {}) {
         let request = {};
         try { request = JSON.parse(options.body || '{}'); } catch (error) { request = {}; }
         reviewGenerateBodies.push(request);
+        // 记录 options：断言 keepalive 真的传到了 fetch（关页/刷新时请求也能发完）。
+        reviewGenerateOptions.push({ method: options.method || 'GET', keepalive: options.keepalive === true });
+        if (generateFails) return reply(500, { error: '生成失败（模拟）' });
         const fresh = request.taskId !== 'i-full';
-        return reply(200, {
+        const payload = {
             ok: true,
             inserted: fresh ? 2 : 0,
             unchanged: fresh ? 0 : 2,
             created: [{ code: `py.ai.${request.taskId}.1`, title: '复习知识点' }],
             usedAi: false,
-        });
+        };
+        if (generateHold) {
+            // 挂起：调用处 await 的话，验收流程会停在这里（提交按钮保持 disabled）。
+            return new Promise(resolve => generateHold.push(() => resolve(reply(200, payload))));
+        }
+        return reply(200, payload);
     }
     // 验收出题：固定三道题（与真实 /api/question 契约一致）。
     if (path === '/api/question') return reply(200, {
@@ -867,6 +883,24 @@ function step(name, fn) {
     check('模块筛选变化后带 module 重新拉取队列',
         fetchUrls.some(u => u.includes('/api/review/queue') && u.includes('module=%E5%87%BD%E6%95%B0')),
         JSON.stringify(fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-3)));
+    // 模块筛选必须同样作用于"最近答错/最近掌握"两组（summary 的最近记录带 module）。
+    // 复位题型后只选「函数」模块：容器模块的答错记录要被过滤掉，函数模块的掌握记录保留。
+    // 去掉 renderReviewGroups 里 matchesAttempt 的模块判断这条断言会变红（见报告自证）。
+    step('复位题型筛选不抛异常', () => {
+        typeFilter.value = '';
+        typeFilter.dispatch('change');
+    });
+    await sleep(120);
+    check('模块筛选也作用于最近答错/最近掌握（容器模块的答错记录被过滤掉）',
+        textOf(elementsById.get('reviewBody')).includes('掌握的知识点')
+        && !textOf(elementsById.get('reviewBody')).includes('答错的知识点'),
+        textOf(elementsById.get('reviewBody')).slice(0, 300));
+    // 后面的「开始今日复习」用例要求此时题型筛选仍是 concept，验完模块过滤就还原。
+    step('还原题型筛选不抛异常', () => {
+        typeFilter.value = 'concept';
+        typeFilter.dispatch('change');
+    });
+    await sleep(60);
     step('切换范围筛选不抛异常', () => {
         scopeFilter.value = 'overdue';
         scopeFilter.dispatch('change');
@@ -1246,14 +1280,35 @@ function step(name, fn) {
     check('验收任务行渲染出来了（assessmentRequired:true，默认课程路径）', Boolean(skipRow),
         textOf(elementsById.get('treeRoot')).slice(0, 200));
     const generateBeforeSkip = fetchLog.filter(line => line === 'POST /api/review/generate').length;
+    const generateOptionsBeforeSkip = reviewGenerateOptions.length;
     if (skipRow) {
         const checkbox = findAll(skipRow, el => el.classList.contains('checkbox'))[0];
         step('勾选验收任务打开验收弹窗不抛异常', () => checkbox.dispatch('click'));
         await sleep(120);
         check('验收弹窗打开（body 进入 assessment-open）',
             documentStub.body.classList.contains('assessment-open'));
+        // 生成回流挂在可控 promise 上：既能断言"请求真的发出去了"（不是只派发 promise），
+        // 也能断言调用处真的 await——没 await 时 finally 会立刻把提交按钮恢复可用，
+        // 下面的 disabled 断言就会变红。
+        generateHold = [];
         step('留空提交验收（跳过实现阶段）不抛异常', () => elementsById.get('assessmentForm').dispatch('submit'));
         await sleep(200);
+        check('验收通过后 /api/review/generate 请求已经发出（不是只派发 promise）',
+            reviewGenerateOptions.length > generateOptionsBeforeSkip,
+            JSON.stringify(reviewGenerateOptions.slice(-2)));
+        check('生成回流请求带 keepalive（关页/刷新时也能发完）',
+            Boolean(reviewGenerateOptions.slice(-1)[0])
+            && reviewGenerateOptions.slice(-1)[0].keepalive === true,
+            JSON.stringify(reviewGenerateOptions.slice(-2)));
+        check('生成回流被 await：请求未完成时验收流程尚未收尾（提交按钮仍禁用）',
+            elementsById.get('assessmentSubmitBtn').disabled === true,
+            `disabled=${elementsById.get('assessmentSubmitBtn').disabled}`);
+        generateHold.forEach(release => release());
+        generateHold = null;
+        await sleep(80);
+        check('释放生成回流后验收流程正常收尾（提交按钮恢复可用）',
+            elementsById.get('assessmentSubmitBtn').disabled === false,
+            `disabled=${elementsById.get('assessmentSubmitBtn').disabled}`);
     }
     check('验收通过（跳过实现阶段）后 POST 了 /api/review/generate',
         fetchLog.filter(line => line === 'POST /api/review/generate').length > generateBeforeSkip,
@@ -1290,11 +1345,24 @@ function step(name, fn) {
         }
         const generateBeforeFull = fetchLog.filter(line => line === 'POST /api/review/generate').length;
         elementsById.get('assessmentAnswer').value = '我按 None 哨兵重写了实现';
+        // 生成回流失败（500）必须只 warn：既不抛未处理异常，也不阻断验收流程收尾。
+        const generateWarnings = [];
+        const realWarn = console.warn;
+        console.warn = (...args) => { generateWarnings.push(args.map(item => String(item)).join(' ')); };
+        generateFails = true;
         elementsById.get('assessmentForm').dispatch('submit');
         await sleep(250);
+        generateFails = false;
+        console.warn = realWarn;
         check('完整验收通过后 POST 了 /api/review/generate',
             fetchLog.filter(line => line === 'POST /api/review/generate').length > generateBeforeFull,
             JSON.stringify(fetchLog.slice(-6)));
+        check('生成回流 500 只 warn：无未处理异常，验收流程照常收尾（按钮恢复可用）',
+            asyncErrors.length === 0
+            && generateWarnings.some(line => line.includes('生成复习知识点失败'))
+            && elementsById.get('assessmentSubmitBtn').disabled === false,
+            JSON.stringify({ errors: asyncErrors.slice(-2), warnings: generateWarnings.slice(-2),
+                disabled: elementsById.get('assessmentSubmitBtn').disabled }));
         check('零新增（inserted=0）时不再误报"已生成 N 个"',
             !String(elementsById.get('toastMessage').textContent).includes('已生成'),
             String(elementsById.get('toastMessage').textContent));

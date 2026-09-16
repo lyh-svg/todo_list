@@ -322,6 +322,35 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual(status, 413)
         self.assertIn("请求内容", json.loads(payload.decode("utf-8"))["error"])
 
+    def test_import_preview_accepts_payload_over_ai_limit(self) -> None:
+        """预览必须和 /api/import 同档大限额（真 bug：预览曾落 5MiB 的 AI 限额分支）。
+
+        大快照（projects + 导出的 review 附件）在预览上会 413，前端拿不到预览就禁用确认
+        按钮，整条 UI 导入路径不可用。这里真发一个略大于 5MiB 的合法预览载荷。
+        """
+        project = make_project()
+        project["tree"][0]["children"][0]["children"][0]["note"] = "a" * (6 * 1024 * 1024)
+        raw = json.dumps({"projects": [project], "mode": "merge"}).encode("utf-8")
+        self.assertGreater(len(raw), local_server.MAX_AI_REQUEST_BYTES)
+        self.assertLess(len(raw), local_server.MAX_STATE_REQUEST_BYTES)
+        status, payload = self.json_call("POST", "/api/import/preview", raw,
+                                         {"Content-Type": "application/json"})
+        self.assertNotEqual(status, 413, "预览不能再按 5MiB 的 AI 限额拒绝大快照")
+        self.assertEqual(status, 200, payload)
+        self.assertIn("preview", payload)
+
+    def test_import_preview_still_rejects_over_state_limit(self) -> None:
+        """放宽到 110MiB 不等于不设防：超过 STATE 限额仍必须 JSON 413。
+
+        只声明 Content-Length、不真发 110MiB，避免测试链变慢。
+        """
+        status, payload = self.call("POST", "/api/import/preview", b"{}", {
+            "Content-Type": "application/json",
+            "Content-Length": str(local_server.MAX_STATE_REQUEST_BYTES + 1),
+        })
+        self.assertEqual(status, 413)
+        self.assertIn("请求内容", json.loads(payload.decode("utf-8"))["error"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

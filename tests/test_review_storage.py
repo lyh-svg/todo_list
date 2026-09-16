@@ -142,6 +142,26 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual([entry["questionType"] for entry in data["recentMastered"]], ["predict"])
         self.assertEqual(data["recentMastered"][0]["grade"], 5)
 
+    def test_recent_attempts_carry_module_for_group_filtering(self) -> None:
+        """模块筛选必须作用于"最近答错/最近掌握"两组：记录要带 p.module。
+
+        修复前 recent_attempts 的 SQL 不查 module，summary 的最近记录就没有模块字段，
+        前端这两组只按题型过滤，"选了模块却还显示别的模块"。
+        """
+        review_storage.import_content([
+            point(code="py.container.list", title="容器点"),            # point() 默认 module=容器
+            {**point(code="py.func.def", title="函数点"), "module": "函数"},
+        ])
+        review_storage.apply_grade("py.container.list", "concept", 1, today="2026-09-16", answer="错的")
+        review_storage.apply_grade("py.func.def", "concept", 5, today="2026-09-16", answer="对的")
+        wrong = review_storage.recent_attempts("wrong", "2026-09-16")
+        mastered = review_storage.recent_attempts("mastered", "2026-09-16")
+        self.assertEqual([entry["module"] for entry in wrong], ["容器"])
+        self.assertEqual([entry["module"] for entry in mastered], ["函数"])
+        data = review_storage.summary("2026-09-16")
+        self.assertEqual([entry["module"] for entry in data["recentWrong"]], ["容器"])
+        self.assertEqual([entry["module"] for entry in data["recentMastered"]], ["函数"])
+
     def test_history_returns_answers_and_pitfalls(self) -> None:
         review_storage.apply_grade("py.a.b", "concept", 2, today="2026-09-16", answer="我写的")
         data = review_storage.history("py.a.b")
