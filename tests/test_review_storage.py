@@ -72,6 +72,34 @@ class ReviewStorageTests(unittest.TestCase):
                                        point(code="py.dict.basics", title="字典基础")])
         self.assertEqual(review_storage.list_points(query="默认")["total"], 1)
 
+    def test_taskrefs_only_change_rebuilds_links(self) -> None:
+        review_storage.import_content([point(task_id="1103")])
+        result = review_storage.import_content([point(task_id="1303")])
+        with storage.open_state_database() as connection:
+            rows = connection.execute("SELECT task_id, relation FROM review_point_tasks").fetchall()
+        self.assertEqual([(row["task_id"], row["relation"]) for row in rows], [("1303", "introduces")])
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["unchanged"], 1)
+
+    def test_repeated_import_does_not_duplicate_taskrefs(self) -> None:
+        review_storage.import_content([point(task_id="1103")])
+        review_storage.import_content([point(task_id="1103")])
+        with storage.open_state_database() as connection:
+            task_rows = connection.execute("SELECT COUNT(*) FROM review_point_tasks").fetchone()[0]
+            point_rows = connection.execute("SELECT COUNT(*) FROM review_points").fetchone()[0]
+        self.assertEqual(task_rows, 1)
+        self.assertEqual(point_rows, 1)
+
+    def test_import_does_not_overwrite_origin(self) -> None:
+        review_storage.import_content([point()], origin="builtin")
+        result = review_storage.import_content([point()], origin="ai")
+        with storage.open_state_database() as connection:
+            stored = connection.execute(
+                "SELECT origin FROM review_points WHERE code=?", (point()["code"],)).fetchone()[0]
+        self.assertEqual(stored, "builtin")
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["unchanged"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

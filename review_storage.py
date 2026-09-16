@@ -25,7 +25,11 @@ def _json(value: Any) -> str:
 
 
 def import_content(points: list[dict], *, week: int = 1, origin: str = DEFAULT_ORIGIN) -> dict[str, int]:
-    """按 code 幂等导入知识点（内容相同则跳过，变化则更新，taskRefs 整体重建）。"""
+    """按 code 幂等导入知识点：只有内容变化才算 updated（内容相同则 unchanged），taskRefs 整体重建。
+
+    `origin`/`week` 是来源元数据而非内容指纹：`week` 不落库，`origin` 只在首次插入时写入，
+    重复导入不会覆盖已有行的 `origin`。
+    """
     errors = review_content.validate_points(points)
     if errors:
         raise ValueError("内容校验失败：" + "；".join(errors[:5]))
@@ -38,7 +42,6 @@ def import_content(points: list[dict], *, week: int = 1, origin: str = DEFAULT_O
             payload = {
                 "code": code, "title": str(point["title"]), "minutes": int(point["minutes"]),
                 "module": str(point.get("module") or ""), "level": str(point.get("level") or "基础"),
-                "origin": origin, "week": week,
                 "concept": point["concept"], "predict": point["predict"], "debug": point["debug"],
                 "code_task": point["code_task"], "pitfalls": point["pitfalls"],
             }
@@ -56,10 +59,10 @@ def import_content(points: list[dict], *, week: int = 1, origin: str = DEFAULT_O
                 inserted += 1
             elif row["content_json"] != content:
                 connection.execute(
-                    "UPDATE review_points SET title=?,minutes=?,module=?,level=?,origin=?,content_json=?,updated_at=? "
+                    "UPDATE review_points SET title=?,minutes=?,module=?,level=?,content_json=?,updated_at=? "
                     "WHERE code=?",
                     (payload["title"], payload["minutes"], payload["module"], payload["level"],
-                     origin, content, stamp, code))
+                     content, stamp, code))
                 updated += 1
             else:
                 unchanged += 1
