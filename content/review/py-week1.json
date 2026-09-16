@@ -616,6 +616,175 @@
       ]
     },
     {
+      "code": "py.mutability.alias",
+      "title": "可变/不可变与别名",
+      "minutes": 20,
+      "module": "对象语义",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1201",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1203",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "为什么 b = a 之后改 b 会影响 a？哪些对象会这样？",
+        "answer": [
+          "赋值不复制对象，只让两个名字指向同一个对象（别名）",
+          "list/dict/set 等可变对象通过别名互相影响；int/str/tuple 不可变，重新赋值只是重绑名字",
+          "a is b 判断是否同一对象，a == b 判断值是否相等",
+          "想互不影响必须显式复制（copy / 切片 / 推导式新建）"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "a = [1, 2]\nb = a\nb.append(3)\nprint(a, a is b)\nc = [1, 2, 3]\nprint(c == a, c is a)\ns = \"ab\"\nt = s\nt += \"c\"\nprint(s, t)",
+        "expected": [
+          "[1, 2, 3] True",
+          "True False",
+          "ab abc"
+        ],
+        "explain": "b = a 是别名，append 原地改的是同一个列表；c 是新列表，值相等但身份不同；str 不可变，t += 生成新字符串，s 不变。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def clear(items):\n    items = []\n    return items\n\n\ndata = [1, 2]\nclear(data)\nprint(data)",
+        "rootCause": "items = [] 只是把函数内的局部名字重绑到新列表，调用方的 data 一个元素都没少。",
+        "fix": "要清空调用方的列表就原地操作：items.clear()（或 del items[:]）；不要用重新赋值假装清空。"
+      },
+      "code_task": {
+        "prompt": "写 append_all(target, values)：把 values 的元素原地追加进 target 并返回 target；即使 values 就是 target 本身也必须正常结束。",
+        "acceptance": [
+          "返回的就是同一个 target 对象（result is target 为真）",
+          "target 被原地修改，调用方能看到新元素",
+          "append_all(x, x) 不会无限循环且元素翻倍",
+          "values 为空时 target 不变"
+        ],
+        "reference": "def append_all(target, values):\n    for value in list(values):\n        target.append(value)\n    return target"
+      },
+      "pitfalls": [
+        "把别名当成副本",
+        "以为函数参数默认是拷贝",
+        "用 items = [] 清空别人的列表",
+        "对不可变对象也担心别名问题"
+      ]
+    },
+    {
+      "code": "py.mutability.copy-deep",
+      "title": "浅拷贝与深拷贝",
+      "minutes": 20,
+      "module": "对象语义",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1201",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "浅拷贝复制了什么？什么时候必须用 deepcopy？",
+        "answer": [
+          "浅拷贝（copy.copy / dict() / list() / a[:]）只新建外层容器，嵌套对象仍共享",
+          "深拷贝（copy.deepcopy）递归复制所有层，副本与原对象完全独立",
+          "不可变对象 deepcopy 可能直接返回原对象，这是安全的优化",
+          "deepcopy 处理循环引用靠 memo，但代价高；能推导式重建就别 deepcopy"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "import copy\n\ninner = [1, 2]\ndata = {\"inner\": inner}\nshallow = copy.copy(data)\nshallow[\"inner\"].append(3)\nprint(data[\"inner\"])\ndeep = copy.deepcopy(data)\ndeep[\"inner\"].append(4)\nprint(data[\"inner\"], deep[\"inner\"])\nshallow[\"new\"] = 1\nprint(\"new\" in data, \"new\" in shallow)",
+        "expected": [
+          "[1, 2, 3]",
+          "[1, 2, 3] [1, 2, 3, 4]",
+          "False True"
+        ],
+        "explain": "浅拷贝后 shallow[\"inner\"] 与原对象是同一个 list；deepcopy 之后两边互不影响；新增顶层键只影响副本自己。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "config = {\"retries\": 3, \"tags\": [\"a\"]}\nclone = dict(config)\nclone[\"tags\"].append(\"b\")\nprint(config[\"tags\"])",
+        "rootCause": "dict(config) 是浅拷贝，clone[\"tags\"] 与 config[\"tags\"] 是同一个 list，改副本等于改原配置。",
+        "fix": "用 copy.deepcopy(config)，或对可变字段单独复制：clone[\"tags\"] = list(config[\"tags\"])。"
+      },
+      "code_task": {
+        "prompt": "写 clone_config(value)：手写递归复制嵌套 dict/list，返回值与原对象不共享任何可变部分；不得直接调用 copy.deepcopy。",
+        "acceptance": [
+          "修改副本里的嵌套 list 不影响原对象",
+          "修改副本里嵌套 dict 的值不影响原对象",
+          "标量、str、tuple 等不可变值可原样返回",
+          "空 dict / 空 list 也能正常复制"
+        ],
+        "reference": "def clone_config(value):\n    if isinstance(value, dict):\n        return {key: clone_config(item) for key, item in value.items()}\n    if isinstance(value, list):\n        return [clone_config(item) for item in value]\n    return value"
+      },
+      "pitfalls": [
+        "dict()/list() 当深拷贝用",
+        "只复制一层就以为独立",
+        "对循环引用无脑 deepcopy",
+        "copy 之后改顶层键还担心影响原对象"
+      ]
+    },
+    {
+      "code": "py.mutability.arg-passing",
+      "title": "传参是传对象引用",
+      "minutes": 15,
+      "module": "对象语义",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1101",
+          "relation": "exercises"
+        },
+        {
+          "taskId": "1503",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "Python 是传值还是传引用？函数里改参数会反映到调用方吗？",
+        "answer": [
+          "传的是对象引用（按对象共享传参），形参是实参对象的别名",
+          "对可变对象做原地操作（append/update/clear）会反映到调用方",
+          "在函数内重新赋值（items = ...）只重绑局部名，不影响调用方",
+          "不可变对象（str/int/tuple）永远不受影响，函数只能靠返回值交出结果"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def add_item(items, item):\n    items.append(item)\n\n\ndef rebind(items):\n    items = items + [\"x\"]\n\n\ndata = [1]\nadd_item(data, 2)\nrebind(data)\nprint(data)\n\n\ndef mutate(text):\n    text = text.upper()\n    return text\n\n\ns = \"hi\"\nmutate(s)\nprint(s)",
+        "expected": [
+          "[1, 2]",
+          "hi"
+        ],
+        "explain": "add_item 原地 append 影响了调用方；rebind 新建列表并重绑局部名，没有影响；str 不可变，mutate 返回的新字符串没被使用，s 仍是 hi。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def normalize(names):\n    names = [name.strip() for name in names]\n    return names\n\n\nraw = [\" a \", \"b \"]\nnormalize(raw)\nprint(raw)",
+        "rootCause": "推导式新建了列表并只重绑局部名，调用方的 raw 仍是带空白的原始数据。",
+        "fix": "要么用返回值 raw = normalize(raw)，要么原地替换 names[:] = [...]。"
+      },
+      "code_task": {
+        "prompt": "写 dedupe_in_place(nums)：原地去重并保持首次出现顺序，返回同一个列表对象（让调用方既拿到返回值也看到原地效果）。",
+        "acceptance": [
+          "返回的对象 is 原列表",
+          "保持首次出现顺序：[3, 1, 3, 2] -> [3, 1, 2]",
+          "调用方的列表确实被改短了",
+          "空列表与全重复列表都正常"
+        ],
+        "reference": "def dedupe_in_place(nums):\n    seen = set()\n    write = 0\n    for value in nums:\n        if value in seen:\n            continue\n        seen.add(value)\n        nums[write] = value\n        write += 1\n    del nums[write:]\n    return nums"
+      },
+      "pitfalls": [
+        "以为参数默认按值拷贝",
+        "在函数里重新赋值期待影响调用方",
+        "顺手原地修改了调用方的数据",
+        "对不可变对象调用原地方法"
+      ]
+    },
+    {
       "code": "py.mutability.default-arg",
       "title": "可变默认参数与求值时机",
       "minutes": 20,
@@ -672,6 +841,225 @@
         "把默认值当每次新建",
         "调用侧共享同一列表",
         "在默认值里藏缓存导致测试互相污染"
+      ]
+    },
+    {
+      "code": "py.identity.eq-vs-is",
+      "title": "== 与 is、驻留、None 判断",
+      "minutes": 20,
+      "module": "对象语义",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1201",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "== 和 is 分别比什么？为什么判断 None 必须用 is？",
+        "answer": [
+          "== 调用 __eq__ 比值；is 比较内存身份（是否同一个对象）",
+          "小整数与部分字符串会被驻留复用，is 的结果不可依赖",
+          "None 是单例，判断缺失一律用 is None / is not None",
+          "别用 == 和 None 比较：自定义 __eq__ 可能返回反直觉结果"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "a = [1, 2]\nb = a[:]\nprint(a == b, a is b)\nx = None\nprint(x is None, x == None)\ny = []\nprint(bool(y), y is None)",
+        "expected": [
+          "True False",
+          "True True",
+          "False False"
+        ],
+        "explain": "切片产生新列表，值相等但身份不同；None 单例两种写法都为真，但规范用 is；空列表是假值，但它不是 None。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def is_same_name(a, b):\n    return a is b\n\n\nprint(is_same_name(\"张\" * 2, \"张张\"))",
+        "rootCause": "用 is 比较运行时拼出来的字符串，身份是否相同取决于驻留策略，不是语言保证，结果会随实现和上下文变化。",
+        "fix": "比较内容用 ==：return a == b；is 只保留给 None 等单例或“确实要同一对象”的场景。"
+      },
+      "code_task": {
+        "prompt": "写 same_content(a, b) 比较内容、is_missing(value) 判断缺失，并写 find_or_none(items, target) 找不到时返回 None。",
+        "acceptance": [
+          "same_content([1], [1]) 为 True，same_content([1], [2]) 为 False",
+          "is_missing(None) 为 True，is_missing(0) 为 False",
+          "find_or_none([1, 2], 2) 返回 2",
+          "find_or_none([1, 2], 3) 返回 None，且调用方应能用 is None 判断"
+        ],
+        "reference": "def same_content(a, b):\n    return a == b\n\n\ndef is_missing(value):\n    return value is None\n\n\ndef find_or_none(items, target):\n    for item in items:\n        if item == target:\n            return item\n    return None"
+      },
+      "pitfalls": [
+        "用 is 比较字符串或数字",
+        "用 == 判断 None",
+        "把 == 当成身份比较",
+        "依赖小整数/字符串驻留"
+      ]
+    },
+    {
+      "code": "py.identity.eq-hash",
+      "title": "__eq__ 与 __hash__ 的关系",
+      "minutes": 15,
+      "module": "对象语义",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1203",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "为什么重写 __eq__ 后对象就不能放进 set/dict 了？哈希契约是什么？",
+        "answer": [
+          "相等对象必须有相同哈希：a == b 则 hash(a) == hash(b)",
+          "类里定义 __eq__ 时 __hash__ 被自动置为 None，实例变成不可哈希",
+          "哈希相同不代表相等，冲突靠 __eq__ 再判一次",
+          "不可变值对象推荐 dataclass(frozen=True) 或 namedtuple，自动生成一致的 __eq__/__hash__"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "class Point:\n    def __init__(self, x, y):\n        self.x, self.y = x, y\n\n    def __eq__(self, other):\n        return (self.x, self.y) == (other.x, other.y)\n\n    def __hash__(self):\n        return hash((self.x, self.y))\n\n\np1, p2 = Point(1, 2), Point(1, 2)\nprint(p1 == p2, hash(p1) == hash(p2))\nprint(len({p1, p2}))\nprint({p1: \"a\"}[p2])",
+        "expected": [
+          "True True",
+          "1",
+          "a"
+        ],
+        "explain": "同时定义了 __eq__ 和 __hash__，相等对象哈希相同，set 去重后只剩 1 个，dict 也能用等价的键查到值。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class User:\n    def __init__(self, uid):\n        self.uid = uid\n\n    def __eq__(self, other):\n        return self.uid == other.uid\n\n\nusers = {User(1): \"amy\"}\nprint(User(1) in users)",
+        "rootCause": "定义了 __eq__ 却没有定义 __hash__，Python 把 __hash__ 置为 None，User 实例不可哈希，构造 dict 的那一刻就抛 TypeError: unhashable type。",
+        "fix": "补上 __hash__（如 return hash(self.uid)），或直接用 @dataclass(frozen=True) / namedtuple 让两者自动保持一致。"
+      },
+      "code_task": {
+        "prompt": "用 dataclass(frozen=True) 定义 Point(x, y)，写 unique_points(points) 按值去重并保持首次出现顺序。",
+        "acceptance": [
+          "Point(1, 2) == Point(1, 2) 且 hash 相等",
+          "len({Point(1, 2), Point(1, 2)}) == 1",
+          "unique_points([Point(1, 2), Point(1, 2), Point(3, 4)]) 长度为 2",
+          "frozen 实例给属性赋值会抛 FrozenInstanceError"
+        ],
+        "reference": "from dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass Point:\n    x: int\n    y: int\n\n\ndef unique_points(points):\n    return list(dict.fromkeys(points))"
+      },
+      "pitfalls": [
+        "只重写 __eq__ 忘了 __hash__",
+        "把可变对象当 dict 键",
+        "以为哈希相同就代表相等",
+        "把对象放进 set 后又改它的哈希字段"
+      ]
+    },
+    {
+      "code": "py.scope.legb",
+      "title": "LEGB、global/nonlocal 与变量遮蔽",
+      "minutes": 25,
+      "module": "作用域",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1103",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1303",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "名字查找顺序是什么？global 和 nonlocal 各改变什么？",
+        "answer": [
+          "LEGB：Local -> Enclosing -> Global(模块) -> Builtins",
+          "函数内只要出现赋值，该名字整个函数内都是局部变量（遮蔽外层）",
+          "global name 声明后读写的是模块级变量；nonlocal name 指向最近的外层函数变量",
+          "别用 global 传状态：参数进、返回值出更可测"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "x = \"global\"\n\n\ndef outer():\n    x = \"enclosing\"\n\n    def inner():\n        print(x)\n\n    inner()\n\n\nouter()\nprint(x)\n\ncount = 0\n\n\ndef bump():\n    global count\n    count += 1\n\n\nbump()\nprint(count)",
+        "expected": [
+          "enclosing",
+          "global",
+          "1"
+        ],
+        "explain": "inner 按 LEGB 先在 enclosing 找到 x；模块级 x 没被改动；global 声明让 bump 改的是模块级 count，所以打印 1。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "count = 0\n\n\ndef bump():\n    count += 1\n    return count\n\n\nprint(bump())",
+        "rootCause": "函数内对 count 赋值使它整个函数内都是局部变量，+= 需要先读局部 count，于是抛 UnboundLocalError。",
+        "fix": "确实要改模块级变量就加 global count；更好的做法是把计数放进类/闭包，或参数进返回值出。"
+      },
+      "code_task": {
+        "prompt": "写 running_total(amount) 与 reset()：用模块级私有变量 _total + global 维护累计值，两个函数共享同一状态。",
+        "acceptance": [
+          "running_total(3) 返回 3，再 running_total(4) 返回 7",
+          "reset() 之后 running_total(1) 返回 1",
+          "状态放在模块级变量 _total 里，不用函数默认参数存",
+          "不依赖调用顺序以外的隐藏全局（除 _total 外不新增全局）"
+        ],
+        "reference": "_total = 0\n\n\ndef running_total(amount):\n    global _total\n    _total += amount\n    return _total\n\n\ndef reset():\n    global _total\n    _total = 0"
+      },
+      "pitfalls": [
+        "函数内赋值意外创建局部变量",
+        "该用 nonlocal 却用 global",
+        "用 global 在多个模块间传状态",
+        "把内层便利变量与外层同名导致遮蔽"
+      ]
+    },
+    {
+      "code": "py.scope.closure",
+      "title": "闭包与循环变量晚绑定",
+      "minutes": 20,
+      "module": "作用域",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1303",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "闭包捕获的是变量还是值？循环里创建函数为什么会全部返回最后一个值？",
+        "answer": [
+          "闭包按“名字”捕获外层变量，读的是调用那一刻的值（晚绑定）",
+          "循环结束后循环变量停在最后一个值，所有闭包都看到它",
+          "想固定当前值用默认参数（lambda x, i=i: ...）或工厂函数",
+          "nonlocal 让内层函数能改写外层的可变绑定"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def make_adders():\n    return [lambda x: x + i for i in range(3)]\n\n\nprint([f(10) for f in make_adders()])\n\n\ndef make_adders_fixed():\n    funcs = []\n    for i in range(3):\n        funcs.append(lambda x, i=i: x + i)\n    return funcs\n\n\nprint([f(10) for f in make_adders_fixed()])",
+        "expected": [
+          "[12, 12, 12]",
+          "[10, 11, 12]"
+        ],
+        "explain": "第一个版本的 lambda 都读同一个 i，调用时 i 已经是 2；第二个版本用默认参数 i=i 在定义时就绑定了 0/1/2。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def make_handlers():\n    handlers = {}\n    for name in [\"a\", \"b\"]:\n        handlers[name] = lambda: name\n    return handlers\n\n\nprint([handler() for handler in make_handlers().values()])",
+        "rootCause": "所有 lambda 捕获的是同一个循环变量 name，循环结束后它停在 \"b\"，于是两个 handler 都返回 b。",
+        "fix": "用默认参数固定当前值：lambda name=name: name，或把创建逻辑放进工厂函数 make_handler(name)。"
+      },
+      "code_task": {
+        "prompt": "写 make_multipliers(factors)：返回函数列表，第 k 个函数把输入乘以 factors[k]，彼此独立、互不串值。",
+        "acceptance": [
+          "make_multipliers([0, 1, 2]) 的三个函数对 2 分别返回 0、2、4",
+          "错开时间调用（先收集再统一调用）结果也不变",
+          "factors 为空返回空列表",
+          "用默认参数或工厂函数避免晚绑定"
+        ],
+        "reference": "def make_multipliers(factors):\n    return [lambda value, factor=factor: value * factor for factor in factors]"
+      },
+      "pitfalls": [
+        "循环里创建闭包捕获同一个变量",
+        "以为闭包捕获的是值快照",
+        "在闭包外继续修改被捕获变量",
+        "分不清 nonlocal 与 global 的作用对象"
       ]
     }
   ]
