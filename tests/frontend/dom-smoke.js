@@ -309,6 +309,10 @@ const fetchUrls = [];
 const projectPostBodies = [];
 // 记录复习自评的请求体：断言"点第 3 个按钮 = 档位 3"，而不是只断言"发过这个请求"。
 const reviewAnswerBodies = [];
+// 记录 AI 判分的请求体：断言入口真的把当前题/答案 POST 给了 /api/review/ai-grade。
+const reviewAiGradeBodies = [];
+// 模拟"没配置 AI key"：置 true 后 /api/review/ai-grade 返回 503（走 toast 分支）。
+let aiGradeUnavailable = false;
 // 记录生成回流的请求体：验收失败必须带 remedial:true + gap，验收通过则不带。
 const reviewGenerateBodies = [];
 async function fetchStub(url, options = {}) {
@@ -425,6 +429,18 @@ async function fetchStub(url, options = {}) {
         }
         return reply(200, { ok: true, schedule: { due: '2026-09-30',
             intervalDays: 14, streak: 1, lapses: 0, weak: false, lastGrade: 4 } });
+    }
+    // 规格 §16 可选 AI 判分：默认模拟"已配置 key"，aiGradeUnavailable=true 时模拟 503。
+    if (path === '/api/review/ai-grade') {
+        if (options.body) {
+            try { reviewAiGradeBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
+        }
+        if (aiGradeUnavailable) return reply(503, { error: '未配置 AI，判分不可用（复习本身不受影响）' });
+        return reply(200, { ok: true, verdict: {
+            correct: false, missing: ['没有讲清第二次调用复用了同一个列表'],
+            wrongAt: '把 add(1, 2) 的输出写成了 [1]',
+            hint: '对照默认参数在定义时求值这一点',
+        } });
     }
     if (path === '/api/review/session') return reply(200, { ok: true, sessionId: 's-review-1' });
     // 生成回流：第一次生成有新增（inserted 2），已挂过点的任务 inserted 0（前端应静默）。
@@ -879,13 +895,49 @@ function step(name, fn) {
             .map(el => Number(el.dataset.grade)).join(',') === '1,2,3,4,5',
         findAll(elementsById.get('reviewGradeButtons'), el => el.classList.contains('review-grade-btn'))
             .map(el => String(el.dataset.grade)).join(','));
+    // ⑫a AI 判分入口（规格 §16）：揭示后按钮可见，点击请求 /api/review/ai-grade 并把 verdict 渲染进面板。
+    const aiGradeRow = elementsById.get('reviewAiGradeRow');
+    const aiGradeBtn = elementsById.get('reviewAiGradeBtn');
+    check('揭示后出现「AI 判分（可选）」按钮',
+        Boolean(aiGradeRow) && aiGradeRow.hidden === false && Boolean(aiGradeBtn),
+        `row=${Boolean(aiGradeRow)} hidden=${aiGradeRow ? aiGradeRow.hidden : 'n/a'}`);
+    const aiGradeBefore = reviewAiGradeBodies.length;
+    if (aiGradeBtn) step('点「AI 判分（可选）」不抛异常', () => aiGradeBtn.dispatch('click'));
+    await sleep(120);
+    check('AI 判分请求了 /api/review/ai-grade，并带上当前题 code/type/answer',
+        reviewAiGradeBodies.length === aiGradeBefore + 1
+        && reviewAiGradeBodies[aiGradeBefore].code === 'py.a.b'
+        && reviewAiGradeBodies[aiGradeBefore].type === 'predict'
+        && reviewAiGradeBodies[aiGradeBefore].answer === '我写的回忆',
+        JSON.stringify(reviewAiGradeBodies.slice(aiGradeBefore)));
+    const aiVerdictText = textOf(elementsById.get('reviewAiGradeResult'));
+    check('AI 判分的 verdict 渲染进面板（correct/missing/wrongAt/hint）',
+        elementsById.get('reviewAiGradeResult').hidden === false
+        && aiVerdictText.includes('还有缺漏') && aiVerdictText.includes('没有讲清第二次调用复用')
+        && aiVerdictText.includes('把 add(1, 2) 的输出写成了 [1]')
+        && aiVerdictText.includes('对照默认参数在定义时求值'),
+        aiVerdictText.slice(0, 240) || '（面板为空）');
+    // 未配置 AI key（503）：只 toast 提示，不抛异常，也不能顺手提交一次自评。
+    aiGradeUnavailable = true;
+    const answersBeforeUnavailable = reviewAnswerBodies.length;
+    if (aiGradeBtn) step('未配置 AI（503）时点判分不抛异常', () => aiGradeBtn.dispatch('click'));
+    await sleep(120);
+    check('503 时用 toast 说明判分不可用，且没有提交自评',
+        String(elementsById.get('toastMessage').textContent).includes('未配置 AI')
+        && reviewAnswerBodies.length === answersBeforeUnavailable,
+        `toast=${String(elementsById.get('toastMessage').textContent)} answers=${reviewAnswerBodies.length - answersBeforeUnavailable}`);
+    aiGradeUnavailable = false;
     const answersBefore = reviewAnswerBodies.length;
-    step('选「基本掌握」不抛异常', () => {
+    // 防重入：五档按钮是容器上的事件委托，双击同一档必须只发一次请求（否则 index 前进 2 格跳题）。
+    step('连点两次「基本掌握」不抛异常', () => {
         const buttons = findAll(elementsById.get('reviewGradeButtons'),
             el => el.classList.contains('review-grade-btn'));
-        if (buttons[2]) buttons[2].dispatch('click');
+        if (buttons[2]) { buttons[2].dispatch('click'); buttons[2].dispatch('click'); }
     });
     await sleep(150);
+    check('连点两次同一档只提交一次 /api/review/answer（防重入）',
+        reviewAnswerBodies.length === answersBefore + 1,
+        `bodies=${reviewAnswerBodies.length - answersBefore}`);
     const gradeBody = reviewAnswerBodies[answersBefore];
     check('提交自评后调用了 /api/review/answer',
         fetchLog.includes('POST /api/review/answer'), JSON.stringify(fetchLog.slice(-4)));

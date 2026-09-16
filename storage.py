@@ -1614,6 +1614,69 @@ def _camel_case_column(column: str) -> str:
     return head + "".join(part[:1].upper() + part[1:] for part in rest)
 
 
+# 导入侧：导出键（camelCase；JSON 列在导出时已去掉 Json 后缀）→ 库中的真实列名。
+# 只列已知列，绝不用 payload 里的键去拼 SQL（列名必须可枚举、可审计）。
+REVIEW_IMPORT_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "points": (
+        ("code", "code"), ("title", "title"), ("minutes", "minutes"), ("module", "module"),
+        ("level", "level"), ("origin", "origin"), ("content", "content_json"),
+        ("createdAt", "created_at"), ("updatedAt", "updated_at"),
+    ),
+    "pointTasks": (
+        ("code", "code"), ("taskId", "task_id"), ("projectId", "project_id"),
+        ("relation", "relation"),
+    ),
+    "states": (
+        ("code", "code"), ("due", "due"), ("intervalDays", "interval_days"),
+        ("streak", "streak"), ("lapses", "lapses"), ("lastGrade", "last_grade"),
+        ("weak", "weak"), ("lastReviewedAt", "last_reviewed_at"),
+    ),
+    "attempts": (
+        ("id", "id"), ("code", "code"), ("taskId", "task_id"), ("projectId", "project_id"),
+        ("questionType", "question_type"), ("grade", "grade"), ("answer", "answer"),
+        ("aiVerdict", "ai_verdict"), ("reviewedOn", "reviewed_on"), ("durationMs", "duration_ms"),
+        ("sessionId", "session_id"), ("createdAt", "created_at"),
+    ),
+    "sessions": (
+        ("id", "id"), ("startedAt", "started_at"), ("finishedAt", "finished_at"),
+        ("planned", "planned"), ("answered", "answered"), ("gradeCounts", "grade_counts_json"),
+        ("durationMs", "duration_ms"),
+    ),
+}
+
+
+def _review_column_defaults(connection: sqlite3.Connection, table: str) -> dict[str, Any]:
+    """按库里的 DDL 给"payload 里没带的列"兜底。
+
+    旧快照可能缺后来新增的列；给默认值而不是整行报错，导入才是向后兼容的。
+    """
+    defaults: dict[str, Any] = {}
+    for row in connection.execute(f"PRAGMA table_info({table})").fetchall():
+        name = str(row[1])
+        declared = row[4]
+        if declared is None:
+            defaults[name] = 0 if str(row[2]).upper().startswith("INT") else ""
+        elif str(declared).startswith("'") and str(declared).endswith("'"):
+            defaults[name] = str(declared)[1:-1]
+        else:
+            try:
+                defaults[name] = int(str(declared))
+            except ValueError:
+                defaults[name] = str(declared)
+    return defaults
+
+
+def _review_import_value(item: dict[str, Any], name: str, column: str,
+                         defaults: dict[str, Any]) -> Any:
+    value = item[name] if name in item else defaults.get(column, "")
+    if column.endswith("_json"):
+        # 导出时 JSON 列被解析成对象（content/gradeCounts）；写回库里必须是 JSON 文本。
+        if isinstance(value, str):
+            return value
+        return "{}" if value is None else json.dumps(value, ensure_ascii=False)
+    return value
+
+
 def _read_review_export(connection: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     """把 5 张复习表读成 JSON 可序列化的快照（列名转 camelCase，JSON 文本列解析成对象）。"""
     review: dict[str, list[dict[str, Any]]] = {}
@@ -1650,8 +1713,9 @@ def export_projects_snapshot() -> dict[str, Any]:
 
     顶层还额外带一个 `review` 键：5 张复习表（points / pointTasks / states / attempts /
     sessions）的快照。不加它的话，用户拿"导出 JSON → 导入"做迁移会静默丢掉复习进度与作答
-    历史（规格 §9/§10.7 把"导出往返覆盖新增表"列为验收项）。`review` 是附加信息，导入侧
-    当前忽略它：前端 extractProjects 只消费 `projects`，/api/import 也只吃 `projects`。
+    历史（规格 §9/§10.7 把"导出往返覆盖新增表"列为验收项）。`review` 是附加信息：
+    前端 extractProjects 只消费 `projects`，/api/import 除了 `projects` 之外还会消费
+    `review`（见 import_review_snapshot），旧快照没有这个键时原样跳过。
     因此 `schemaVersion` 必须原样保持 EXPORT_SCHEMA_VERSION，绝不能为了带上 review 而递增。
     """
     projects: list[dict[str, Any]] = []
@@ -1670,6 +1734,51 @@ def export_projects_snapshot() -> dict[str, Any]:
         "projects": projects,
         "review": review,
     }
+
+
+def import_review_snapshot(review: Any) -> dict[str, int]:
+    """把 export_projects_snapshot() 附带的 `review` 快照 upsert 回 5 张复习表。
+
+    规格 §10.7：JSON 导出的复习表必须在导入侧闭环，否则"导出 → 导入"的跨机迁移会静默
+    丢复习进度与作答历史。语义是**只增不删**——payload 里出现的行按主键 upsert，没出现
+    的行保持不动；整个 `review` 键缺失（旧快照）时直接跳过该表，不报错、不删数据。
+    JSON 列（content / gradeCounts）在导出时已被解析成对象，这里按库里的列形态写回 JSON 文本。
+    事务/锁沿用 storage 里其他写路径的风格：state_lock() + open_state_database() + BEGIN IMMEDIATE。
+    """
+    counts = {key: 0 for key in REVIEW_EXPORT_TABLES}
+    if review is None:
+        return counts
+    if not isinstance(review, dict):
+        raise ValueError("review 必须是对象")
+    with state_lock(), open_state_database() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for key, (table, primary_key) in REVIEW_EXPORT_TABLES.items():
+            rows = review.get(key)
+            if rows is None:
+                # 某个键缺失就跳过该表：旧快照只有部分表也不能因此报错。
+                continue
+            if not isinstance(rows, list):
+                raise ValueError(f"review.{key} 必须是数组")
+            columns = REVIEW_IMPORT_COLUMNS[key]
+            defaults = _review_column_defaults(connection, table)
+            primary_columns = primary_key.split(",")
+            column_sql = ",".join(column for _, column in columns)
+            placeholders = ",".join("?" for _ in columns)
+            updates = ",".join(
+                f"{column}=excluded.{column}"
+                for _, column in columns if column not in primary_columns)
+            statement = (
+                f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+                f"ON CONFLICT({primary_key}) DO UPDATE SET {updates}"
+            )
+            for item in rows:
+                if not isinstance(item, dict):
+                    raise ValueError(f"review.{key} 的每一项都必须是对象")
+                values = [_review_import_value(item, name, column, defaults)
+                          for name, column in columns]
+                connection.execute(statement, values)
+                counts[key] += 1
+    return counts
 
 
 # ---------------------------------------------------------------------------

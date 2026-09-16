@@ -76,6 +76,7 @@ duplicate_project = storage_service.duplicate_project
 describe_node_delete = storage_service.describe_node_delete
 preview_import = storage_service.preview_import
 import_projects = storage_service.import_projects
+import_review_snapshot = storage_service.import_review_snapshot
 list_templates = storage_service.list_templates
 save_project_as_template = storage_service.save_project_as_template
 delete_template = storage_service.delete_template
@@ -966,9 +967,13 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     result = {"mode": mode, "projects": read_project_summaries()}
                 else:
                     result = import_projects(projects, mode, keep_ai_history=keep_ai is not False)
+                # 规格 §10.7：JSON 导出会附带 5 张复习表的 `review` 快照，导入侧必须一起消费，
+                # 否则"导出 → 导入"的跨机迁移会静默丢复习进度与作答历史。旧快照没有这个键
+                # （payload.get 返回 None）→ import_review_snapshot 原样跳过，向后兼容。
+                review_import = import_review_snapshot(payload.get("review"))
                 self.send_json(200, {"ok": True, "preview": result.get("preview"),
                                      "projects": result["projects"], "mode": result["mode"],
-                                     "backup": import_backup_name})
+                                     "backup": import_backup_name, "review": review_import})
             elif path == "/api/node/patch":
                 project_id = payload.get("projectId")
                 if not project_id:

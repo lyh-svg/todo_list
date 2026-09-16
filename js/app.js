@@ -48,6 +48,11 @@ const reviewAnswerInput = document.getElementById('reviewAnswerInput');
 const reviewRevealBtn = document.getElementById('reviewRevealBtn');
 const reviewAnswerPanel = document.getElementById('reviewAnswerPanel');
 const reviewGradeButtons = document.getElementById('reviewGradeButtons');
+// 可选 AI 判分（规格 §16）：会话揭示答案后才出现的入口。没配置 key 时后端 503，
+// 前端只提示一句、绝不改变五档自评这条主流程。
+const reviewAiGradeRow = document.getElementById('reviewAiGradeRow');
+const reviewAiGradeBtn = document.getElementById('reviewAiGradeBtn');
+const reviewAiGradeResult = document.getElementById('reviewAiGradeResult');
 const reviewSessionSummary = document.getElementById('reviewSessionSummary');
 // 第七批 Task 12：知识点库（按模块/层级筛选 + 立即练一次）
 const knowledgeView = document.getElementById('knowledgeView');
@@ -6388,7 +6393,12 @@ let knowledgePoints = [];
     const GRADE_LABELS = { 1: '完全不会', 2: '看过但说不清', 3: '基本掌握', 4: '可以独立写代码', 5: '可以讲给别人听' };
     // 题型中文名：复习页的"最近答错/最近掌握"是作答记录，必须显示当时用的题型。
     const REVIEW_TYPE_LABELS = { concept: '概念题', predict: '代码预测题', debug: '错误排查题', code_task: '实际编程题' };
-    let reviewSessionState = { sessionId: '', items: [], index: 0, startedAt: 0, gradeCounts: {}, revealed: false };
+    let reviewSessionState = { sessionId: '', items: [], index: 0, startedAt: 0, gradeCounts: {}, revealed: false,
+        // submitting：五档自评的防重入闸门。按钮是容器上的事件委托，双击同一档会
+        // 并发发出两次 /api/review/answer（两次都成功 → index 前进 2 格 = 跳题 + 计数重复）。
+        submitting: false };
+    // AI 判分请求也防重入：同一次揭示里连点按钮只发一次。
+    let reviewAiGrading = false;
     let reviewDraftTimer = null;
     // 会话级恢复：本地存住"练到哪了"，刷新/退出后再点复习直接接着练，而不是又开一个新会话。
     const REVIEW_SESSION_KEY = 'todo_review_session';
@@ -6427,7 +6437,7 @@ let knowledgePoints = [];
             sessionId: String(saved.sessionId || ''), items: saved.items, index: index,
             startedAt: Number(saved.startedAt) || Date.now(),
             gradeCounts: saved.gradeCounts && typeof saved.gradeCounts === 'object' ? saved.gradeCounts : {},
-            revealed: false,
+            revealed: false, submitting: false,
         };
         return reviewSessionState;
     }
@@ -6459,7 +6469,7 @@ let knowledgePoints = [];
             sessionId = started.sessionId || '';
         } catch (error) { sessionId = ''; }
         reviewSessionState = { sessionId: sessionId, items: items.slice(), index: 0,
-            startedAt: Date.now(), gradeCounts: {}, revealed: false };
+            startedAt: Date.now(), gradeCounts: {}, revealed: false, submitting: false };
         saveReviewSession();
         activateView(reviewSessionView);
         renderReviewQuestion();
@@ -6509,6 +6519,10 @@ let knowledgePoints = [];
         const item = reviewSessionState.items[reviewSessionState.index];
         if (!item) { finishReviewSession(); return; }
         reviewSessionState.revealed = false;
+        // 切题必须把两个防重入闸门都复位：上一次失败/中断留下的 submitting=true
+        // 会让下一题的自评按钮彻底失效（点了没反应）。
+        reviewSessionState.submitting = false;
+        reviewAiGrading = false;
         reviewSessionSummary.hidden = true;
         reviewQuestionCard.hidden = false;
         reviewSessionProgress.textContent = `第 ${reviewSessionState.index + 1} / ${reviewSessionState.items.length} 题`;
@@ -6521,6 +6535,11 @@ let knowledgePoints = [];
         reviewAnswerPanel.hidden = true;
         reviewAnswerPanel.replaceChildren();
         reviewGradeButtons.hidden = true;
+        // AI 判分入口跟着答案面板一起隐藏：没揭示答案前不该判分。
+        reviewAiGradeRow.hidden = true;
+        reviewAiGradeResult.hidden = true;
+        reviewAiGradeResult.replaceChildren();
+        reviewAiGradeBtn.disabled = false;
         reviewRevealBtn.disabled = false;
     }
 
@@ -6597,11 +6616,81 @@ let knowledgePoints = [];
         reviewAnswerPanel.replaceChildren(...parts);
         reviewAnswerPanel.hidden = false;
         reviewGradeButtons.hidden = false;
+        // 揭示答案后才允许 AI 判分（否则用户还没作答，判分没有意义）。
+        reviewAiGradeRow.hidden = false;
+        reviewAiGradeResult.hidden = true;
+        reviewAiGradeResult.replaceChildren();
+        reviewAiGradeBtn.disabled = false;
+    }
+
+    // 把 /api/review/ai-grade 的 verdict 渲染成可读文本。后端在 AI 调用失败时会返回空对象，
+    // 这里必须给一句明确说明，而不是渲染出一个像"判错了"的空面板。
+    function renderAiVerdict(verdict) {
+        const data = verdict && typeof verdict === 'object' ? verdict : {};
+        const missing = Array.isArray(data.missing) ? data.missing : [];
+        const hasDetail = missing.length > 0 || Boolean(data.wrongAt) || Boolean(data.hint);
+        if (!hasDetail && data.correct !== true) {
+            const blocked = document.createElement('div');
+            blocked.textContent = 'AI 没有返回判分结果，复习不受影响';
+            reviewAiGradeResult.replaceChildren(blocked);
+            reviewAiGradeResult.hidden = false;
+            return;
+        }
+        const parts = [];
+        const title = document.createElement('div');
+        title.textContent = data.correct ? 'AI 判分：要点基本覆盖' : 'AI 判分：还有缺漏';
+        parts.push(title);
+        if (missing.length > 0) {
+            const line = document.createElement('div');
+            line.textContent = `遗漏：${missing.join('；')}`;
+            parts.push(line);
+        }
+        if (data.wrongAt) {
+            const line = document.createElement('div');
+            line.textContent = `有误之处：${data.wrongAt}`;
+            parts.push(line);
+        }
+        if (data.hint) {
+            const line = document.createElement('div');
+            line.textContent = `提示：${data.hint}`;
+            parts.push(line);
+        }
+        reviewAiGradeResult.replaceChildren(...parts);
+        reviewAiGradeResult.hidden = false;
+    }
+
+    // 可选 AI 判分：只读地给一次反馈，不写任何库、不改五档自评流程。
+    // 未配置 key（503）时用 toast 说明，然后原样回到自评按钮。
+    async function requestAiGrade() {
+        const item = reviewSessionState.items[reviewSessionState.index];
+        if (!item || !reviewSessionState.revealed || reviewAiGrading) return;
+        reviewAiGrading = true;
+        reviewAiGradeBtn.disabled = true;
+        const answer = reviewAnswerInput.value || '';
+        try {
+            const payload = await callApi('/api/review/ai-grade', 'POST', {
+                code: item.code, type: item.questionType, answer: answer,
+            });
+            renderAiVerdict(payload && payload.verdict);
+        } catch (error) {
+            const message = String((error && error.message) || '');
+            showToast(message.includes('未配置')
+                ? '未配置 AI，判分不可用（复习不受影响）'
+                : (message || 'AI 判分失败，复习不受影响'));
+        } finally {
+            reviewAiGrading = false;
+            reviewAiGradeBtn.disabled = false;
+        }
     }
 
     async function gradeReviewQuestion(grade) {
         const item = reviewSessionState.items[reviewSessionState.index];
         if (!item || !reviewSessionState.revealed) return;
+        // 防重入：五档按钮是 #reviewGradeButtons 上的事件委托，双击同一档（或快速点两档）
+        // 会并发发两次 /api/review/answer；两次都成功就会 index += 2（跳题）且计数重复。
+        // 置位必须在第一个 await 之前，否则两次调用都会穿过检查。
+        if (reviewSessionState.submitting) return;
+        reviewSessionState.submitting = true;
         const answer = reviewAnswerInput.value || '';
         try {
             await callApi('/api/review/answer', 'POST', {
@@ -6615,6 +6704,10 @@ let knowledgePoints = [];
             // 保存失败就停在当前题：答案还留在输入框里，重选档位即可重试。
             showToast(error.message || '保存作答失败，答案还留在输入框里');
             return;
+        } finally {
+            // 无论成功/失败都复位：成功会立刻 renderReviewQuestion()（也会复位），
+            // 失败则让用户能重选档位重试，而不是被永久卡住。
+            reviewSessionState.submitting = false;
         }
         try { localStorage.removeItem(reviewDraftKey(item.code, item.questionType)); } catch (error) { /* 忽略 */ }
         // 作答会改变 due/weak（知识点库展示的正是这两个字段），缓存随之作废，下次进库重新拉。
@@ -9790,6 +9883,7 @@ let knowledgePoints = [];
             const button = event.target.closest('.review-grade-btn');
             if (button) gradeReviewQuestion(Number(button.dataset.grade));
         });
+        reviewAiGradeBtn.addEventListener('click', requestAiGrade);
         workbenchBackBtn.addEventListener('click', () => { showProjectsView(); });
         workbenchRefreshBtn.addEventListener('click', () => showWorkbench());
         openWorkbenchBtn.addEventListener('click', () => showWorkbench());

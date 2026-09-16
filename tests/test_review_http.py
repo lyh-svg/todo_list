@@ -29,6 +29,16 @@ TODAY = "2026-09-16"
 MIN_POINTS = 40
 CONTENT_PATH = APP_DIR / "content" / "review" / "py-week1.json"
 MUTABLE_DEFAULT = "py.mutability.default-arg"
+# 5 张复习表按主键排序（行序不定会让"内容一致"变成随机假阴性）。
+REVIEW_TABLE_ORDER = {
+    "review_points": "code",
+    "review_point_tasks": "code,task_id,project_id",
+    "review_states": "code",
+    "review_attempts": "id",
+    "review_sessions": "id",
+}
+# 导出/导入响应里 review 快照的键（与 storage.REVIEW_EXPORT_TABLES 一致）。
+REVIEW_EXPORT_KEYS = ("points", "pointTasks", "states", "attempts", "sessions")
 
 
 class _QuietHandler(local_server.TodoHandler):
@@ -41,6 +51,9 @@ class ReviewHttpTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         storage.ensure_schema()
         review_storage.ensure_content_imported()
+        # /api/import 拒绝空的 projects 列表（"没有可导入的项目"）。先保证库里至少有一个
+        # 项目（真实的收集箱），否则导出的快照 projects 为空，导入用例根本走不到 review 分支。
+        storage.ensure_inbox_project()
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(_QuietHandler, directory=str(APP_DIR)))
         cls.port = int(cls.server.server_address[1])
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -193,6 +206,66 @@ class ReviewHttpTests(unittest.TestCase):
             "gradeCounts": {"3": 1}, "durationMs": 1000})
         self.assertEqual(status, 400)
         self.assertFalse(payload.get("ok"))
+
+    def dump_review_tables(self) -> dict[str, list[tuple]]:
+        with storage.open_state_database() as connection:
+            return {
+                table: [tuple(row) for row in
+                        connection.execute(f"SELECT * FROM {table} ORDER BY {order}")]
+                for table, order in REVIEW_TABLE_ORDER.items()
+            }
+
+    def test_import_consumes_review_snapshot(self) -> None:
+        """规格 §10.7：导出（带 review）→ 清空复习表（新库）→ 同一份 payload 导入 → 内容一致。
+
+        没有这一步时，用户拿"导出 JSON → 导入"做跨机迁移会静默丢复习进度与作答历史。
+        """
+        code = self.review_point_code()
+        self.call("/api/review/answer", "POST", {
+            "code": code, "type": "concept", "grade": 3, "answer": "迁移前的作答",
+            "durationMs": 900, "sessionId": "", "today": TODAY})
+        started = self.call("/api/review/session", "POST", {"action": "start", "planned": 2})[1]
+        self.call("/api/review/session", "POST", {
+            "action": "finish", "sessionId": started["sessionId"], "answered": 1,
+            "gradeCounts": {"3": 1}, "durationMs": 1500})
+        before = self.dump_review_tables()
+        self.assertGreater(len(before["review_points"]), 0)
+        self.assertGreater(len(before["review_attempts"]), 0)
+        self.assertGreater(len(before["review_sessions"]), 0)
+
+        snapshot = storage.export_projects_snapshot()
+        self.assertIn("review", snapshot, "导出必须附带 5 张复习表快照")
+        self.assertEqual(len(snapshot["review"]["points"]), len(before["review_points"]))
+        self.assertEqual(len(snapshot["review"]["attempts"]), len(before["review_attempts"]))
+        # 导出键是 camelCase、JSON 列已解析成对象（导入侧要写回 content_json / grade_counts_json）。
+        self.assertIsInstance(snapshot["review"]["points"][0]["content"], dict)
+        self.assertIsInstance(snapshot["review"]["sessions"][0]["gradeCounts"], dict)
+
+        # 清空 5 张复习表：模拟"换台机器 / 新库"。
+        with storage.open_state_database() as connection:
+            for table in REVIEW_TABLE_ORDER:
+                connection.execute(f"DELETE FROM {table}")
+        self.assertTrue(all(not rows for rows in self.dump_review_tables().values()),
+                        "清空后复习表应为空")
+
+        status, result = self.call("/api/import", "POST", {
+            "projects": snapshot["projects"], "mode": "merge", "review": snapshot["review"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["review"]["points"], len(snapshot["review"]["points"]))
+        self.assertEqual(result["review"]["attempts"], len(snapshot["review"]["attempts"]))
+        self.assertEqual(self.dump_review_tables(), before,
+                         "导入后 5 张复习表必须与导出前逐行一致")
+
+    def test_import_without_review_key_is_backward_compatible(self) -> None:
+        """旧快照没有 review 键：导入照常成功，且绝不能删掉本地已有的复习数据。"""
+        before = self.dump_review_tables()
+        snapshot = storage.export_projects_snapshot()
+        status, result = self.call("/api/import", "POST", {
+            "projects": snapshot["projects"], "mode": "merge"})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["review"], {key: 0 for key in REVIEW_EXPORT_KEYS})
+        self.assertEqual(self.dump_review_tables(), before,
+                         "不含 review 的旧快照不能动现有复习表")
 
 
 class ReviewBootstrapTests(unittest.TestCase):
