@@ -49,6 +49,16 @@ const reviewRevealBtn = document.getElementById('reviewRevealBtn');
 const reviewAnswerPanel = document.getElementById('reviewAnswerPanel');
 const reviewGradeButtons = document.getElementById('reviewGradeButtons');
 const reviewSessionSummary = document.getElementById('reviewSessionSummary');
+// 第七批 Task 12：知识点库（按模块/层级筛选 + 立即练一次）
+const knowledgeView = document.getElementById('knowledgeView');
+const knowledgeList = document.getElementById('knowledgeList');
+const knowledgeSearch = document.getElementById('knowledgeSearch');
+const knowledgeModuleFilter = document.getElementById('knowledgeModuleFilter');
+const knowledgeLevelFilter = document.getElementById('knowledgeLevelFilter');
+const knowledgeBackBtn = document.getElementById('knowledgeBackBtn');
+const openKnowledgeBtn = document.getElementById('openKnowledgeBtn');
+// 复习页的模块下拉和知识点库共用这一份 /api/review/points 结果（见 showKnowledgeLibrary）。
+let knowledgePoints = [];
     const exportBtn = document.getElementById('exportBtn');
     const viewBar = document.getElementById('viewBar');
     const viewChips = document.getElementById('viewChips');
@@ -95,7 +105,7 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
 
     // 所有视图切换都走这里：避免新增视图后忘记在别处移除 active
     function activateView(activeView) {
-        [projectsView, detailView, reviewView, reviewSessionView, workbenchView].forEach(view => {
+        [projectsView, detailView, reviewView, reviewSessionView, knowledgeView, workbenchView].forEach(view => {
             if (view) view.classList.toggle('active', view === activeView);
         });
     }
@@ -6550,6 +6560,8 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             return;
         }
         try { localStorage.removeItem(reviewDraftKey(item.code, item.questionType)); } catch (error) { /* 忽略 */ }
+        // 作答会改变 due/weak（知识点库展示的正是这两个字段），缓存随之作废，下次进库重新拉。
+        knowledgePoints = [];
         reviewSessionState.gradeCounts[grade] = (reviewSessionState.gradeCounts[grade] || 0) + 1;
         reviewSessionState.index += 1;
         // 进度落盘：刷新/换页回来还能接着练（最后一题评完就由 finishReviewSession 清掉）。
@@ -6620,9 +6632,10 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
     }
 
     // 模块下拉的选项来自知识点库（/api/review/points），每次整体重建但保留当前选择。
-    function populateReviewModules(modules) {
-        if (!reviewModuleFilter) return;
-        const current = reviewModuleFilter.value || '';
+    // 复习页与知识点库各有一个下拉、共用同一份数据，所以这里收一个 target 参数而不是写死。
+    function populateModuleFilter(select, modules) {
+        if (!select) return;
+        const current = select.value || '';
         const all = document.createElement('option');
         all.value = '';
         all.textContent = '全部模块';
@@ -6633,8 +6646,8 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             option.textContent = name;
             options.push(option);
         });
-        reviewModuleFilter.replaceChildren(...options);
-        reviewModuleFilter.value = modules.includes(current) ? current : '';
+        select.replaceChildren(...options);
+        select.value = modules.includes(current) ? current : '';
     }
 
     async function showReviewQueue() {
@@ -6677,7 +6690,9 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
         }
         const items = Array.isArray(queue.items) ? queue.items : [];
         const points = Array.isArray(pointsPayload.points) ? pointsPayload.points : [];
-        populateReviewModules(Array.from(new Set(points.map(point => point.module).filter(Boolean))));
+        // 顺手存进共享缓存：进知识点库时复用这份数据，不再重复请求 /api/review/points。
+        knowledgePoints = points;
+        populateModuleFilter(reviewModuleFilter, knowledgeModuleNames());
         reviewQueueState = {
             summary: summary,
             items: items,
@@ -6699,6 +6714,92 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             showToast(`复习条目较多，仅显示前 ${queue.limit} 条`);
         }
         loadReviewCounts();
+    }
+
+    // ---------- 第七批 Task 12：知识点库（按模块/层级筛选 + 立即练一次） ----------
+    // points 里只有元数据（title/module/level/due/weak），题面与题型要按 code 单点取（见 practicePoint）。
+    function knowledgeModuleNames() {
+        return Array.from(new Set(knowledgePoints.map(point => point.module).filter(Boolean)));
+    }
+
+    // 知识点库与复习页共用 /api/review/points 的结果：复习页刚拉过就直接复用缓存，
+    // 只有缓存为空（首次打开、或刚作答过导致缓存作废）才重新请求，避免重复拉同一份清单。
+    async function showKnowledgeLibrary() {
+        activateView(knowledgeView);
+        if (knowledgePoints.length === 0) {
+            try {
+                const response = await apiFetch('/api/review/points?limit=500', { cache: 'no-store' });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(payload.error || '读取知识点库失败');
+                knowledgePoints = Array.isArray(payload.points) ? payload.points : [];
+            } catch (error) {
+                showToast(error.message || '读取知识点库失败，请重试');
+                knowledgePoints = [];
+            }
+        }
+        populateModuleFilter(knowledgeModuleFilter, knowledgeModuleNames());
+        renderKnowledgeList();
+    }
+
+    function renderKnowledgeList() {
+        const query = (knowledgeSearch.value || '').trim().toLowerCase();
+        const module = knowledgeModuleFilter.value || '';
+        const level = knowledgeLevelFilter.value || '';
+        const list = knowledgePoints.filter(point =>
+            (!module || point.module === module) && (!level || point.level === level)
+            && (!query || `${point.title} ${point.code}`.toLowerCase().includes(query)));
+        // 用 replaceChildren 而不是 innerHTML = ''：真实 DOM 里两者等价，
+        // 但 DOM 桩只实现了 replaceChildren，innerHTML 清不掉旧卡片，会让筛选断言失真。
+        knowledgeList.replaceChildren();
+        if (list.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'utility-empty';
+            empty.textContent = '没有匹配的知识点';
+            knowledgeList.appendChild(empty);
+            return;
+        }
+        list.forEach(point => {
+            const card = document.createElement('div');
+            card.className = 'knowledge-item';
+            const title = document.createElement('div');
+            title.className = 'knowledge-title';
+            title.textContent = `${point.title}（${point.minutes} 分钟）`;
+            const meta = document.createElement('small');
+            meta.textContent = `${point.module || '未分类'} · ${point.level} · ${point.weak ? '薄弱' : (point.due ? `下次 ${point.due}` : '还没学过')}`;
+            const practice = document.createElement('button');
+            practice.type = 'button';
+            practice.className = 'utility-secondary-btn';
+            practice.textContent = '立即练一次';
+            practice.addEventListener('click', () => { practicePoint(point.code); });
+            card.append(title, meta, practice);
+            knowledgeList.appendChild(card);
+        });
+    }
+
+    // 知识点库的「立即练一次」：只练选中的这一个知识点。
+    // 会话状态与渲染全部复用复习会话那一套（startReviewSessionWithItems），不另造一套。
+    async function practicePoint(code) {
+        const point = knowledgePoints.find(entry => entry.code === code);
+        if (!point) return;
+        let item = null;
+        // points 接口只有元数据、没有题面：用 queue 的 code 过滤精确拿这一题的题面。
+        // newPerDay=1 是必要的：新知识点默认受"每日新增名额"限制，名额用完时单点练习
+        // 会被配额丢掉 —— 点了"立即练一次"却没题可做。
+        try {
+            const response = await apiFetch(
+                `/api/review/queue?today=${encodeURIComponent(todayStr())}&code=${encodeURIComponent(code)}&newPerDay=1`,
+                { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            const items = Array.isArray(payload.items) ? payload.items : [];
+            item = items.find(entry => entry.code === code) || null;
+        } catch (error) { item = null; }
+        if (!item) {
+            // 取题失败/题库没配题面时用知识点元数据兜底，保证"立即练一次"仍能进会话。
+            item = { code: point.code, title: point.title, minutes: point.minutes,
+                module: point.module, level: point.level, questionType: '',
+                prompt: '', body: '', reason: 'practice', due: point.due };
+        }
+        await startReviewSessionWithItems([item]);
     }
 
     // ---------- 批次 4：周期任务 / 自然语言快速添加 / 提醒 ----------
@@ -9615,6 +9716,13 @@ const reviewSessionSummary = document.getElementById('reviewSessionSummary');
             });
         }
         reviewBackBtn.addEventListener('click', () => { showProjectsView(); });
+        // 更多工具 →「知识点库」；库里的返回回到复习页（两页共用同一份 points 数据）。
+        openKnowledgeBtn.addEventListener('click', () => { showKnowledgeLibrary(); });
+        knowledgeBackBtn.addEventListener('click', () => { showReviewQueue(); });
+        knowledgeSearch.addEventListener('input', () => renderKnowledgeList());
+        [knowledgeModuleFilter, knowledgeLevelFilter].forEach(select => {
+            if (select) select.addEventListener('change', () => renderKnowledgeList());
+        });
         reviewSessionExitBtn.addEventListener('click', () => { saveReviewDraft(); saveReviewSession(); showReviewQueue(); });
         reviewRevealBtn.addEventListener('click', revealReviewAnswer);
         reviewAnswerInput.addEventListener('input', () => {

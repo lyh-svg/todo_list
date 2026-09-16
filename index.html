@@ -133,6 +133,12 @@
 </div>
 <div class="activity-list" id="activityList"></div>
 </section>
+<section class="tool-group" aria-labelledby="knowledgeToolsTitle">
+<h2 id="knowledgeToolsTitle">知识复习</h2>
+<div class="backup-actions tool-button-row">
+<button type="button" id="openKnowledgeBtn" class="utility-task">知识点库</button>
+</div>
+</section>
 <section class="tool-group memo-tools" aria-labelledby="memoToolsTitle">
 <h2 id="memoToolsTitle">个人记录</h2>
 <button class="memo-open-btn" id="openMemoBtn" type="button"><span aria-hidden="true">▤</span>打开备忘录</button>
@@ -267,6 +273,20 @@
 </div>
 </div>
 <div class="review-summary" id="reviewSessionSummary" hidden></div>
+</div>
+<div class="view" id="knowledgeView">
+<div class="review-session-head">
+<button type="button" id="knowledgeBackBtn" class="utility-secondary-btn">返 回</button>
+<input type="search" id="knowledgeSearch" class="memo-search" placeholder="搜知识点 / code" />
+<select id="knowledgeModuleFilter" class="filter-select"><option value="">全部模块</option></select>
+<select id="knowledgeLevelFilter" class="filter-select">
+<option value="">全部层级</option>
+<option value="基础">基础</option>
+<option value="实用">实用</option>
+<option value="进阶">进阶</option>
+</select>
+</div>
+<div class="knowledge-list" id="knowledgeList"></div>
 </div>
 <div class="view" id="workbenchView">
 <div class="review-header">

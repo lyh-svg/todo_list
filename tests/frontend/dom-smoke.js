@@ -921,6 +921,68 @@ function step(name, fn) {
         check('任务行有复制按钮', false, '详情树里没找到 ⧉');
     }
 
+    // ⑮ 知识点库：更多工具 → 打开库页 → 按模块/层级筛选 → 立即练一次进会话
+    const pointsFetchesBefore = fetchUrls.filter(u => u.includes('/api/review/points')).length;
+    step('打开知识点库不抛异常', () => elementsById.get('openKnowledgeBtn').dispatch('click'));
+    await sleep(120);
+    check('知识点库视图打开并列出知识点',
+        activeViews().includes('knowledgeView')
+        && textOf(elementsById.get('knowledgeList')).includes('示例知识点'),
+        textOf(elementsById.get('knowledgeList')).slice(0, 160));
+    // 只断言"曾经拉过 points"会被前面复习页的请求蒙混过关：这里要求本次开库真的新拉了一次。
+    check('知识点库调用了 /api/review/points',
+        fetchUrls.filter(u => u.includes('/api/review/points')).length > pointsFetchesBefore
+        && fetchUrls.filter(u => u.includes('/api/review/points')).slice(-1)[0].includes('limit=500'),
+        JSON.stringify(fetchUrls.filter(u => u.includes('/api/review/points')).slice(-2)));
+    const knowledgeModuleOptions = elementsById.get('knowledgeModuleFilter')
+        ? findAll(elementsById.get('knowledgeModuleFilter'), el => el._tag === 'option') : [];
+    check('知识点库的模块下拉与复习页用同一份知识点数据',
+        knowledgeModuleOptions.length >= 3,
+        textOf(elementsById.get('knowledgeModuleFilter')));
+    step('知识点库切到「函数」模块不抛异常', () => {
+        const moduleSelect = elementsById.get('knowledgeModuleFilter');
+        moduleSelect.value = '函数';
+        moduleSelect.dispatch('change');
+    });
+    await sleep(40);
+    check('模块筛选只保留该模块的知识点',
+        textOf(elementsById.get('knowledgeList')).includes('已掌握的知识点')
+        && !textOf(elementsById.get('knowledgeList')).includes('示例知识点'),
+        textOf(elementsById.get('knowledgeList')).slice(0, 200));
+    step('知识点库切到「基础」层级不抛异常', () => {
+        const moduleSelect = elementsById.get('knowledgeModuleFilter');
+        const levelSelect = elementsById.get('knowledgeLevelFilter');
+        moduleSelect.value = '';
+        levelSelect.value = '基础';
+        levelSelect.dispatch('change');
+    });
+    await sleep(40);
+    check('层级筛选只保留该层级的知识点',
+        textOf(elementsById.get('knowledgeList')).includes('示例知识点')
+        && !textOf(elementsById.get('knowledgeList')).includes('已掌握的知识点'),
+        textOf(elementsById.get('knowledgeList')).slice(0, 200));
+    step('复位知识点库层级筛选不抛异常', () => {
+        const levelSelect = elementsById.get('knowledgeLevelFilter');
+        levelSelect.value = '';
+        levelSelect.dispatch('change');
+    });
+    await sleep(40);
+    const practiceButtons = elementsById.get('knowledgeList')
+        ? findAll(elementsById.get('knowledgeList'), el => el.textContent === '立即练一次') : [];
+    check('每个知识点都有「立即练一次」按钮', practiceButtons.length === 2, String(practiceButtons.length));
+    step('点「立即练一次」不抛异常', () => { if (practiceButtons[0]) practiceButtons[0].dispatch('click'); });
+    await sleep(150);
+    check('立即练一次用 code 精确取这一题的题面（不是整条队列）',
+        fetchUrls.some(u => u.includes('/api/review/queue') && u.includes('code=py.a.b')),
+        JSON.stringify(fetchUrls.filter(u => u.includes('/api/review/queue')).slice(-2)));
+    check('立即练一次进入会话且只练这一个知识点',
+        activeViews().includes('reviewSessionView')
+        && textOf(elementsById.get('reviewSessionProgress')).includes('第 1 / 1 题'),
+        JSON.stringify(activeViews()) + ' ' + textOf(elementsById.get('reviewSessionProgress')));
+    check('立即练一次的会话用的是这一题的题面',
+        textOf(elementsById.get('reviewQuestionPrompt')).includes('写出下面代码的输出'),
+        textOf(elementsById.get('reviewQuestionPrompt')).slice(0, 160));
+
     await sleep(80);
     check('事件处理器里没有未处理的异步异常', asyncErrors.length === 0, asyncErrors.slice(0, 3).join(' || '));
     console.log(`\n   通过 ${results.filter(Boolean).length} 项，失败 ${results.filter(r => !r).length + failures.length} 项`);

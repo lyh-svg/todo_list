@@ -2457,3 +2457,30 @@ body.modal-open { overflow: hidden; }
   cursor: pointer; }
 .review-grade-btn:hover { background: #eef2ff; }
 .review-summary { background: var(--panel-bg, #fff); border-radius: 12px; padding: 18px; }
+
+/* ===== 知识点库（第七批 Task 12：按模块/层级筛选 + 立即练一次） ===== */
+#knowledgeView { padding: 4px 22px 60px; }
+#knowledgeView .memo-search { flex: 1; min-width: 160px; }
+#knowledgeView .filter-select {
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--text);
+    max-width: 180px;
+}
+.knowledge-list { display: grid; gap: 8px; max-width: 980px; margin: 0 auto; width: 100%; }
+.knowledge-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
+}
+.knowledge-item:hover { border-color: #9bb1d9; background: #f8fafd; }
+.knowledge-title { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+.knowledge-item small { color: var(--text-light); font-size: 11px; }
