@@ -76,7 +76,10 @@ check('⑥ settleSaves 同时等待防抖与在飞请求',
     /async function settleSaves\(\)[\s\S]{0,600}await saveQueue\.catch/.test(src));
 // 单次等待会在"await 期间用户又改了东西、排了新的防抖"时提前返回，必须循环到真的干净
 check('⑥ settleSaves 循环直到既无防抖也无在飞请求',
-    /async function settleSaves\(\)[\s\S]{0,600}for \(let round = 0; round < 50; round \+= 1\)[\s\S]{0,600}if \(!saveTimer && inFlightSaves === 0\)[\s\S]{0,200}return;/.test(src));
+    /async function settleSaves\(\)[\s\S]{0,600}for \(let round = 0; round < 50; round \+= 1\)[\s\S]{0,600}if \(!saveTimer && inFlightSaves === 0 && inFlightPatches === 0\)[\s\S]{0,200}return;/.test(src));
+// patch 也在飞的时候同样要算"未落库"（patch 与全量保存共用队列）
+check('⑥ settleSaves / savePending 把在飞的节点 patch 也算进去',
+    /inFlightPatches \+= 1/.test(src) && /inFlightPatches > 0[\s\S]{0,40}Boolean\(saveConflict\)/.test(src));
 // 复习队列/工作台里没有"当前项目"，评分/改期/清除也必须按节点所属项目标脏
 for (const name of ['applyReviewResult', 'scheduleReview', 'clearReview']) {
     check(`⑥ ${name} 用 owningProjectOfNode 标脏`,
@@ -85,7 +88,10 @@ for (const name of ['applyReviewResult', 'scheduleReview', 'clearReview']) {
 check('⑥ 安排复习弹窗按节点找所属项目',
     /function openScheduleReview\(node\)[\s\S]{0,400}owningProjectOfNode\(node\)/.test(src));
 
-check('⑥ 四处离开路径都用 settleSaves', (src.match(/await settleSaves\(\);/g) || []).length === 4, String((src.match(/await settleSaves\(\);/g) || []).length));
+// 离开/切换路径都要先等落库；至少要覆盖原来那四处（元数据保存也用它等节点级 patch）
+check('⑥ 离开路径都用 settleSaves（至少四处）',
+    (src.match(/await settleSaves\(\);/g) || []).length >= 4,
+    String((src.match(/await settleSaves\(\);/g) || []).length));
 check('⑥ 小项目写入带 keepalive', src.includes('keepalive: body.length <= 60000'));
 check('⑥ 有未完成保存时才拦关闭', src.includes('function savePending()') && src.includes("window.addEventListener('beforeunload', warnBeforeUnload)"));
 check('⑥ 保存完成后解除守卫', src.includes('if (!savePending()) disarmLeaveGuard();'));

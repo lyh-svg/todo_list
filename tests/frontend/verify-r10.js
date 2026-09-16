@@ -113,8 +113,11 @@ check('已完成筛选仍在（项目列表过滤器）', html.includes('<option
 check('回收站：展示恢复目标（原位/孤立任务箱/不可恢复）',
     /restoreTarget === 'orphan'|restoreTarget/.test(src) && /孤立任务箱/.test(src));
 check('回收站：批量恢复与整项目恢复仍可用',
-    src.includes("'restore-many'") && /kind: 'project'/.test(src)
+    src.includes("'restore-many'") && /runBatch\('restore-many'/.test(src)
     && src.includes("action: 'restore'"));
+// 项目/节点两种恢复目标：项目整包恢复仍走 /api/trash 的 restore 动作
+check('回收站：项目恢复走 restore 动作并刷新项目列表',
+    /action: 'restore'[\s\S]{0,400}payload\.projects/.test(src));
 
 // ⑬ 删除前显示影响面
 check('删除：先查影响面再确认', /async function verifyDeleteImpact[\s\S]{0,300}\/api\/node\/delete-impact/.test(src)

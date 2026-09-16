@@ -72,8 +72,9 @@ check('接线：弹窗含六类字段与快捷按钮',
     src.includes("addField('优先级', prioritySelect)") && src.includes("addField('截止日期', dueInput)")
     && src.includes("addField('预计耗时（分钟）', estimateInput)") && src.includes("addField('标签', tagsInput)")
     && src.includes("addField('备注', noteInput)") && src.includes("addField('资料链接', linksBox)"));
-check('接线：保存走 applyNodeMeta + 落库 + 重渲染',
-    /save\.addEventListener\('click', async \(\) => \{[\s\S]{0,900}applyNodeMeta\(node, \{[\s\S]{0,900}saveProjects\(\);[\s\S]{0,200}if \(getCurrentProject\(\)\) renderDetail\(\);/.test(src));
+// 保存路径现在优先走节点级 patch（persistNodeFields），否则退回整项目保存 + 重渲染
+check('接线：保存走 applyNodeMeta + 节点级落库 + 重渲染',
+    /save\.addEventListener\('click', async \(\) => \{[\s\S]{0,1200}applyNodeMeta\(node, \{[\s\S]{0,1200}persistNodeFields\(metaOwner, node, nodeMetaFields\(node\), metaPatchSafe\)[\s\S]{0,300}if \(getCurrentProject\(\)\) renderDetail\(\);/.test(src));
 check('接线：截止日期快捷（今天/明天/3 天后/下周/清除）', src.includes("['今天', 0]") && src.includes("['清除', null]"));
 check('接线：链接数量上限提示', src.includes('最多 ${MAX_LINKS} 个链接'));
 const failed = results.filter(r => !r).length;

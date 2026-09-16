@@ -105,25 +105,44 @@ def initialize() -> None:
             )
 
 
-def list_memo_summaries() -> list[dict[str, Any]]:
-    """列表用数据：只给预览（前 MEMO_PREVIEW_CHARS 字）与长度，绝不带全文。"""
-    return _summary_rows()
+MAX_MEMO_LIST = 200
 
 
-def search_memo_summaries(query: str) -> list[dict[str, Any]]:
+def list_memo_summaries(limit: int = MAX_MEMO_LIST, offset: int = 0) -> list[dict[str, Any]]:
+    """列表用数据：只给预览（前 MEMO_PREVIEW_CHARS 字）与长度，绝不带全文。
+
+    默认最多 200 条（配合 total 给出"显示前 N 条"），避免几千条备忘录一次全传。
+    """
+    return _summary_rows(limit=limit, offset=offset)
+
+
+def search_memo_summaries(query: str, limit: int = MAX_MEMO_LIST, offset: int = 0) -> list[dict[str, Any]]:
     """按标题或**全文**搜索，同样只返回预览。
 
     LIKE 的 % 和 _ 必须转义：否则搜一个 "%" 会命中所有备忘录。
     """
     text = str(query or "").strip()
     if not text:
-        return _summary_rows()
+        return _summary_rows(limit=limit, offset=offset)
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
     return _summary_rows(
         "WHERE title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'",
-        (pattern, pattern),
+        (pattern, pattern), limit=limit, offset=offset,
     )
+
+
+def count_memos(query: str = "") -> int:
+    """列表/搜索的总条数（前端用来显示"共 N 条，显示前 M 条"）。"""
+    text = str(query or "").strip()
+    with _memo_lock, open_memo_database() as connection:
+        if not text:
+            return int(connection.execute("SELECT COUNT(*) FROM memos").fetchone()[0])
+        escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        return int(connection.execute(
+            "SELECT COUNT(*) FROM memos WHERE title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'",
+            (pattern, pattern)).fetchone()[0])
 
 
 def read_memo(memo_id: Any) -> dict[str, Any] | None:
@@ -161,12 +180,15 @@ def _row_to_summary(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _summary_rows(where: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+def _summary_rows(where: str = "", params: tuple[Any, ...] = (),
+                  limit: int = MAX_MEMO_LIST, offset: int = 0) -> list[dict[str, Any]]:
+    size = max(1, min(MAX_MEMO_LIST, int(limit or MAX_MEMO_LIST)))
+    start = max(0, int(offset or 0))
     with _memo_lock, open_memo_database() as connection:
         rows = connection.execute(
             "SELECT memo_id,title,content,pinned,created_at,updated_at,revision FROM memos "
-            f"{where} ORDER BY pinned DESC,updated_at DESC,memo_id",
-            params,
+            f"{where} ORDER BY pinned DESC,updated_at DESC,memo_id LIMIT ? OFFSET ?",
+            (*params, size, start),
         ).fetchall()
     return [_row_to_summary(row) for row in rows]
 

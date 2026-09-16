@@ -165,6 +165,14 @@ const projectFixture = {
                 assessmentRequired: false, assessmentHistory: 0, assessment: null, createdAt: today,
                 priority: 'high', dueDate: today, estimateMinutes: 30, tags: ['Python'], note: '备注', children: [],
             }],
+        }, {
+            // 服务端返回的 id 是 JSON 里的字符串（'1600'），而内置模板里是数字 1600 ——
+            // 只比对数字会把队列当成"不存在"再插一份，导致保存时报"节点 ID 重复"。
+            id: '1600', type: 'day', text: '补漏队列：基线测试薄弱点', completed: false, expanded: true, createdAt: today,
+            children: [{
+                id: '1601', type: 'item', text: '补漏任务', completed: false, completedAt: null, optional: false,
+                assessmentRequired: false, assessmentHistory: 0, assessment: null, createdAt: today, children: [],
+            }],
         }],
     }],
 };
@@ -182,6 +190,8 @@ const workbenchFixture = {
     totals: { overdue: 0, today: 1, next7: 0, reviewToday: 0, inbox: 0 },
 };
 const fetchLog = [];
+// 记录整项目保存的请求体：用来断言「保存时不能出现重复节点 ID」这类数据完整性不变量
+const projectPostBodies = [];
 async function fetchStub(url, options = {}) {
     const path = String(url).split('?')[0];
     fetchLog.push(`${options.method || 'GET'} ${path}`);
@@ -191,6 +201,9 @@ async function fetchStub(url, options = {}) {
         json: async () => payload, text: async () => JSON.stringify(payload), blob: async () => ({}),
     });
     if (path === '/api/projects') return reply(200, { projects: [{ id: 'p1', name: '测试项目', description: '', createdAt: today, assessmentEnabled: false, archived: false, stats: { total: 1, remaining: 1, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 }], reviewTotals: { today: 0, overdue: 0 }, serverToday: today, usedToday: today });
+    if (path === '/api/project' && (options.method || 'GET') === 'POST' && options.body) {
+        try { projectPostBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
+    }
     if (path === '/api/project') {
         // 真实服务按请求的 id 返回对应项目；桩也要保持一致，
         // 否则前端会发现"返回的 id 和当前项目 id 不一致"而退回列表页
@@ -229,7 +242,14 @@ async function fetchStub(url, options = {}) {
     if (path === '/api/views') return reply(200, { views: [] });
     if (path === '/api/workbench') return reply(200, workbenchFixture);
     if (path === '/api/recent') return reply(200, { opened: [], modified: [], completed: [] });
-    if (path === '/api/trash') return reply(200, { items: [] });
+    if (path === '/api/trash') {
+        // 删除流程要求返回写入后的回收站条目；以前桩里没有 item，
+        // storeTrashItem 会抛错，删除后半段（patch / 撤销）根本没被覆盖到。
+        if ((options.method || 'GET') === 'POST') {
+            return reply(200, { item: { id: 'trash-new', kind: 'node', title: '任务一' }, items: [] });
+        }
+        return reply(200, { items: [] });
+    }
     if (path === '/api/memos') return reply(200, { memos: [], databaseBytes: 0 });
     if (path === '/api/inbox/add') return reply(200, { ok: true, node: { ...projectFixture.tree[0].children[0].children[0], id: 'i-new', text: '新任务' }, revision: 2, projectId: 'inbox' });
     if (path === '/api/batch') return reply(200, { ok: true, changed: 1, spawned: 0, failed: [], projects: [] });
@@ -352,7 +372,9 @@ function step(name, fn) {
     if (doneButtons[0]) step('点击工作台「完成」不抛异常', () => doneButtons[0].dispatch('click'));
     await sleep(40);
     check('完成后视图没有错乱', activeViews().length === 1, JSON.stringify(activeViews()));
-    check('完成动作真的发了保存请求', fetchLog.some(line => line.startsWith('POST /api/project')), JSON.stringify(fetchLog.slice(-4)));
+    check('完成动作真的发了保存请求（节点级 patch 或全量保存）',
+        fetchLog.some(line => line.startsWith('POST /api/project') || line === 'POST /api/node/patch'),
+        JSON.stringify(fetchLog.slice(-4)));
 
     // ④ 回到列表 → 打开项目 → 元数据弹窗 → 批量模式 → 快速添加 → 提醒
     elementsById.get('workbenchBackBtn')?.dispatch('click');
@@ -377,6 +399,31 @@ function step(name, fn) {
         expandable.forEach(row => row.dispatch('click'));
         await sleep(20);
     }
+
+    // 数据完整性：内置「补漏队列」（id 1600）在服务端存的是字符串 id，
+    // 分组勾选走「整棵树保存」路径，正好用来检查保存体；勾两次（完成→取消）恢复原状。
+    const groupCheckbox = findAll(tree, el => el.classList.contains('checkbox'))[0];
+    if (groupCheckbox) {
+        step('勾选分组（整棵树保存路径）不抛异常', () => groupCheckbox.dispatch('click'));
+        await sleep(420);
+        step('再勾一次恢复分组未完成', () => groupCheckbox.dispatch('click'));
+        await sleep(420);
+    }
+    // 早期实现拿数字 1600 去比对，会把队列再克隆一份 → 保存时「节点 ID 重复」直接 400。
+    const savedTree = (() => {
+        const bodies = projectPostBodies.filter(body => body && body.project && String(body.project.id) === 'p1');
+        return bodies.length ? (bodies[bodies.length - 1].project.tree || []) : null;
+    })();
+    const savedIds = [];
+    (function walk(nodes) { (nodes || []).forEach(node => { savedIds.push(String(node.id)); walk(node.children); }); })(savedTree);
+    check('保存的项目里没有重复节点 ID（补漏队列没有被复制）',
+        savedIds.length > 0 && new Set(savedIds).size === savedIds.length,
+        `ids=${savedIds.length} unique=${new Set(savedIds).size}`);
+    check('补漏队列只保留一份且被移到树根末尾',
+        savedIds.filter(id => id === '1600').length === 1
+        && String((savedTree[savedTree.length - 1] || {}).id) === '1600',
+        `queue=${savedIds.filter(id => id === '1600').length} last=${String((savedTree[savedTree.length - 1] || {}).id)}`);
+
 
     const metaButtons = findAll(tree, el => el.textContent === '⋯');
     check('详情树里有元数据按钮（⋯）', metaButtons.length > 0, '树内容：' + textOf(tree).slice(0, 160));
@@ -482,7 +529,7 @@ function step(name, fn) {
     check('恢复调用了 /api/backup', fetchLog.includes('POST /api/backup'), JSON.stringify(fetchLog.slice(-4)));
     check('恢复成功后请求刷新页面', reloadCount > beforeReload, `reloadCount=${reloadCount}`);
 
-    // ⑫ 删除 → 影响面确认 → 回收站 → Ctrl+Z 撤销
+    // ⑬ 删除 → 影响面确认 → 回收站 → Ctrl+Z 撤销
     // 注意：前面的导入/恢复把项目换掉了，这里要重新打开详情页并展开，才能拿到真实的行
     elementsById.get('projectGrid').children[0].dispatch('click');
     await sleep(80);
@@ -496,15 +543,25 @@ function step(name, fn) {
     check('重新打开详情页后有可操作的任务行',
         findAll(tree, el => el.classList.contains('node-row')).length > 0 && activeViews().includes('detailView'),
         JSON.stringify(activeViews()) + textOf(tree).slice(0, 120));
+
     const deleteButtons = findAll(tree, el => el.classList.contains('delete-btn'));
     check('任务行有删除按钮', deleteButtons.length > 0, textOf(tree).slice(0, 120));
     if (deleteButtons[0]) {
         const trashBefore = fetchLog.filter(line => line === 'POST /api/trash').length;
+        const patchBefore = fetchLog.filter(line => line === 'POST /api/node/patch').length;
         step('点删除不抛异常', () => deleteButtons[0].dispatch('click'));
         await sleep(120);
         check('删除前查询了影响面', fetchLog.some(line => line.startsWith('GET /api/node/delete-impact')),
             JSON.stringify(fetchLog.slice(-4)));
         check('删除写进了回收站', fetchLog.filter(line => line === 'POST /api/trash').length > trashBefore);
+        // patch 排在保存队列后面，可能比点击晚一点才发出去
+        for (let round = 0; round < 20
+             && fetchLog.filter(line => line === 'POST /api/node/patch').length === patchBefore; round += 1) {
+            await sleep(25);
+        }
+        check('删除走节点级 patch（不再整棵树重传）',
+            fetchLog.filter(line => line === 'POST /api/node/patch').length > patchBefore,
+            JSON.stringify(fetchLog.slice(-4)));
         check('撤销按钮变为可用', elementsById.get('undoBtn').disabled === false);
         step('Ctrl+Z 撤销不抛异常', () => documentStub.dispatch('keydown',
             { key: 'z', ctrlKey: true, shiftKey: false, target: null, preventDefault() {} }));

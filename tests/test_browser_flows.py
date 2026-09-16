@@ -330,7 +330,104 @@ class BrowserFlowTests(unittest.TestCase):
         self.assertIn("AI 规划项目", self.page.inner_text("#detailTitle"))
         self.page.uncheck("#newProjectPlanToggle") if self.page.is_checked("#newProjectPlanToggle") else None
 
-    def test_07_no_page_errors(self) -> None:
+    def test_07_toggle_uses_node_patch(self) -> None:
+        """性能路径：干净项目里勾选任务只发一个小 patch，不再整棵树上传。"""
+        if self.page.query_selector("#detailView.active"):
+            self.page.click("#backBtn")
+        self.page.wait_for_selector("#projectsView.active", timeout=15000)
+        self.page.wait_for_selector("#projectGrid .project-card", timeout=15000)
+        requests: list[tuple[str, str, str]] = []
+        self.page.on("request", lambda request: requests.append((
+            request.method,
+            request.url.split('127.0.0.1')[-1].split('/api/')[-1].split('?')[0],
+            request.post_data or "",
+        )))
+        # 带 .assessment-badge 的任务点了会先弹验收窗口（AI 提问 + 整项目保存），
+        # 这里要验的是普通任务的节点级 patch，所以跳过它们；
+        # 树是懒渲染的，要逐层展开分组行（周/单元）才会出现任务行。
+        item_selector = "#treeRoot .tree-node[data-type='item']:not(:has(.assessment-badge)) .checkbox"
+        group_rows = "#treeRoot .tree-node:is([data-type='week'],[data-type='day']) > .node-row"
+        checkbox = None
+        for index in range(self.page.locator("#projectGrid .project-card").count()):
+            if index:
+                self.page.locator("#projectGrid .project-card").nth(index).click()
+            else:
+                self.page.click("#projectGrid .project-card")
+            self.page.wait_for_selector("#detailView.active")
+            for _ in range(4):
+                checkbox = self.page.query_selector(item_selector)
+                if checkbox is not None:
+                    break
+                # 任务行的 .arrow.leaf 没有 expanded 类，点它等于勾选完成，所以只点分组行
+                for row in self.page.query_selector_all(group_rows):
+                    arrow = row.query_selector(".arrow")
+                    if arrow and "expanded" not in (arrow.get_attribute("class") or ""):
+                        row.click()
+                self.page.wait_for_timeout(300)
+            if checkbox is not None:
+                break
+            self.page.click("#backBtn")
+            self.page.wait_for_selector("#projectsView.active")
+        self.assertIsNotNone(checkbox, "应该有一个带普通任务的项目")
+        # 项目已打开、树已展开，等自动保存/渲染都静下来再只统计"勾选"这一步的请求
+        self.page.wait_for_timeout(400)
+        requests.clear()
+        checkbox.click()
+        self.page.wait_for_timeout(600)
+        paths = [f"{method} {path}" for method, path, _ in requests]
+        patches = [body for method, path, body in requests if method == "POST" and path == "node/patch"]
+        self.assertTrue(patches, f"勾选应该走节点级 patch，实际请求：{paths}")
+        patched_project = json.loads(patches[0])["projectId"]
+        # 别的项目可能有前序测试留下的待保存改动，这里只要求"被 patch 的那个项目"没有再整棵树上传
+        uploaded = [json.loads(body).get("project", {}).get("id")
+                    for method, path, body in requests
+                    if method == "POST" and path == "project" and body]
+        self.assertNotIn(patched_project, uploaded,
+                         f"走 patch 的项目不该再整棵树上传：{paths}")
+
+    def test_07b_meta_save_uses_node_patch(self) -> None:
+        """性能路径：改任务元数据（优先级等）也只发一个节点 patch，不再整棵树上传。"""
+        if not self.page.query_selector("#detailView.active"):
+            self.page.click("#projectGrid .project-card")
+            self.page.wait_for_selector("#detailView.active", timeout=15000)
+        requests: list[tuple[str, str, str]] = []
+        self.page.on("request", lambda request: requests.append((
+            request.method,
+            request.url.split('127.0.0.1')[-1].split('/api/')[-1].split('?')[0],
+            request.post_data or "",
+        )))
+        meta_buttons = None
+        for _ in range(4):
+            meta_buttons = self.page.query_selector_all("#treeRoot .node-row .meta-btn")
+            if meta_buttons:
+                break
+            for row in self.page.query_selector_all(
+                    "#treeRoot .tree-node:is([data-type='week'],[data-type='day']) > .node-row"):
+                arrow = row.query_selector(".arrow")
+                if arrow and "expanded" not in (arrow.get_attribute("class") or ""):
+                    row.click()
+            self.page.wait_for_timeout(300)
+        self.assertTrue(meta_buttons, "详情树里应该有任务行（⋯ 按钮）")
+        meta_buttons[0].click()
+        self.page.wait_for_selector("#utilityModal:not([hidden])")
+        priority = self.page.query_selector("#utilityBody .meta-form select")
+        self.assertIsNotNone(priority, "任务详情里有优先级下拉")
+        priority.select_option("low" if priority.input_value() != "low" else "high")
+        self.page.click("#utilityBody .utility-primary-btn")
+        self.page.wait_for_timeout(500)
+        paths = [f"{method} {path}" for method, path, _ in requests]
+        patches = [body for method, path, body in requests if method == "POST" and path == "node/patch"]
+        self.assertTrue(patches, f"改元数据应该走节点级 patch，实际请求：{paths}")
+        first_op = (json.loads(patches[-1]).get("ops") or [{}])[0]
+        self.assertIn("priority", first_op.get("fields") or {}, f"patch 应带上元数据字段：{first_op}")
+        patched_project = json.loads(patches[-1])["projectId"]
+        uploaded = [json.loads(body).get("project", {}).get("id")
+                    for method, path, body in requests
+                    if method == "POST" and path == "project" and body]
+        self.assertNotIn(patched_project, uploaded,
+                         f"走 patch 的项目不该再整棵树上传：{paths}")
+
+    def test_08_no_page_errors(self) -> None:
         """整条流程下来不允许有未捕获的前端异常。"""
         self.assertEqual(self.page_errors, [], f"页面出现未捕获异常：{self.page_errors}")
 

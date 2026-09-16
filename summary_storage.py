@@ -103,13 +103,38 @@ def _row_to_summary(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def list_summaries() -> list[dict[str, Any]]:
+MAX_SUMMARY_LIST = 200
+SUMMARY_LIST_CONTENT_CHARS = 2000
+
+
+def list_summaries(limit: int = MAX_SUMMARY_LIST, offset: int = 0) -> list[dict[str, Any]]:
+    """列表：最多 200 条，正文截到 2000 字（单条上限 1 MB，全量返回会很大）。
+
+    需要完整正文时用 read_summary(id)。
+    """
+    size = max(1, min(MAX_SUMMARY_LIST, int(limit or MAX_SUMMARY_LIST)))
+    start = max(0, int(offset or 0))
     with _summary_lock, open_summary_database() as connection:
         rows = connection.execute(
             "SELECT summary_id,question,content,created_at,updated_at,revision "
-            "FROM summaries ORDER BY updated_at DESC,summary_id"
+            "FROM summaries ORDER BY updated_at DESC,summary_id LIMIT ? OFFSET ?",
+            (size, start),
         ).fetchall()
-    return [_row_to_summary(row) for row in rows]
+    items = []
+    for row in rows:
+        item = _row_to_summary(row)
+        content = str(item.get("content") or "")
+        item["contentLength"] = len(content)
+        if len(content) > SUMMARY_LIST_CONTENT_CHARS:
+            item["content"] = content[:SUMMARY_LIST_CONTENT_CHARS]
+            item["contentTruncated"] = True
+        items.append(item)
+    return items
+
+
+def count_summaries() -> int:
+    with _summary_lock, open_summary_database() as connection:
+        return int(connection.execute("SELECT COUNT(*) FROM summaries").fetchone()[0])
 
 
 def read_summary(summary_id: Any) -> dict[str, Any] | None:

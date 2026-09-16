@@ -159,6 +159,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     let sessionToken = '';
     let apiClient = null;
     let savedProjectJsonById = new Map();
+    // 在飞的节点级 patch 数量：与全量保存共用 saveQueue，串行执行
+    let inFlightPatches = 0;
     let saveConflict = false;
     let inFlightSaves = 0;
     let leaveGuardArmed = false;
@@ -253,10 +255,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const wasCompleted = Boolean(node.completed);
         node.completed = Boolean(completed);
         node.completedAt = node.completed ? new Date().toISOString() : null;
-        if (!node || node.type !== 'item') return;
+        if (!node || node.type !== 'item') return { spawned: null, project: null };
         const project = owningProjectOfNode(node);
+        let spawned = null;
         if (node.completed && !wasCompleted && node.repeat) {
-            const spawned = project ? spawnNextOccurrence(project, node) : null;
+            spawned = project ? spawnNextOccurrence(project, node) : null;
             if (spawned) showToast(`周期任务：已生成下一次（${spawned.dueDate}）`);
         }
         if (node.completed) {
@@ -268,6 +271,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             delete node.review;
         }
         markProjectDirty(project);
+        return { spawned, project };
     }
 
     function addDaysToIso(baseIso, days) {
@@ -749,6 +753,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         markProjectDirty(project);
     }
 
+    // 内置"补漏队列"单元的 id（内存里可能是数字 1600，也可能从服务端读回字符串 '1600'）
+    const REMEDIAL_QUEUE_ID = '1600';
+
     function ensureRemedialQueueAtBottom(projectList) {
         if (!Array.isArray(projectList) || projectList.length === 0) return;
         const firstProject = projectList[0];
@@ -756,7 +763,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         function takeQueue(nodes) {
             for (let index = nodes.length - 1; index >= 0; index--) {
                 const node = nodes[index];
-                if (node.id === 1600) {
+                // 服务端存的是 JSON 字符串 id（'1600'），内置模板里是数字 1600：
+                // 只用 === 比数字会漏掉服务端那份，于是又克隆一份 → 保存时报"节点 ID 重复"。
+                if (String(node.id) === REMEDIAL_QUEUE_ID) {
                     if (!queue) queue = node;
                     nodes.splice(index, 1);
                     continue;
@@ -766,7 +775,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
         takeQueue(firstProject.tree || []);
         if (!queue) {
-            queue = createDefaultTree()[0].children.find(node => node.id === 1600);
+            queue = createDefaultTree()[0].children.find(node => String(node.id) === REMEDIAL_QUEUE_ID);
             queue = queue ? cloneData(queue) : null;
         }
         if (queue) {
@@ -790,10 +799,40 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function serializeProject(project) {
-        const stored = cloneData(project);
+        // 顶层浅拷贝即可：JSON.stringify 只读取不修改。
+        // 以前这里 cloneData(project) 会把整棵树 JSON 往返一次（10k 任务 ≈ 100ms/次），
+        // 而调用方只拿去 stringify，深拷贝纯属浪费（第六批 item 1）。
+        const stored = { ...project };
         delete stored._revision;
         delete stored.stats;
         return stored;
+    }
+
+    // ---------- 项目"内存 vs 服务端"判据（第六批 item 1/2）----------
+    // 视图态字段只影响本机显示，不该让节点级 patch 退化成整棵树重写；
+    // 其中 expanded 目前本来也不会触发保存（只在本机内存里变），
+    // 所以把它排除在判据外不会改变"什么时候写库"的行为。
+    const PROJECT_STATE_SKIP_KEYS = new Set(['expanded', '_revision', 'stats']);
+
+    // "数据内容"指纹：跳过视图态字段（expanded 等），用来判断内存与服务端是否一致。
+    // 直接用原生 JSON.stringify + replacer（10k 任务约 27ms），
+    // 手写递归拼接虽然省了克隆但要 90ms+，不划算。
+    function skipViewState(key, item) {
+        return PROJECT_STATE_SKIP_KEYS.has(key) ? undefined : item;
+    }
+
+    function projectStateJson(project) {
+        return JSON.stringify(project, skipViewState);
+    }
+
+    function rememberProjectBaseline(project) {
+        if (!project) return;
+        const key = String(project.id);
+        savedProjectJsonById.set(key, projectStateJson(serializeProject(project)));
+    }
+
+    function forgetProjectBaseline(projectId) {
+        savedProjectJsonById.delete(String(projectId));
     }
 
     function writeStoredProject(project, expectedRevision) {
@@ -1108,7 +1147,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         expandAllNodes(project.tree || [], false);
         refreshProjectCaches(project);
         projects[index] = project;
-        savedProjectJsonById.set(String(project.id), JSON.stringify(serializeProject(project)));
+        rememberProjectBaseline(project);
         return project;
     }
 
@@ -1127,15 +1166,15 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 if (dirtyProjectIds.size > 0) armLeaveGuard();
                 throw conflictError;
             }
-            const snapshot = projects
-                .filter(project => Array.isArray(project.tree))
-                .map(project => cloneData(project));
+            // 不再把整棵项目树 cloneData 一份快照：判据用规范化指纹（只读、同步），
+            // 写库时现场构造请求体，省掉每个项目一次 4 MB 级别的 JSON 往返（第六批 item 1）。
+            const candidates = projects.filter(project => Array.isArray(project.tree));
             const currentProjectJsonById = new Map(
-                snapshot.map(project => [String(project.id), JSON.stringify(serializeProject(project))])
+                candidates.map(project => [String(project.id), projectStateJson(serializeProject(project))])
             );
-            // 只要“被标记为脏”或“与上次保存的 JSON 不一致”就写入；
+            // 只要“被标记为脏”或“与上次保存的指纹不一致”就写入；
             // 即便个别改动路径漏标 dirty，也仍会被差集兜住，不会丢保存。
-            const changedProjects = snapshot.filter(project =>
+            const changedProjects = candidates.filter(project =>
                 dirtyProjectIds.has(String(project.id))
                 || savedProjectJsonById.get(String(project.id)) !== currentProjectJsonById.get(String(project.id))
             );
@@ -1145,9 +1184,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             setSaveStatus('保存中…', 'saving');
             try {
                 for (const project of changedProjects) {
-                    const current = projects.find(item => String(item.id) === String(project.id));
+                    const current = project;
                     const projectId = String(project.id);
-                    const expectedRevision = current ? current._revision : project._revision;
+                    // 用内存里最新的版本号做乐观锁（原实现是快照克隆的版本，现在直接用同一对象）
+                    const expectedRevision = current ? current._revision : undefined;
                     let payload;
                     try {
                         payload = await writeStoredProject(project, expectedRevision);
@@ -1471,7 +1511,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 stored._revision = Number(saved.revision) || (Number(remote._revision) || 0) + 1;
                 if (saved.summary) stored.stats = saved.summary.stats;
                 projects[index] = stored;
-                savedProjectJsonById.set(String(stored.id), JSON.stringify(serializeProject(stored)));
+                rememberProjectBaseline(stored);
             }
             dirtyProjectIds.delete(String(localProject.id));
             pendingConflict = null;
@@ -1496,7 +1536,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const previous = projects[index];
             remote.stats = previous.stats;
             projects[index] = remote;
-            savedProjectJsonById.set(String(remote.id), JSON.stringify(serializeProject(remote)));
+            rememberProjectBaseline(remote);
         }
         dirtyProjectIds.delete(String(localProject.id));
         pendingConflict = null;
@@ -1517,7 +1557,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     // "还有没落库的东西"：排队中的防抖、在飞的请求，以及"冲突挂起 / 已标脏但没写成功"的本地改动。
     // 后两种以前被漏掉，导致冲突或保存失败期间关页不会提示，静默丢改动。
     function savePending() {
-        return Boolean(saveTimer) || inFlightSaves > 0 || Boolean(saveConflict) || dirtyProjectIds.size > 0;
+        return Boolean(saveTimer) || inFlightSaves > 0 || inFlightPatches > 0
+            || Boolean(saveConflict) || dirtyProjectIds.size > 0;
     }
 
     function warnBeforeUnload(event) {
@@ -1549,9 +1590,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             } else {
                 await saveQueue.catch(() => undefined);
             }
-            if (!saveTimer && inFlightSaves === 0) {
+            if (!saveTimer && inFlightSaves === 0 && inFlightPatches === 0) {
                 await saveQueue.catch(() => undefined);
-                if (!saveTimer && inFlightSaves === 0) return;
+                if (!saveTimer && inFlightSaves === 0 && inFlightPatches === 0) return;
             }
         }
     }
@@ -1770,14 +1811,18 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return result;
     }
 
-    function cleanupEmptyNodes(nodes) {
+    function cleanupEmptyNodes(nodes, removed = null) {
+        // removed（可选）用于节点级 patch：把这些"顺手清掉的空分组"也一起从服务端删掉，
+        // 否则 patch 之后服务端还留着空壳，下次全量保存才消失。
         for (let i = nodes.length - 1; i >= 0; i--) {
             const node = nodes[i];
-            if (node.children && node.children.length > 0) cleanupEmptyNodes(node.children);
+            if (node.children && node.children.length > 0) cleanupEmptyNodes(node.children, removed);
             if (node.type !== 'item' && (!node.children || node.children.length === 0)) {
+                if (removed) removed.push(node.id);
                 nodes.splice(i, 1);
             }
         }
+        return removed;
     }
 
     function hideToast() {
@@ -2575,6 +2620,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         clearTimeout(assessmentDraftTimer);
         assessmentDraftTimer = null;
         if (!assessmentNode) return;
+        // 打字自动保存每 600ms 一次：判定要在改动之前做，
+        // 能走节点级 patch 就不会每 600ms 上传一次整棵树（第六批 item 2）。
+        const owner = owningProjectOfNode(assessmentNode);
+        const patchSafe = canUseNodePatch(owner);
         if (assessmentStageName === 'questions') {
             assessmentQuestionAnswers[assessmentQuestionIndex] = assessmentAnswer.value;
             assessmentNode.assessment = {
@@ -2592,8 +2641,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 model: assessmentModel.value
             };
         }
-        markProjectDirty(owningProjectOfNode(assessmentNode));
-        saveProjects();
+        persistNodeFields(owner, assessmentNode, nodeStateFields(assessmentNode), patchSafe);
     }
 
     function handleAssessmentEditorTab(event) {
@@ -4294,7 +4342,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             // 删除前可能还留着"脏"标记/旧 JSON 基准：不清掉的话 savePending() 会一直为真，
             // 每次关页面都弹"未保存"提示（而且那个项目已经不存在了）。
             dirtyProjectIds.delete(String(projectId));
-            savedProjectJsonById.delete(String(projectId));
+            forgetProjectBaseline(projectId);
             if (currentProjectId === projectId) currentProjectId = null;
             renderProjects();
             setSaveStatus('已保存');
@@ -4435,6 +4483,122 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || '操作失败');
         return payload;
+    }
+
+    // ---------- 节点级保存（第六批 item 2）：把"改 1 个节点"从整棵树重写降到 1 行 ----------
+
+    // 只有当这个项目"和服务端数据一致"时才走 patch：否则本地还有别的改动没落库，
+    // 用 patch 会和待写的整棵树打架，不如老老实实全量保存。
+    //
+    // 判据是"内存数据指纹 == 已保存基线"，而不是 dirtyProjectIds ——
+    // 因为改一个节点本身就会把项目标脏，用 dirty 判断会导致永远走不到 patch。
+    // 指纹会忽略 expanded 之类纯视图态字段（见 projectStateJson）。
+    // 因此**必须在改动节点之前**调用（调用点都注意了这一点）。
+    function canUseNodePatch(project) {
+        if (!project || !Array.isArray(project.tree)) return false;
+        if (saveTimer || inFlightSaves > 0 || inFlightPatches > 0 || saveConflict) return false;
+        const baseline = savedProjectJsonById.get(String(project.id));
+        if (typeof baseline !== 'string') return false;
+        try {
+            return baseline === projectStateJson(serializeProject(project));
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async function applyNodePatch(project, ops) {
+        // 和整项目保存排在同一条队列里：否则两者会同时读同一个 revision，
+        // 后到的那个被服务端 409 拒绝（真实浏览器测试抓到过 patch 与全量保存并发）。
+        const run = saveQueue.catch(() => undefined).then(() => {
+            inFlightPatches += 1;
+            armLeaveGuard();
+            return callApi('/api/node/patch', 'POST', {
+                projectId: project.id,
+                expectedRevision: Number(project._revision) || 0,
+                ops,
+            }).finally(() => {
+                inFlightPatches -= 1;
+                if (!savePending()) disarmLeaveGuard();
+            });
+        });
+        saveQueue = run.catch(() => undefined);
+        const payload = await run;
+        project._revision = Number(payload.revision) || project._revision;
+        if (payload.summary && payload.summary.stats) project.stats = payload.summary.stats;
+        // 服务和内存现在一致：刷新"已保存"基线，免得下一次全量保存又整棵树重写
+        if (Array.isArray(project.tree)) {
+            rememberProjectBaseline(project);
+        } else {
+            forgetProjectBaseline(project.id);
+        }
+        dirtyProjectIds.delete(String(project.id));
+        return payload;
+    }
+
+    async function saveNodeChange(project, ops, fallback) {
+        if (project) {
+            try {
+                return await applyNodePatch(project, ops);
+            } catch (error) {
+                console.warn('节点级保存失败，回退为整项目保存', error);
+                if (error && error.status === 409) {
+                    showToast('其他页面刚改过这个项目，已改为整项目保存',
+                        { label: '解决冲突', onClick: () => openConflictPanel() });
+                }
+            }
+        }
+        if (typeof fallback === 'function') fallback();
+        return null;
+    }
+
+    // 单个节点的字段集合（完成态 + 验收 + 复习），供 patch 复用
+    function nodeStateFields(node) {
+        return {
+            completed: Boolean(node.completed),
+            completedAt: node.completedAt || null,
+            assessment: node.assessment || null,
+            assessmentHistory: Number(node.assessmentHistory) || 0,
+            review: node.review || null,
+        };
+    }
+
+    // 任务元数据字段（与 storage.PATCH_NODE_FIELDS 对齐）
+    function nodeMetaFields(node) {
+        return {
+            priority: node.priority || '',
+            dueDate: node.dueDate || '',
+            estimateMinutes: Number(node.estimateMinutes) || 0,
+            tags: Array.isArray(node.tags) ? node.tags : [],
+            note: node.note || '',
+            links: Array.isArray(node.links) ? node.links : [],
+            repeat: node.repeat || null,
+        };
+    }
+
+    // 单节点改动落库：能 patch 就 patch，否则整项目保存。
+    // patchSafe 必须在**改动之前**算好（见 canUseNodePatch 注释），所以由调用方传进来。
+    function persistNodeFields(project, node, fields, patchSafe) {
+        if (!node) return null;
+        const owner = project || owningProjectOfNode(node);
+        markProjectDirty(owner);
+        if (patchSafe && owner) {
+            saveNodeChange(owner, [{ op: 'update', nodeId: node.id, fields }], () => saveProjects());
+        } else {
+            saveProjects();
+        }
+        return owner;
+    }
+
+    function findNodeParentIdIn(project, nodeId) {
+        const walk = (nodes, parent) => {
+            for (const entry of nodes || []) {
+                if (String(entry.id) === String(nodeId)) return parent ? String(parent.id) : null;
+                const found = walk(entry.children || [], entry);
+                if (found !== undefined && found !== null) return found;
+            }
+            return null;
+        };
+        return walk(project.tree || [], null);
     }
 
     async function restoreTrashItemById(trashId) {
@@ -5665,6 +5829,9 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const tags = tagsInput.value.split(/[,，\s]+/).map(item => item.trim()).filter(Boolean);
             // 保留原规则的锚点（每周几 / 每月几号）和结束时间，只有改了截止日期才重算。
             const repeat = currentRepeatRule();
+            const metaOwner = owningProjectOfNode(node);
+            // 判定要在改动之前（见 canUseNodePatch）：否则一个节点的元数据改动也要整棵树重写
+            const metaPatchSafe = canUseNodePatch(metaOwner);
             try {
                 applyNodeMeta(node, {
                     priority: prioritySelect.value,
@@ -5679,7 +5846,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 showToast(error.message || '链接格式不正确');
                 return;
             }
-            saveProjects();
+            persistNodeFields(metaOwner, node, nodeMetaFields(node), metaPatchSafe);
             // 只在真正处于某个项目的详情页时重画详情；工作台里打开这个弹窗时
             // renderDetail() 会把视图切回项目列表（退不出工作台的同类 bug）。
             if (getCurrentProject()) renderDetail();
@@ -5688,7 +5855,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const refreshAfterSave = options && options.onSaved;
             if (typeof refreshAfterSave === 'function') {
                 try {
-                    await saveProjects();
+                    await settleSaves();   // patch 或整项目保存都算落库
                 } catch (error) {
                     // 保存失败/冲突由保存管线提示，这里不刷新，改动仍留在内存里。
                     return;
@@ -5707,12 +5874,14 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     }
 
     function toggleNodeCompleted(node) {
+        // 先判断能不能走节点级 patch（此时还没改动，JSON 与基线可比）
+        const patchSafe = canUseNodePatch(owningProjectOfNode(node));
         if (node.type === 'item') {
             if (node.assessmentRequired && !node.completed) {
                 openAssessment(node);
                 return;
             }
-            setNodeCompleted(node, !node.completed);
+            const outcome = setNodeCompleted(node, !node.completed);
             if (node.assessmentRequired && !node.completed) {
                 // Canceling a passed task invalidates both stages; it must be earned again.
                 if (node.assessment && node.assessment.passed) {
@@ -5720,21 +5889,33 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 }
                 node.assessment = null;
             }
-        } else {
-            if (subtreeRequiresAssessment(node)) {
-                showToast('课程任务需逐项验收，不能批量完成');
-                return;
+            const owner = outcome.project || owningProjectOfNode(node);
+            markProjectDirty(owner);
+            if (patchSafe && owner) {
+                const ops = [{ op: 'update', nodeId: node.id, fields: nodeStateFields(node) }];
+                if (outcome.spawned) {
+                    ops.push({ op: 'append', parentId: findNodeParentIdIn(owner, node.id),
+                               node: outcome.spawned });
+                }
+                saveNodeChange(owner, ops, () => saveProjects()).then(() => {
+                    // patch 路径下服务端已完成，重绘一次让统计/父节点状态跟上
+                    refreshAfterToggle(owner, node);
+                });
+            } else {
+                saveProjects();
+                refreshAfterToggle(owner, node);
             }
-            toggleAllChildren(node, getNodeCompletionState(node) !== 'completed');
+            return;
         }
-        const owner = owningProjectOfNode(node);
-        markProjectDirty(owner);
+        if (subtreeRequiresAssessment(node)) {
+            showToast('课程任务需逐项验收，不能批量完成');
+            return;
+        }
+        toggleAllChildren(node, getNodeCompletionState(node) !== 'completed');
+        // 分组完成会影响一整棵子树：改动多，直接整项目保存更稳妥
+        markProjectDirty(owningProjectOfNode(node));
         saveProjects();
-        if (node.type === 'item') {
-            refreshAfterToggle(owner, node);
-        } else {
-            renderDetail();
-        }
+        renderDetail();
     }
 
     function startEditNode(node, textSpan, row) {
@@ -5838,17 +6019,29 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             revision: project._revision || 0,
             payload: snapshot.node,
         });
+        // 删除也是"改一个节点"：能走 patch 就不整棵树重传（第六批 item 2）
+        const patchSafe = canUseNodePatch(project);
+        const removedContainers = [];
         removeNodeById(project.tree, nodeId);
-        cleanupEmptyNodes(project.tree);
-        markProjectDirty(project);
-        await saveProjects();
+        cleanupEmptyNodes(project.tree, removedContainers);
+        if (patchSafe) {
+            const ops = [{ op: 'delete', nodeId }];
+            removedContainers.forEach(id => ops.push({ op: 'delete', nodeId: id }));
+            await saveNodeChange(project, ops, () => {
+                markProjectDirty(project);
+                return saveProjects();
+            });
+        } else {
+            markProjectDirty(project);
+            await saveProjects();
+        }
         return saved;
     }
 
     async function deleteNode(node, row) {
         const project = getCurrentProject();
         if (!project) return;
-        if (node.id === 1600) {
+        if (String(node.id) === REMEDIAL_QUEUE_ID) {
             showToast('补漏队列是固定入口，不能删除；可以继续添加或删除其中的具体任务');
             return;
         }
@@ -5957,7 +6150,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                     optionalCompleted: optional.completed
                 }
             });
-            savedProjectJsonById.delete(String(current.id));
+            forgetProjectBaseline(current.id);
         }
         activateView(projectsView);
         currentProjectId = null;
@@ -6072,6 +6265,25 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
 
     let reviewQueueState = { dueItems: [], futureItems: [] };
 
+    // 把服务端聚合出来的复习条目转成渲染用的形状。
+    // node 只带渲染需要的字段；真要改复习计划时再按需加载那一个项目（见 runQueueAction）。
+    function reviewEntryToItem(entry) {
+        return {
+            projectId: entry.projectId,
+            projectName: entry.projectName,
+            ancestorIds: Array.isArray(entry.ancestorIds) ? entry.ancestorIds : [],
+            path: entry.path || '',
+            due: entry.due,
+            learning: Boolean(entry.learning),
+            node: {
+                id: entry.nodeId,
+                text: entry.text || '未命名任务',
+                optional: false,
+                review: { due: entry.due, learning: Boolean(entry.learning), log: [] }
+            }
+        };
+    }
+
     async function showReviewQueue() {
         try {
             await settleSaves();
@@ -6079,43 +6291,31 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             showToast('当前修改尚未保存，请先解决保存失败');
             return;
         }
-        // 先切到队列页并给出加载状态：加载要读完全部项目，项目多时不是瞬间完成。
+        // 队列由服务端直接算（只读 nodes 表 + 项目名）：
+        // 以前要先把每个项目的整棵树都加载进来，项目一多就很慢（第六批 item 3）。
         activateView(reviewView);
         reviewSubline.textContent = '';
         renderReviewMessage(listStatusText('review', 'loading'), false);
+        let payload = null;
         try {
-            await Promise.all(projects.map(project => ensureProjectLoaded(project.id)));
+            const response = await apiFetch(
+                `/api/reviews?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' });
+            payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取复习队列失败');
         } catch (error) {
             const message = listStatusText('review', 'failed', error && error.message);
             renderReviewMessage(message, true);
             showToast(message);
             return;
         }
-        const today = todayStr();
-        const dueItems = [];
-        const futureItems = [];
-        for (const project of projects) {
-            if (!Array.isArray(project.tree)) continue;
-            walkTreeEntries(project.tree, [], [], (entry) => {
-                const node = entry.node;
-                if (!node.completed || !node.review || !node.review.due) return;
-                const item = {
-                    projectId: project.id,
-                    projectName: project.name,
-                    node: node,
-                    ancestorIds: entry.ancestorIds,
-                    path: entry.path,
-                    due: node.review.due,
-                    learning: Boolean(node.review.learning)
-                };
-                if (item.due <= today) dueItems.push(item);
-                else futureItems.push(item);
-            });
-        }
-        dueItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
-        futureItems.sort((a, b) => a.due.localeCompare(b.due) || a.projectName.localeCompare(b.projectName));
-        reviewQueueState = { dueItems: dueItems, futureItems: futureItems };
+        reviewQueueState = {
+            dueItems: (payload.due || []).map(reviewEntryToItem),
+            futureItems: (payload.future || []).map(reviewEntryToItem)
+        };
         renderReviewQueue();
+        if (payload.truncated) {
+            showToast(`复习条目较多，仅显示前 ${payload.limit} 条`);
+        }
         loadReviewCounts();
     }
 
@@ -6505,7 +6705,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         // 批量操作改的是服务端数据，统计缓存必须失效，
         // 否则"主线剩余 N 项"和父节点完成态会停在旧值（要重进项目才对）。
         refreshProjectCaches(project);
-        savedProjectJsonById.set(String(projectId), JSON.stringify(serializeProject(project)));
+        rememberProjectBaseline(project);
         dirtyProjectIds.delete(String(projectId));
         return project;
     }
@@ -7719,18 +7919,51 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         return Math.round((end - start) / 86400000);
     }
 
-    function runQueueAction(item, action) {
+    // 队列里的节点不一定在内存里（数据来自服务端聚合）：
+    // 只有真的要改复习计划时才加载这一个项目，之后的逻辑与原来完全一致。
+    async function resolveQueueNode(item) {
+        if (!item || !item.node) return null;
+        const project = await ensureProjectLoaded(item.projectId);
+        return findNodeById(project.tree || [], item.node.id) || null;
+    }
+
+    async function runQueueAction(item, action) {
         if (!item || !item.node) return;
+        try {
+            if (action !== 'locate') {
+                const node = await resolveQueueNode(item);
+                if (!node) {
+                    showToast('任务不存在或已被删除，正在刷新队列');
+                    await showReviewQueue();
+                    return;
+                }
+                item.node = node;
+            }
+            runQueueActionNow(item, action);
+        } catch (error) {
+            showToast(error.message || '复习操作失败，请重试');
+        }
+    }
+
+    function runQueueActionNow(item, action) {
+        // 复习计划只改这一个节点：先判定能否 patch，再改，最后按需落库
+        const owner = owningProjectOfNode(item.node);
+        const patchSafe = canUseNodePatch(owner);
+        const persistReview = () => persistNodeFields(
+            owner, item.node, { review: item.node.review || null }, patchSafe);
         if (action === 'easy' || action === 'hard' || action === 'again') {
             applyReviewResult(item.node, action);
+            persistReview();
             finishQueueAction();
         } else if (action === 'd1' || action === 'd3' || action === 'd7' || action === 'd30') {
             const days = action === 'd1' ? 1 : action === 'd3' ? 3 : action === 'd7' ? 7 : 30;
             scheduleReview(item.node, addDaysToIso(todayStr(), days));
+            persistReview();
             finishQueueAction();
         } else if (action === 'clear') {
             if (!window.confirm('清除该任务的复习安排？')) return;
             clearReview(item.node);
+            persistReview();
             finishQueueAction();
         } else if (action === 'custom') {
             const chosen = window.prompt('自定义复习日期（YYYY-MM-DD）：', addDaysToIso(todayStr(), 7));
@@ -7738,6 +7971,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             const date = String(chosen).trim();
             if (!isValidIsoDate(date)) { showToast('日期格式不正确（应为 YYYY-MM-DD）'); return; }
             scheduleReview(item.node, date);
+            persistReview();
             finishQueueAction();
         } else if (action === 'locate') {
             locateStudyTask(item.projectId, {
@@ -7831,7 +8065,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             content.append(name, path);
             button.append(content);
             button.addEventListener('click', () => {
+                const owner = owningProjectOfNode(node);
+                const patchSafe = canUseNodePatch(owner);
                 scheduleReview(node, choice[1]);
+                persistNodeFields(owner, node, { review: node.review || null }, patchSafe);
                 finishScheduleModal();
             });
             list.appendChild(button);
@@ -7845,7 +8082,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (chosen === null) return;
             const date = String(chosen).trim();
             if (!isValidIsoDate(date)) { showToast('日期格式不正确（应为 YYYY-MM-DD）'); return; }
+            const owner = owningProjectOfNode(node);
+            const patchSafe = canUseNodePatch(owner);
             scheduleReview(node, date);
+            persistNodeFields(owner, node, { review: node.review || null }, patchSafe);
             finishScheduleModal();
         });
         list.appendChild(customButton);
@@ -7855,7 +8095,10 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         clearButton.textContent = '清除复习安排';
         clearButton.addEventListener('click', () => {
             if (!window.confirm('清除该任务的复习安排？')) return;
+            const owner = owningProjectOfNode(node);
+            const patchSafe = canUseNodePatch(owner);
             clearReview(node);
+            persistNodeFields(owner, node, { review: null }, patchSafe);
             finishScheduleModal();
         });
         list.appendChild(clearButton);
@@ -8293,34 +8536,6 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         }
     }
 
-    function collectSearchMatches(project, query) {
-        const normalized = String(query || '').trim().toLowerCase();
-        const results = [];
-        const projectText = `${project.name || ''} ${project.description || ''}`.toLowerCase();
-        if (projectText.includes(normalized)) {
-            results.push({
-                kind: 'project',
-                projectId: project.id,
-                label: project.name,
-                detail: project.description || '项目摘要'
-            });
-        }
-        walkTreeEntries(project.tree || [], [], [], entry => {
-            const text = `${entry.node.text || ''} ${entry.path || ''}`.toLowerCase();
-            if (text.includes(normalized)) {
-                results.push({
-                    kind: 'node',
-                    projectId: project.id,
-                    nodeId: entry.node.id,
-                    label: entry.node.text || '未命名任务',
-                    detail: entry.path || project.name,
-                    ancestorIds: entry.ancestorIds || []
-                });
-            }
-        });
-        return results;
-    }
-
     async function openGlobalSearch() {
         showUtilityModal('全局搜索', '跨项目');
         utilityBody.innerHTML = '';
@@ -8337,37 +8552,41 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
         const results = document.createElement('div');
         results.className = 'search-results';
         utilityBody.appendChild(results);
-        const allProjects = [];
-        meta.textContent = listStatusText('search', 'loading');
-        try {
-            await Promise.all(projects.map(project => ensureProjectLoaded(project.id)));
-            allProjects.push(...projects.filter(project => Array.isArray(project.tree)));
-            meta.textContent = `已加载 ${allProjects.length} 个项目`;
-        } catch (error) {
-            const message = listStatusText('search', 'failed', error && error.message);
-            meta.textContent = message;
-            results.replaceChildren();
-            const failed = document.createElement('p');
-            failed.className = 'utility-empty';
-            failed.textContent = message;
-            results.appendChild(failed);
-            results.appendChild(createRetryButton('重试', () => openGlobalSearch()));
-            return;
-        }
-        const render = () => {
+        // 搜索交给服务端（SQL LIKE + 递归 CTE）：不再为了搜索把每个项目的整棵树拉下来。
+        meta.textContent = '输入关键词开始搜索';
+        let searchToken = 0;
+        const render = async () => {
+            const token = ++searchToken;
             results.innerHTML = '';
-            const query = search.value.trim().toLowerCase();
+            const query = search.value.trim();
             if (!query) {
+                meta.textContent = '输入关键词后可跨项目搜索';
                 const empty = document.createElement('p');
                 empty.className = 'utility-empty';
                 empty.textContent = '输入关键词后可跨项目搜索';
                 results.appendChild(empty);
                 return;
             }
-            const matched = [];
-            for (const project of allProjects) {
-                matched.push(...collectSearchMatches(project, query));
+            meta.textContent = '搜索中…';
+            let matched = [];
+            try {
+                const response = await apiFetch(
+                    `/api/search?q=${encodeURIComponent(query)}&limit=100`, { cache: 'no-store' });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(payload.error || '搜索失败');
+                matched = Array.isArray(payload.results) ? payload.results : [];
+            } catch (error) {
+                if (token !== searchToken) return;
+                const message = listStatusText('search', 'failed', error && error.message);
+                meta.textContent = message;
+                const failed = document.createElement('p');
+                failed.className = 'utility-empty';
+                failed.textContent = message;
+                results.appendChild(failed);
+                results.appendChild(createRetryButton('重试', () => render()));
+                return;
             }
+            if (token !== searchToken) return;   // 已经有更新的关键词，丢弃这次结果
             meta.textContent = `找到 ${matched.length} 条结果`;
             if (matched.length === 0) {
                 const empty = document.createElement('p');
@@ -8376,7 +8595,7 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
                 results.appendChild(empty);
                 return;
             }
-            matched.slice(0, 100).forEach(item => {
+            matched.forEach(item => {
                 const row = document.createElement('button');
                 row.type = 'button';
                 row.className = 'search-result';

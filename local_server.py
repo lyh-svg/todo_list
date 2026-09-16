@@ -67,6 +67,7 @@ list_saved_views = storage_service.list_saved_views
 save_saved_view = storage_service.save_saved_view
 delete_saved_view = storage_service.delete_saved_view
 batch_update_nodes = storage_service.batch_update_nodes
+patch_project_nodes = storage_service.patch_project_nodes
 reorder_node = storage_service.reorder_node
 duplicate_node = storage_service.duplicate_node
 duplicate_project = storage_service.duplicate_project
@@ -87,6 +88,8 @@ export_markdown = storage_service.export_markdown
 export_csv = storage_service.export_csv
 workbench = storage_service.workbench
 recent_overview = storage_service.recent_overview
+list_review_queue = storage_service.list_review_queue
+search_everything = storage_service.search_everything
 SchemaVersionError = storage_service.SchemaVersionError
 read_project_summaries = storage_service.read_project_summaries
 read_project = storage_service.read_project
@@ -450,6 +453,33 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取筛选视图失败：{error}"})
             return
+        if path == "/api/reviews":
+            # 跨项目复习队列：服务端直接算，前端不用再把每个项目的整棵树拉下来（第六批 item 3）
+            try:
+                params = query_params(self)
+                today = optional_iso_date(params.get("today", [""])[0])
+                limit = int_param(params, "limit", required=False, default=storage_service.MAX_REVIEW_QUEUE)
+                self.send_json(200, list_review_queue(today or None, limit))
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+                if isinstance(error, ValueError):
+                    self.send_json(400, {"error": str(error)})
+                else:
+                    self.send_json(500, {"error": f"读取复习队列失败：{error}"})
+            return
+        if path == "/api/search":
+            try:
+                params = query_params(self)
+                query = (params.get("q", [""])[0] or "").strip()
+                if len(query) > 200:
+                    raise ValueError("搜索关键词过长")
+                limit = int_param(params, "limit", required=False, default=100)
+                self.send_json(200, search_everything(query, limit))
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+                if isinstance(error, ValueError):
+                    self.send_json(400, {"error": str(error)})
+                else:
+                    self.send_json(500, {"error": f"搜索失败：{error}"})
+            return
         if path == "/api/workbench":
             try:
                 today = optional_iso_date(query_params(self).get("today", [""])[0])
@@ -574,16 +604,42 @@ class TodoHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/summaries":
             try:
-                self.send_json(200, {"summaries": summary_storage.list_summaries()})
+                params = query_params(self)
+                limit = int_param(params, "limit", required=False, default=summary_storage.MAX_SUMMARY_LIST)
+                offset = int_param(params, "offset", required=False, default=0)
+                self.send_json(200, {
+                    "summaries": summary_storage.list_summaries(limit, offset),
+                    "total": summary_storage.count_summaries(),
+                })
+            except (ValueError, OSError, sqlite3.Error, RuntimeError) as error:
+                status = 400 if isinstance(error, ValueError) else 500
+                self.send_json(status, {"error": f"读取摘要清单失败：{error}"})
+            return
+        if path == "/api/summary":
+            try:
+                summary = summary_storage.read_summary(required_param(query_params(self), "id"))
+                if not summary:
+                    self.send_json(404, {"error": "摘要不存在"})
+                else:
+                    self.send_json(200, {"summary": summary})
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
             except (OSError, sqlite3.Error, RuntimeError) as error:
-                self.send_json(500, {"error": f"读取摘要清单失败：{error}"})
+                self.send_json(500, {"error": f"读取摘要失败：{error}"})
             return
         if path == "/api/memos":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q", [""])[0]
             try:
-                memos = (memo_storage.search_memo_summaries(query) if query.strip()
-                         else memo_storage.list_memo_summaries())
-                self.send_json(200, {"memos": memos, "databaseBytes": memo_storage.database_size()})
+                params = query_params(self)
+                limit = int_param(params, "limit", required=False, default=memo_storage.MAX_MEMO_LIST)
+                offset = int_param(params, "offset", required=False, default=0)
+                memos = (memo_storage.search_memo_summaries(query, limit, offset) if query.strip()
+                         else memo_storage.list_memo_summaries(limit, offset))
+                self.send_json(200, {"memos": memos, "total": memo_storage.count_memos(query),
+                                     "databaseBytes": memo_storage.database_size()})
+            except ValueError as error:
+                # limit/offset 非法 → 400；漏了这一步就会变成"空回复"（本仓库明令禁止）
+                self.send_json(400, {"error": str(error)})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取备忘录失败：{error}"})
             return
@@ -625,6 +681,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         length = self.request_length()
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
+                        "/api/node/patch", "/api/assessment",
                         "/api/node/reorder", "/api/node/duplicate", "/api/project/duplicate",
                         "/api/import/preview", "/api/templates", "/api/project/from-template",
                         "/api/activity", "/api/settings", "/api/archive/auto",
@@ -757,6 +814,37 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 self.send_json(200, {"ok": True, "preview": result.get("preview"),
                                      "projects": result["projects"], "mode": result["mode"],
                                      "backup": import_backup_name})
+            elif path == "/api/node/patch":
+                project_id = payload.get("projectId")
+                if not project_id:
+                    raise ValueError("缺少 projectId")
+                expected = payload.get("expectedRevision")
+                if expected is not None:
+                    try:
+                        expected = int(expected)
+                    except (TypeError, ValueError):
+                        raise ValueError("expectedRevision 格式不正确") from None
+                result = patch_project_nodes(str(project_id), expected, payload.get("ops"))
+                self.send_json(200, {"ok": True, **result})
+            elif path == "/api/assessment":
+                # 验收记录的专用入口：就是"只改 assessment 字段"的节点 patch
+                project_id = payload.get("projectId")
+                node_id = payload.get("nodeId")
+                if not project_id or not node_id:
+                    raise ValueError("缺少 projectId 或 nodeId")
+                expected = payload.get("expectedRevision")
+                if expected is not None:
+                    try:
+                        expected = int(expected)
+                    except (TypeError, ValueError):
+                        raise ValueError("expectedRevision 格式不正确") from None
+                fields = {"assessment": payload.get("assessment")}
+                if isinstance(payload.get("fields"), dict):
+                    fields.update(payload["fields"])
+                result = patch_project_nodes(
+                    str(project_id), expected,
+                    [{"op": "update", "nodeId": str(node_id), "fields": fields}])
+                self.send_json(200, {"ok": True, **result})
             elif path == "/api/node/reorder":
                 moved = reorder_node(str(payload.get("projectId") or ""), str(payload.get("nodeId") or ""),
                                      payload.get("parentId"),
@@ -936,7 +1024,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
     def do_DELETE(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
         if path not in {"/api/project", "/api/background", "/api/memo", "/api/summary", "/api/summaries",
-                        "/api/views", "/api/templates", "/api/activity"}:
+                        "/api/views", "/api/templates", "/api/activity", "/api/node"}:
             self.discard_body(self.request_length())
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -953,6 +1041,16 @@ class TodoHandler(SimpleHTTPRequestHandler):
         # 绝不把异常抛到 HTTP 层（那会变成"空回复"）。
         params = query_params(self)
         try:
+            if path == "/api/node":
+                # 节点级删除：一个事务里删掉子树（回收站条目由前端先写好，便于撤销）
+                project_id = required_param(params, "projectId")
+                node_id = required_param(params, "nodeId")
+                expected_revision = int_param(params, "revision", required=False, default=None)
+                result = patch_project_nodes(
+                    project_id, expected_revision,
+                    [{"op": "delete", "nodeId": node_id}])
+                self.send_json(200, {"ok": True, **result})
+                return
             if path == "/api/templates":
                 template_id = required_param(params, "id")
                 if not delete_template(template_id):
@@ -976,11 +1074,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 if not summary_storage.delete_summary(summary_id):
                     self.send_json(404, {"error": "摘要不存在"})
                     return
-                self.send_json(200, {"ok": True, "summaries": summary_storage.list_summaries()})
+                self.send_json(200, {"ok": True, "summaries": summary_storage.list_summaries(),
+                                     "total": summary_storage.count_summaries()})
                 return
             if path == "/api/summaries":
                 summary_storage.clear_summaries()
-                self.send_json(200, {"ok": True, "summaries": summary_storage.list_summaries()})
+                self.send_json(200, {"ok": True, "summaries": [], "total": 0})
                 return
             if path == "/api/background":
                 storage_service.delete_asset("background")
@@ -993,7 +1092,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     self.send_json(404, {"error": "备忘录不存在"})
                     return
                 memo_storage.delete_memo(memo_id, expected_revision)
-                self.send_json(200, {"ok": True, "memos": memo_storage.list_memo_summaries()})
+                self.send_json(200, {"ok": True, "memos": memo_storage.list_memo_summaries(),
+                                     "total": memo_storage.count_memos()})
                 return
             project_id = required_param(params, "id")
             expected_revision = int_param(params, "revision")

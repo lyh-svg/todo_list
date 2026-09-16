@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -117,17 +118,81 @@ class HttpLayerTests(unittest.TestCase):
         return self.json_call("POST", path, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"})
 
+    def with_review_item(self) -> None:
+        """造一个"已完成 + 排了复习"的任务，用于复习队列接口测试。"""
+        project = make_project()
+        item = project["tree"][0]["children"][0]["children"][0]
+        item["completed"] = True
+        item["completedAt"] = TODAY
+        item["review"] = {"due": "2026-09-10", "learning": True, "log": [{"at": TODAY, "result": "hard"}]}
+        storage.replace_projects([project], pre_backup=False)
+
+    def test_reviews_endpoint_splits_due_and_future(self) -> None:
+        """跨项目复习队列由服务端算：前端不必再把所有项目的整棵树拉下来（第六批 item 3）。"""
+        self.with_review_item()
+        status, payload = self.json_call("GET", f"/api/reviews?today={TODAY}")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["today"], TODAY)
+        self.assertEqual([entry["nodeId"] for entry in payload["due"]], ["p1-i"])
+        self.assertEqual(payload["due"][0]["path"], "第1周 / 单元1")
+        self.assertEqual(payload["due"][0]["ancestorIds"], ["p1-w", "p1-d"])
+        self.assertTrue(payload["due"][0]["learning"])
+        self.assertEqual(payload["future"], [])
+        # 未来到期 → 落到 future；更早的 today 参数 → 落到 due
+        status, payload = self.json_call("GET", "/api/reviews?today=2026-09-01")
+        self.assertEqual([entry["nodeId"] for entry in payload["future"]], ["p1-i"])
+        self.assertEqual(payload["due"], [])
+
+    def test_reviews_endpoint_limit_and_bad_params(self) -> None:
+        self.with_review_item()
+        status, payload = self.json_call("GET", f"/api/reviews?today={TODAY}&limit=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["limit"], 1)
+        status, payload = self.json_call("GET", f"/api/reviews?today={TODAY}&limit=abc")
+        self.assertEqual(status, 400)
+        self.assertIn("error", payload)
+
+    def test_search_endpoint_matches_text_path_and_project(self) -> None:
+        """服务端搜索：任务文本、分组路径（搜"第1周"能列出其中的任务）、项目名。"""
+        status, payload = self.json_call("GET", "/api/search?q=" + urllib.parse.quote("任务1"))
+        self.assertEqual(status, 200)
+        nodes = [entry for entry in payload["results"] if entry["kind"] == "node"]
+        self.assertEqual([entry["nodeId"] for entry in nodes], ["p1-i"])
+        self.assertEqual(nodes[0]["detail"], "第1周 / 单元1")
+        status, payload = self.json_call("GET", "/api/search?q=" + urllib.parse.quote("第1周"))
+        ids = [entry["nodeId"] for entry in payload["results"] if entry["kind"] == "node"]
+        self.assertEqual(ids, ["p1-d", "p1-i", "p1-w"],
+                         "命中的分组自己算一条，同时连带它的后代（顺序固定：位置 + node_id）")
+        status, payload = self.json_call("GET", "/api/search?q=" + urllib.parse.quote("HTTP 测试"))
+        self.assertEqual([entry["kind"] for entry in payload["results"]], ["project"])
+        status, payload = self.json_call("GET", "/api/search?q=")
+        self.assertEqual(payload["results"], [])
+        self.assertEqual(payload["total"], 0)
+
+    def test_search_endpoint_rejects_overlong_query(self) -> None:
+        status, payload = self.json_call("GET", "/api/search?q=" + "x" * 201)
+        self.assertEqual(status, 400)
+        self.assertIn("error", payload)
+        status, payload = self.json_call("GET", "/api/search?q=abc&limit=abc")
+        self.assertEqual(status, 400)
+
     def corrupt_project_row(self) -> None:
         with storage.open_state_database() as connection:
             connection.execute("UPDATE projects SET id_json='{bad' WHERE project_id='p1'")
 
     # ---------- 坏数据不能变成空回复 ----------
 
-    def test_storage_diagnostics_reports_corrupt_row_as_json_500(self) -> None:
+    def test_storage_diagnostics_uses_sql_and_tolerates_corrupt_json(self) -> None:
+        """诊断接口现在只做 SQL 汇总（不重建/解析项目），坏数据行不再让它 500。
+
+        坏数据仍然会被真正读数据的接口抓到（下一个用例断言 /api/export 会 500、/api/project 会 400）。
+        """
         self.corrupt_project_row()
         status, payload = self.json_call("GET", "/api/storage")
-        self.assertEqual(status, 500)
-        self.assertIn("error", payload)
+        self.assertEqual(status, 200)
+        self.assertIn("nodeCount", payload)
+        status, _ = self.json_call("GET", "/api/project?id=p1")
+        self.assertEqual(status, 400, "真正读项目的接口仍然要报错")
 
     def test_export_reports_corrupt_row_as_json_500(self) -> None:
         self.corrupt_project_row()
@@ -206,6 +271,47 @@ class HttpLayerTests(unittest.TestCase):
         status, payload = self.post_json("/api/memo", {"title": "大备忘录", "content": content})
         self.assertEqual(status, 200, payload)
         self.assertEqual(payload["memo"]["title"], "大备忘录")
+
+    def test_memo_list_supports_paging_and_total(self) -> None:
+        for index in range(5):
+            self.post_json("/api/memo", {"title": f"分页备忘 {index}", "content": "正文" * 10})
+        status, payload = self.json_call("GET", "/api/memos?limit=2")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["memos"]), 2)
+        self.assertGreaterEqual(payload["total"], 5)
+        status, payload2 = self.json_call("GET", "/api/memos?limit=2&offset=2")
+        self.assertNotEqual([m["id"] for m in payload["memos"]], [m["id"] for m in payload2["memos"]])
+        status, bad = self.json_call("GET", "/api/memos?limit=abc")
+        self.assertEqual(status, 400)
+        self.assertIn("error", bad)
+
+    def test_summary_list_paging_preview_and_detail(self) -> None:
+        long_text = "很长的摘要" * 1000
+        summary_storage = __import__("summary_storage")
+        summary_storage.clear_summaries()   # 同一进程里别的用例可能留下摘要
+        with summary_storage.open_summary_database() as connection:
+            connection.execute(
+                "INSERT INTO summaries(summary_id,question_key,question,content,created_at,updated_at,revision) "
+                "VALUES(?,?,?,?,?,?,0)",
+                ("s1", "k1", "题目一", long_text, "2026-09-16T00:00:00", "2026-09-16T00:00:00"))
+            connection.execute(
+                "INSERT INTO summaries(summary_id,question_key,question,content,created_at,updated_at,revision) "
+                "VALUES(?,?,?,?,?,?,0)",
+                ("s2", "k2", "题目二", "短摘要", "2026-09-16T00:00:00", "2026-09-16T00:00:00"))
+        status, payload = self.json_call("GET", "/api/summaries?limit=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["summaries"]), 1)
+        self.assertEqual(payload["total"], 2)
+        item = payload["summaries"][0]
+        self.assertLessEqual(len(item["content"]), 2000, "列表里的正文要截断")
+        self.assertEqual(item["contentLength"], len(long_text))
+        # 详情接口给完整正文
+        status, detail = self.json_call("GET", f"/api/summary?id={item['id']}")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(detail["summary"]["content"]), len(long_text))
+        status, missing = self.json_call("GET", "/api/summary?id=nope")
+        self.assertEqual(status, 404)
+        self.assertIn("error", missing)
 
     def test_oversized_post_gets_json_413(self) -> None:
         """声明超过上限的请求也必须拿到 JSON 413（而不是连接重置）。"""
