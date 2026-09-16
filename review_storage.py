@@ -337,18 +337,23 @@ REVIEW_NEW_PER_DAY_RANGE = (0, 5)
 
 
 def _settings() -> dict[str, Any]:
-    """复习相关的应用设置（内部契约，供 HTTP 层复用）：缺失或损坏时回落默认值并夹到合法区间。
+    """复习相关的应用设置（内部契约，供 HTTP 层复用）：只有缺失才用默认值，显式 0 表示"关闭每日新知识点"。
 
+    仅当键缺失（`None`）时才回落默认值（`reviewDailyLimit`=10、`reviewNewPerDay`=2）；
+    显式 `reviewNewPerDay=0`（或 `"0"`）是合法设置，表示关闭每日新知识点，不会退化成默认 2；
+    非数字等损坏值同样回落默认值，最后夹到合法区间。
     Task 9 之前 `read_app_settings()` 还没有 `reviewDailyLimit`/`reviewNewPerDay` 两个键，
-    此时走 `or` 默认值分支，因此本任务返回 `{"limit": 10, "newPerDay": 2}`。
+    此时两个键都缺失，因此本任务返回 `{"limit": 10, "newPerDay": 2}`。
     """
     settings = storage.read_app_settings() or {}
+    raw_limit = settings.get("reviewDailyLimit")
+    raw_new = settings.get("reviewNewPerDay")
     try:
-        limit = int(settings.get("reviewDailyLimit") or 10)
+        limit = 10 if raw_limit is None else int(raw_limit)
     except (TypeError, ValueError):
         limit = 10
     try:
-        new_per_day = int(settings.get("reviewNewPerDay") or 2)
+        new_per_day = 2 if raw_new is None else int(raw_new)
     except (TypeError, ValueError):
         new_per_day = 2
     return {"limit": max(REVIEW_DAILY_LIMIT_RANGE[0], min(REVIEW_DAILY_LIMIT_RANGE[1], limit)),

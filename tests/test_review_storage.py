@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 APP_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_DIR))
@@ -128,6 +129,19 @@ class SummaryTests(unittest.TestCase):
         data = review_storage.history("py.a.b")
         self.assertEqual(data["attempts"][0]["answer"], "我写的")
         self.assertEqual(data["pitfalls"], ["易错点"])
+
+    def test_settings_defaults_only_when_missing(self) -> None:
+        cases = [
+            ({}, {"limit": 10, "newPerDay": 2}),
+            ({"reviewDailyLimit": 5, "reviewNewPerDay": 0}, {"limit": 5, "newPerDay": 0}),
+            ({"reviewDailyLimit": "7", "reviewNewPerDay": "0"}, {"limit": 7, "newPerDay": 0}),
+            ({"reviewDailyLimit": 99, "reviewNewPerDay": -5}, {"limit": 15, "newPerDay": 0}),
+            ({"reviewDailyLimit": "abc", "reviewNewPerDay": None}, {"limit": 10, "newPerDay": 2}),
+        ]
+        for settings, expected in cases:
+            with self.subTest(settings=settings):
+                with mock.patch.object(storage, "read_app_settings", return_value=settings):
+                    self.assertEqual(review_storage._settings(), expected)
 
     def test_streak_counts_consecutive_days(self) -> None:
         review_storage.apply_grade("py.a.b", "concept", 3, today="2026-09-15")
