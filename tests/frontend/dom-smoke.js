@@ -313,8 +313,9 @@ const reviewAnswerBodies = [];
 const reviewAiGradeBodies = [];
 // 记录 /api/import 的请求体：断言导出文件里的 review 快照被原样转发（旧备份不能凭空多出该键）。
 const importBodies = [];
-// 记录 /api/import/preview 的请求体：预览走 5MiB 小限额分支且后端不消费 review，
-// 带上它会在大 projects 上直接 413 → 确认按钮被禁用；这里断言它一定不含该键。
+// 记录 /api/import/preview 的请求体：预览不需要 review 快照（后端 preview 路径只对比
+// projects、不消费 review 表），这里断言它一定不含该键——带了只是白扛体积，
+// 也会让人觉得"预览也在写复习表"。review 只在确认导入时转发。
 const previewBodies = [];
 // 模拟"没配置 AI key"：置 true 后 /api/review/ai-grade 返回 503（走 toast 分支）。
 let aiGradeUnavailable = false;
@@ -329,6 +330,9 @@ const reviewGenerateOptions = [];
 let generateHold = null;
 // 置 true 后 /api/review/generate 返回 500：断言生成回流失败只 warn，不阻断验收流程。
 let generateFails = false;
+// 置 true 后 /api/node/patch 返回 409：断言节点级保存冲突时会提示并回退为整项目保存。
+// （callApi 以前不透出 response.status，saveNodeChange 的 409 分支是死代码。）
+let patchConflict = false;
 async function fetchStub(url, options = {}) {
     const path = String(url).split('?')[0];
     fetchLog.push(`${options.method || 'GET'} ${path}`);
@@ -518,6 +522,8 @@ async function fetchStub(url, options = {}) {
     if (path === '/api/inbox/add') return reply(200, { ok: true, node: { ...projectFixture.tree[0].children[0].children[0], id: 'i-new', text: '新任务' }, revision: 2, projectId: 'inbox' });
     if (path === '/api/batch') return reply(200, { ok: true, changed: 1, spawned: 0, failed: [], projects: [] });
     if (path === '/api/heartbeat' || path === '/api/health') return reply(200, { ok: true });
+    // 节点级 patch：默认成功（等价于原来的兜底 {ok:true}），只有冲突注入时返回 409。
+    if (path === '/api/node/patch' && patchConflict) return reply(409, { error: '版本冲突（模拟）' });
     return reply(200, { ok: true });
 }
 
@@ -555,6 +561,18 @@ const asyncErrors = [];
 process.on('unhandledRejection', error => {
     asyncErrors.push(error && error.stack ? error.stack.split('\n').slice(0, 2).join(' | ') : String(error));
 });
+// showToast 直接给 toastMessage.textContent 赋值；接一层历史，这样"提示确实出现过、
+// 但随后被别的 toast 覆盖"的情况也能被断言到（409 提示后面紧跟"已生成 N 个"）。
+const toastHistory = [];
+{
+    const toastEl = elementsById.get('toastMessage');
+    let toastValue = toastEl.textContent;
+    Object.defineProperty(toastEl, 'textContent', {
+        configurable: true,
+        get() { return toastValue; },
+        set(value) { toastValue = String(value); toastHistory.push(toastValue); },
+    });
+}
 function loadScript(relative) {
     try {
         vm.runInContext(fs.readFileSync(`${ROOT}/${relative}`, 'utf8'), sandbox, { filename: relative });
@@ -691,6 +709,72 @@ function step(name, fn) {
         && String((savedTree[savedTree.length - 1] || {}).id) === '1600',
         `queue=${savedIds.filter(id => id === '1600').length} last=${String((savedTree[savedTree.length - 1] || {}).id)}`);
 
+    // ⑭ 节点级保存冲突（409）：saveNodeChange 依赖 error.status === 409 决定
+    //     "提示 + 回退整项目保存"。callApi 以前只 throw new Error(payload.error)，
+    //     status 恒为 undefined → 这条分支是死代码（writeStoredProject 的同类错误本来带 status）。
+    {
+        const conflictRow = findAll(tree, el => el.classList.contains('node-row')
+            && textOf(el).includes('补漏任务'))[0];
+        const conflictBox = conflictRow ? findAll(conflictRow, el => el.classList.contains('checkbox'))[0] : null;
+        check('冲突用例能找到「补漏任务」这一行（节点级 patch 的前提）', Boolean(conflictBox),
+            textOf(tree).slice(0, 160));
+        if (conflictBox) {
+            const patchBeforeConflict = fetchLog.filter(line => line === 'POST /api/node/patch').length;
+            const projectPostBeforeConflict = fetchLog.filter(line => line === 'POST /api/project').length;
+            patchConflict = true;
+            step('patch 返回 409 时勾选任务不抛异常', () => conflictBox.dispatch('click'));
+            for (let round = 0; round < 20
+                 && fetchLog.filter(line => line === 'POST /api/project').length === projectPostBeforeConflict; round += 1) {
+                await sleep(25);
+            }
+            patchConflict = false;
+            check('冲突时确实走了节点级 patch（前提成立）',
+                fetchLog.filter(line => line === 'POST /api/node/patch').length > patchBeforeConflict,
+                JSON.stringify(fetchLog.slice(-5)));
+            check('patch 409 时出现「其他页面刚改过这个项目」提示（callApi 必须透出 status）',
+                toastHistory.some(line => line.includes('其他页面刚改过这个项目')),
+                JSON.stringify(toastHistory.slice(-3)));
+            check('patch 409 时回退为整项目保存（POST /api/project 被调用）',
+                fetchLog.filter(line => line === 'POST /api/project').length > projectPostBeforeConflict,
+                JSON.stringify(fetchLog.slice(-5)));
+            // 复原：冲突已解除，再勾一次取消完成。
+            await sleep(80);
+            step('冲突解除后取消完成不抛异常', () => conflictBox.dispatch('click'));
+            await sleep(200);
+        }
+    }
+
+    // ⑭' 异步兜底：toggleNodeCompleted 改成 async 后，三个事件处理器都是 fire-and-forget。
+    //     注入"重绘必炸"的故障：refreshAfterToggle 先吞掉 refreshItemCompletion 的异常、再调
+    //     renderDetail，此时 treeRoot.replaceChildren 抛错就会冒泡成 toggleNodeCompleted 的
+    //     rejection。入口有 .catch 兜底 → 只 console.warn；没有 → 被记进 asyncErrors（本断言
+    //     与结尾的 asyncErrors === 0 都会红）。
+    {
+        const safetyRow = findAll(tree, el => el.classList.contains('node-row')
+            && textOf(el).includes('补漏任务'))[0];
+        const safetyBox = safetyRow ? findAll(safetyRow, el => el.classList.contains('checkbox'))[0] : null;
+        const safetyTreeRoot = elementsById.get('treeRoot');
+        const originalReplaceChildren = safetyTreeRoot.replaceChildren;
+        const originalWarn = console.warn;
+        const toggleWarnings = [];
+        const asyncErrorsBeforeToggle = asyncErrors.length;
+        safetyTreeRoot.replaceChildren = () => { throw new Error('注入的重绘故障（冒烟自证用）'); };
+        console.warn = (...args) => { toggleWarnings.push(args.map(item => String(item)).join(' ')); };
+        step('注入重绘故障后勾选任务不抛异常', () => { if (safetyBox) safetyBox.dispatch('click'); });
+        await sleep(200);
+        console.warn = originalWarn;
+        safetyTreeRoot.replaceChildren = originalReplaceChildren;
+        check('toggleNodeCompleted 的异步异常被入口兜底（console.warn，不是 unhandled rejection）',
+            asyncErrors.length === asyncErrorsBeforeToggle
+            && toggleWarnings.some(line => line.includes('切换完成状态失败')),
+            JSON.stringify({ errors: asyncErrors.slice(asyncErrorsBeforeToggle),
+                warnings: toggleWarnings.slice(-2) }));
+        // 复原：故障解除后取消完成，状态回到未完成。
+        await sleep(80);
+        step('故障解除后取消完成不抛异常', () => { if (safetyBox) safetyBox.dispatch('click'); });
+        await sleep(200);
+    }
+
 
     const metaButtons = findAll(tree, el => el.textContent === '⋯');
     check('详情树里有元数据按钮（⋯）', metaButtons.length > 0, '树内容：' + textOf(tree).slice(0, 160));
@@ -747,8 +831,8 @@ function step(name, fn) {
     // ⑩ 导入 JSON（文件选择框 → 确认 → POST /api/import）
     // 导出的备份里除了 projects 还带 5 张复习表的 review 快照；确认导入必须原样转发给
     // /api/import，否则"导出 → 导入"在 UI 路径上会静默丢掉复习进度与作答历史。
-    // 但预览（POST /api/import/preview）走 5MiB 小限额分支且后端不消费 review：
-    // 它必须保持"不带 review"，否则 projects 接近上限时预览直接 413 → 确认按钮被禁用。
+    // 但预览（POST /api/import/preview）不需要 review（后端 preview 路径只对比 projects，
+    // 不消费复习表数据）：它必须保持"不带 review"，review 只在确认导入时转发。
     // 弹窗在 DOM 桩里 innerHTML='' 清不掉旧子节点（见 app.js 同款注释），第二次打开导入预览时
     // utilityBody 里会同时留着上一次的「确认导入」，必须点最后（最新）那一个。
     const clickImportConfirm = () => {
@@ -795,7 +879,7 @@ function step(name, fn) {
     step('点「确认导入」不抛异常', clickImportConfirm);
     await sleep(150);
     check('确认后才真正调用 /api/import', fetchLog.includes('POST /api/import'), JSON.stringify(fetchLog.slice(-4)));
-    check('预览请求体不带 review（/api/import/preview 走 5MiB 小限额且不消费它，带了会 413）',
+    check('预览请求体不带 review（预览不需要它：后端 preview 路径不消费复习表数据）',
         previewBodies.length === 1 && !('review' in previewBodies[0])
         && Array.isArray(previewBodies[0].projects) && previewBodies[0].projects.length === 1
         && previewBodies[0].mode === 'replace',
@@ -1329,6 +1413,10 @@ function step(name, fn) {
             && textOf(elementsById.get('assessmentModal')).includes('题目已生成，请回答当前题'),
             textOf(elementsById.get('assessmentModal')).slice(0, 200));
         const remedialBefore = reviewGenerateBodies.filter(body => body.remedial).length;
+        // js/app.js:2974 的问题阶段失败路径：await maybeGenerateRemedial 必须"真 await"。
+        // 用 generateHold 挂起补漏请求：请求没回来时 finally 不该跑，提交按钮必须仍 disabled。
+        // 去掉那处 await，验收流程会立刻收尾 → 下面的 disabled 断言变红。
+        generateHold = [];
         elementsById.get('assessmentAnswer').value = 'FAIL';
         elementsById.get('assessmentForm').dispatch('submit');
         await sleep(200);
@@ -1337,6 +1425,15 @@ function step(name, fn) {
             remedialBodies.length > remedialBefore
             && remedialBodies.some(body => body.remedial === true && String(body.gap || '').includes('自由变量')),
             JSON.stringify(reviewGenerateBodies.slice(-2)));
+        check('问题阶段失败的补漏请求被 await：未返回前验收流程尚未收尾（提交按钮仍禁用）',
+            elementsById.get('assessmentSubmitBtn').disabled === true,
+            `disabled=${elementsById.get('assessmentSubmitBtn').disabled}`);
+        generateHold.forEach(release => release());
+        generateHold = null;
+        await sleep(80);
+        check('问题阶段补漏请求释放后验收流程收尾（提交按钮恢复可用）',
+            elementsById.get('assessmentSubmitBtn').disabled === false,
+            `disabled=${elementsById.get('assessmentSubmitBtn').disabled}`);
         // 三道题连续通过 → 进入实现阶段。
         for (let index = 0; index < 3; index += 1) {
             elementsById.get('assessmentAnswer').value = `正确答案 ${index + 1}`;
@@ -1344,6 +1441,25 @@ function step(name, fn) {
             await sleep(150);
         }
         const generateBeforeFull = fetchLog.filter(line => line === 'POST /api/review/generate').length;
+        // js/app.js:3025 的"完整失败"路径（实现阶段不通过）：同样必须真 await 补漏请求。
+        // 挂起它 → 流程停在"尚未通过，请按反馈补漏"，按钮仍 disabled；去掉 await 则立刻收尾。
+        const remedialBeforeFull = reviewGenerateBodies.filter(body => body.remedial).length;
+        generateHold = [];
+        elementsById.get('assessmentAnswer').value = 'FAIL';
+        elementsById.get('assessmentForm').dispatch('submit');
+        await sleep(200);
+        check('完整失败（实现阶段不通过）也带 remedial 生成补漏题',
+            reviewGenerateBodies.filter(body => body.remedial).length > remedialBeforeFull,
+            JSON.stringify(reviewGenerateBodies.slice(-2)));
+        check('完整失败的补漏请求被 await：未返回前验收流程尚未收尾（提交按钮仍禁用）',
+            elementsById.get('assessmentSubmitBtn').disabled === true,
+            `disabled=${elementsById.get('assessmentSubmitBtn').disabled}`);
+        generateHold.forEach(release => release());
+        generateHold = null;
+        await sleep(80);
+        check('完整失败补漏请求释放后验收流程收尾（提交按钮恢复可用）',
+            elementsById.get('assessmentSubmitBtn').disabled === false,
+            `disabled=${elementsById.get('assessmentSubmitBtn').disabled}`);
         elementsById.get('assessmentAnswer').value = '我按 None 哨兵重写了实现';
         // 生成回流失败（500）必须只 warn：既不抛未处理异常，也不阻断验收流程收尾。
         const generateWarnings = [];

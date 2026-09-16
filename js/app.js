@@ -3346,10 +3346,10 @@ let knowledgePoints = [];
             keepAiHistory: state.keepAiHistory,
         });
 
-        // 预览请求体**不带** review 快照：/api/import/preview 走 5MiB 小限额分支
-        // （/api/import 才是 110MiB），且后端并不消费 review。projects 本来就接近上限时，
-        // 多出来的 attempts/verdict 体积会把预览打成 413，前端随即禁用「确认导入」
-        // → 整条 UI 导入路径不可用。review 只在确认导入时发送。
+        // 预览请求体**不带** review 快照：预览不需要 review —— 后端 /api/import/preview
+        // 只对比 projects，完全不消费 review 表数据（它和 /api/import 现在同属大限额档，
+        // 不存在"限额小所以省体积"这回事）。多带 attempts/verdict 只是白白加大请求体，
+        // 还会让人误以为预览也在写复习表。review 只在确认导入时发送。
         const previewRequestBody = () => JSON.stringify(baseImportBody());
 
         // 确认导入请求体：额外把导出文件里的 review 快照原样转发给后端（/api/import 会把它
@@ -4553,7 +4553,13 @@ let knowledgePoints = [];
         }
         const response = await apiFetch(path, requestOptions);
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '操作失败');
+        if (!response.ok) {
+            // 带上 status：saveNodeChange 靠 error.status === 409 决定"冲突回退整项目保存 + 提示"，
+            // 缺了它这条分支永远不触发（writeStoredProject 的同类错误本来就带 status）。
+            const error = new Error(payload.error || '操作失败');
+            error.status = response.status;
+            throw error;
+        }
         return payload;
     }
 
@@ -5659,7 +5665,7 @@ let knowledgePoints = [];
                     return;
                 }
                 if (e.target.closest('.checkbox')) return;
-                toggleNodeCompleted(node);
+                toggleNodeCompletedSafely(node);
             });
         }
         checkbox.addEventListener('click', (e) => {
@@ -5668,13 +5674,13 @@ let knowledgePoints = [];
                 toggleBatchSelection(node, li);
                 return;
             }
-            toggleNodeCompleted(node);
+            toggleNodeCompletedSafely(node);
         });
         checkbox.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 e.stopPropagation();
-                toggleNodeCompleted(node);
+                toggleNodeCompletedSafely(node);
             }
         });
         textSpan.addEventListener('dblclick', (e) => {
@@ -5993,6 +5999,15 @@ let knowledgePoints = [];
         actions.append(save, cancel);
         form.appendChild(actions);
         utilityBody.appendChild(form);
+    }
+
+    // toggleNodeCompleted 现在是 async：下面三处事件处理器都是 fire-and-forget，
+    // 必须自己兜住 refreshAfterToggle（甚至后续生成回流）抛出的异常，否则会变成
+    // unhandled rejection —— 事件回调时代它是同步抛错，语义上不该悄悄升级成全局未处理。
+    function toggleNodeCompletedSafely(node) {
+        void toggleNodeCompleted(node).catch(error => {
+            console.warn('切换完成状态失败', error);
+        });
     }
 
     async function toggleNodeCompleted(node) {
