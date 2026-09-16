@@ -2139,6 +2139,8 @@ git commit -m "feat(review): 复习会话视图（一次一题、先回忆后揭
 **Files:**
 - Modify: `js/app.js`（`showReviewQueue`/`renderReviewQueue` 改为读 `/api/review/summary` + `/api/review/queue`，新增分组与筛选）
 - Modify: `index.html`（复习页工具栏：题型/模块/范围筛选）
+- Modify: `review_storage.py`（**范围修订**：`summary()` 增加 `recentWrong`/`recentMastered`，复用已有 `recent_attempts()`；规格 §12 要求 summary 含"最近答错/最近掌握"，但 Task 7 只透传了 `summary()`，故必须在这里补齐）
+- Modify: `tests/test_review_storage.py`（**范围修订**：同步 summary 键集合与最近作答记录的断言）
 - Test: `tests/frontend/verify-r3.js`（追加检查）+ `tests/frontend/dom-smoke.js`
 
 **Interfaces:**
