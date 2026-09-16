@@ -744,7 +744,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         "/api/trash",
                         "/api/summary",
                         "/api/project/plan",
-                        "/api/review/reveal", "/api/review/answer", "/api/review/session"}:
+                        "/api/review/reveal", "/api/review/answer", "/api/review/session",
+                        "/api/review/generate", "/api/review/ai-grade"}:
             self.discard_body(length)
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -880,6 +881,40 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     self.send_json(200, {"ok": True})
                 else:
                     raise ValueError("不支持的会话操作")
+            elif path == "/api/review/generate":
+                task_id = str(payload.get("taskId") or "").strip()
+                if not task_id:
+                    raise ValueError("缺少 taskId")
+                try:
+                    wanted = int(payload.get("count") or 3)
+                except (TypeError, ValueError):
+                    raise ValueError("count 必须是数字") from None
+                points = review_storage.points_for_task(task_id)
+                created = [{"code": point["code"], "title": point["title"]} for point in points[:5]]
+                used_ai = False
+                if len(created) < wanted and ai_service.is_configured():
+                    generated = ai_service.generate_review_points(
+                        task_id=task_id, project_id=str(payload.get("projectId") or ""),
+                        task_text=str(payload.get("taskText") or ""),
+                        count=wanted)
+                    if generated:
+                        review_storage.import_content(generated, origin="ai")
+                        created.extend({"code": point["code"], "title": point["title"],
+                                        "origin": "ai"} for point in generated)
+                        used_ai = True
+                self.send_json(200, {"ok": True, "created": created[:5], "usedAi": used_ai})
+            elif path == "/api/review/ai-grade":
+                code = str(payload.get("code") or "").strip()
+                kind = str(payload.get("type") or "").strip()
+                if not code or kind not in review_content.QUESTION_TYPES:
+                    raise ValueError("知识点或题型不正确")
+                if not ai_service.is_configured():
+                    self.send_json(503, {"error": "未配置 AI，判分不可用（复习本身不受影响）"})
+                    return
+                verdict = ai_service.grade_review_answer(
+                    code=code, question_type=kind, answer=str(payload.get("answer") or ""),
+                    reference=review_storage.reveal(code, kind))
+                self.send_json(200, {"ok": True, "verdict": verdict})
             elif path == "/api/project":
                 project = payload.get("project")
                 if not isinstance(project, dict):

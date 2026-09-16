@@ -12,6 +12,10 @@ import storage
 
 WEEK1_PATH = Path(__file__).resolve().parent / "content" / "review" / "py-week1.json"
 DEFAULT_ORIGIN = "builtin"
+# 元任务（Task 13 约定的清单/复盘类任务）只做组织工作，不承载可复习的知识点。
+META_TASK_IDS = {"1104", "1504"}
+# 排序权重：先 `introduces`（这个任务引入了该知识点），再 `exercises`（这个任务练过它）。
+INTRODUCE_WEIGHT = 0
 
 
 def _now() -> str:
@@ -82,6 +86,26 @@ def ensure_content_imported() -> int:
     loaded = review_content.load_content_file(WEEK1_PATH)
     result = import_content(loaded["points"], week=loaded["week"] or 1)
     return result["inserted"] + result["updated"]
+
+
+def points_for_task(task_id: str) -> list[dict[str, Any]]:
+    """完成任务后要生成的复习项来源：先 introduces，再 exercises；元任务与未知任务返回空。
+
+    返回值已带展示所需字段（title/minutes/module/level），并保留 relation/projectId
+    供调用方判断来源与归属；`task_id` 为空或落在 `META_TASK_IDS` 时直接返回空。
+    """
+    task_key = str(task_id or "").strip()
+    if not task_key or task_key in META_TASK_IDS:
+        return []
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT p.code,p.title,p.minutes,p.module,p.level,t.relation,t.project_id "
+            "FROM review_point_tasks t JOIN review_points p ON p.code=t.code "
+            f"WHERE t.task_id=? ORDER BY CASE t.relation WHEN 'introduces' THEN {INTRODUCE_WEIGHT} ELSE 1 END, p.code",
+            (task_key,)).fetchall()
+    return [{"code": row["code"], "title": row["title"], "minutes": int(row["minutes"]),
+             "module": row["module"], "level": row["level"], "relation": row["relation"],
+             "projectId": row["project_id"] or ""} for row in rows]
 
 
 def list_points(*, module: str = "", level: str = "", query: str = "",

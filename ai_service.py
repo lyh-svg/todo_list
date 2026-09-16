@@ -11,7 +11,15 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from prompts import PROJECT_PLAN_PROMPT, QUESTION_PROMPT, SUMMARY_PROMPT, SYSTEM_PROMPT
+import review_content
+from prompts import (
+    PROJECT_PLAN_PROMPT,
+    QUESTION_PROMPT,
+    REVIEW_GRADE_PROMPT,
+    REVIEW_POINTS_PROMPT,
+    SUMMARY_PROMPT,
+    SYSTEM_PROMPT,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 MAX_CONVERSATION_MESSAGES = 12
@@ -661,6 +669,134 @@ def summarize_knowledge(question: str, context: dict[str, Any] | None = None,
     if not summary:
         raise RuntimeError("AI 未生成有效摘要")
     return {"summary": summary[:5000]}
+
+
+def _review_point_count(count: Any) -> int:
+    """生成数量夹到 1~3（坏值按默认 3 处理）。"""
+    try:
+        value = int(count)
+    except (TypeError, ValueError):
+        value = 3
+    return max(1, min(3, value))
+
+
+def _post_json(settings: dict[str, str], body: dict[str, Any], *, timeout: int = 75) -> dict[str, Any]:
+    """POST 请求体到 DeepSeek 并解析出 JSON 对象（与既有非流式调用同一套超时/错误口径）。"""
+    api_key = settings.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("未在 %s 中配置 DEEPSEEK_API_KEY" % CONFIG_FILE.name)
+    request = urllib.request.Request(
+        api_url(settings),
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                 "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            upstream = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
+    except urllib.error.URLError as error:
+        raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
+    except (TimeoutError, OSError) as error:
+        # 连接建立之后的读超时/连接中断不是 URLError，原样冒出去会变成"未预期错误"。
+        raise RuntimeError("DeepSeek API 连接中断或超时: %s" % error) from None
+    try:
+        content = upstream["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("DeepSeek API 响应格式不正确") from None
+    return parse_json_object(str(content))
+
+
+def is_configured() -> bool:
+    """是否有可用的 AI 通道：配了 API key，或显式开启离线 mock（`TODO_AI_MOCK=1`）。"""
+    return _mock_enabled() or bool(read_settings().get("DEEPSEEK_API_KEY"))
+
+
+def generate_review_points(*, task_id: str, project_id: str, task_text: str, count: int = 3) -> list[dict]:
+    """按任务补 1~3 个知识点；mock 模式返回固定样例，真实分支失败时返回空列表。
+
+    生成结果先过 `review_content.normalize_points` 清洗，再保证每个点都有一条回指当前任务的
+    taskRef（模型漏写时补 exercises），最后逐条过 `validate_points` 闸门——不合格的点直接丢弃，
+    不让整次生成失败（AI 是可选增强，不是完成任务的阻塞项）。
+    """
+    count = _review_point_count(count)
+    if _mock_enabled():
+        base = task_text.strip()[:20] or task_id
+        return [{
+            "code": f"py.ai.{task_id}.{index + 1}",
+            "title": f"{base} · 补充点 {index + 1}",
+            "minutes": 15, "module": "AI 补充", "level": "基础",
+            "taskRefs": [{"taskId": task_id, "projectId": project_id, "relation": "exercises"}],
+            "concept": {"prompt": f"用自己的话解释：{base}（第 {index + 1} 点）", "answer": ["AI 生成的要点"]},
+            "predict": {"prompt": "写出输出", "code": "print(len([1, 2, 3]))", "expected": ["3"], "explain": "长度"},
+            "debug": {"prompt": "找错", "code": "x = [1, 2]\nprint(x[2])", "rootCause": "越界", "fix": "改索引"},
+            "code_task": {"prompt": "写一个函数", "acceptance": ["能处理空输入"], "reference": "def f(xs): return xs or []"},
+            "pitfalls": ["边界输入"],
+        } for index in range(count)]
+    settings = read_settings()
+    request_body = {
+        "model": model_aliases(settings).get("flash", "deepseek-chat"),
+        "temperature": 0.3,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": REVIEW_POINTS_PROMPT},
+            {"role": "user", "content": json.dumps(
+                {"任务": task_text, "任务ID": task_id, "项目ID": project_id, "数量": count},
+                ensure_ascii=False)},
+        ],
+    }
+    try:
+        parsed = _post_json(settings, request_body)
+    except Exception:
+        return []
+    draft = parsed.get("points") if isinstance(parsed, dict) else None
+    if not isinstance(draft, list):
+        return []
+    for index, point in enumerate(draft, start=1):
+        if isinstance(point, dict):
+            point.setdefault("code", f"py.ai.{task_id}.{index}")
+    points = []
+    for point in review_content.normalize_points(draft):
+        if task_id and not any(ref["taskId"] == task_id for ref in point["taskRefs"]):
+            point["taskRefs"].append({"taskId": task_id, "projectId": project_id, "relation": "exercises"})
+        if not review_content.validate_points([point]):
+            points.append(point)
+    return points
+
+
+def grade_review_answer(*, code: str, question_type: str, answer: str, reference: dict) -> dict:
+    """可选 AI 判分：返回 {correct, missing, wrongAt, hint}；失败时返回空 dict，不影响自评。"""
+    if _mock_enabled():
+        answered = bool(str(answer).strip())
+        return {"correct": answered,
+                "missing": [] if answered else ["没有写出内容"],
+                "wrongAt": "",
+                "hint": "（模拟判分）对照参考答案检查关键机制是否讲到"}
+    settings = read_settings()
+    request_body = {
+        "model": model_aliases(settings).get("flash", "deepseek-chat"),
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": REVIEW_GRADE_PROMPT},
+            {"role": "user", "content": json.dumps(
+                {"知识点": code, "题型": question_type, "我的答案": answer, "参考答案": reference},
+                ensure_ascii=False)},
+        ],
+    }
+    try:
+        parsed = _post_json(settings, request_body)
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {"correct": parsed.get("correct") is True,
+            "missing": string_list(parsed.get("missing")),
+            "wrongAt": str(parsed.get("wrongAt") or "")[:1000],
+            "hint": str(parsed.get("hint") or "")[:1000]}
 
 
 def call_question(payload: dict[str, Any]) -> dict[str, Any]:

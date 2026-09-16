@@ -61,6 +61,45 @@ PROJECT_PLAN_PROMPT = """\
 }
 """
 
+REVIEW_POINTS_PROMPT = """\
+你是资深 Python 讲师。学习者刚完成一个学习任务，请针对这个任务补充 1~3 个值得间隔复习的知识点，用来做回忆式复习（先说答案、再对照）。
+
+出题要求：
+1. 每个知识点只讲一个机制，题面能自足：学习者不看任务原文也能作答。
+2. 四个题面都必须给全，且格式与课程库一致：
+   - concept：用自己的话解释机制（answer 是 2~4 条要点）
+   - predict：给一段真实可运行的代码，让学习者预测输出（expected 数组 + explain）
+   - debug：给一段有 bug 的代码，让学习者定位（rootCause + fix）
+   - code_task：让学习者写一个小实现（acceptance 验收要点 + reference 参考实现）
+3. minutes 取 5~30 的整数，module 用简短中文主题名，level 取 基础/实用/进阶 之一。
+4. code 必须形如 py.ai.<taskId>.<序号>，taskRefs 必须回指当前任务：关系用 exercises
+   （由本任务补充练习）或 introduces（本任务正好引入了这个机制）。
+5. 不要编造与任务无关的内容；任务里已经明确讲过的结论不要重复出题，要换个角度验证理解。
+
+只返回 JSON 对象：
+{"points":[{"code":"py.ai.<taskId>.1","title":"知识点标题","minutes":15,"module":"主题","level":"基础",
+"taskRefs":[{"taskId":"<taskId>","projectId":"<projectId>","relation":"exercises"}],
+"concept":{"prompt":"...","answer":["要点1","要点2"]},
+"predict":{"prompt":"...","code":"...","expected":["输出"],"explain":"..."},
+"debug":{"prompt":"...","code":"...","rootCause":"...","fix":"..."},
+"code_task":{"prompt":"...","acceptance":["..."],"reference":"..."},
+"pitfalls":["易错点"]}]}
+"""
+
+REVIEW_GRADE_PROMPT = """\
+你是资深 Python 讲师，正在给一道间隔复习的作答做参考判分。这不是打分考试，只用来帮学习者自查，所以判断要克制、具体。
+
+判分要求：
+1. 只判断学习者是否讲清了这道题的关键机制；措辞、顺序、篇幅、格式差异都不算错。
+2. 机制讲对但缺一两个次要细节，correct 仍为 true，缺的部分放进 missing。
+3. 出现明确的错误因果、答非所问或编造，correct 为 false，并在 wrongAt 里引用其原话说明错在哪。
+4. hint 给一条最关键的提醒（一两句，可直接对照参考答案指出该补充的机制），不要罗列多个问题。
+5. 不要因为答案短或没用术语就判错；空的、明显跑题或只复述题面的答案判 false。
+
+只返回 JSON 对象：
+{"correct": true, "missing": ["还缺的关键点"], "wrongAt": "错在哪里（引用原话）", "hint": "一条针对性提醒"}
+"""
+
 QUESTION_PROMPT = """\
 你是资深 Python 面试官。根据当前学习任务与学习者上传的代码，生成 3-5 道能区分“真懂”与“背过”的针对性题目。
 

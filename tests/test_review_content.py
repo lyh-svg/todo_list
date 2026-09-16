@@ -54,6 +54,40 @@ class ReviewContentTests(unittest.TestCase):
         errors = review_content.validate_points([broken])
         self.assertTrue(any("relation" in error for error in errors), errors)
 
+    def test_normalize_points_fills_defaults_and_passes_the_gate(self) -> None:
+        draft = {
+            "code": "py.ai.1202.1",
+            "title": "AI 补充点",
+            "minutes": "15",
+            "taskRefs": [{"taskId": "1202", "relation": "introduces"}],
+            "concept": {"prompt": "解释机制", "answer": ["要点"]},
+            "predict": {"prompt": "写出输出", "code": "print(1)", "expected": ["1"], "explain": "因为"},
+            "debug": {"prompt": "找错", "code": "x =", "rootCause": "语法错误", "fix": "改成 x = 1"},
+            "code_task": {"prompt": "写函数", "acceptance": ["能跑"], "reference": "def f(): return 1"},
+            "pitfalls": ["边界输入"],
+        }
+        normalized = review_content.normalize_points([draft])
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["minutes"], 15)
+        self.assertEqual(normalized[0]["module"], "AI 补充")
+        self.assertEqual(normalized[0]["level"], "基础")
+        self.assertEqual(normalized[0]["taskRefs"], [{"taskId": "1202", "projectId": "", "relation": "introduces"}])
+        self.assertEqual(review_content.validate_points(normalized), [])
+
+    def test_normalize_points_drops_illegal_items(self) -> None:
+        normalized = review_content.normalize_points([
+            "不是对象", None, 5, {}, {"code": "   "}, {"code": 123},
+            {"code": "py.ai.1", "taskRefs": [{"relation": "introduces"},
+                                             {"taskId": "1202", "relation": "unknown"},
+                                             {"taskId": "   "}]},
+            {"code": "py.ai.1", "title": "重复 code"},
+        ])
+        self.assertEqual([point["code"] for point in normalized], ["py.ai.1"])
+        self.assertEqual(normalized[0]["taskRefs"], [])
+        self.assertEqual(normalized[0]["title"], "py.ai.1")
+        for bad in (None, "x", {}, 5):
+            self.assertEqual(review_content.normalize_points(bad), [])
+
     def test_load_content_file_round_trip(self) -> None:
         payload = {"schemaVersion": 1, "week": 1, "level": "基础", "points": [GOOD_POINT]}
         with tempfile.TemporaryDirectory() as work:

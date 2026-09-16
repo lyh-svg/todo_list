@@ -88,6 +88,64 @@ def validate_points(points: Any) -> list[str]:
     return errors
 
 
+def _int_or(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_refs(value: Any) -> list[dict[str, str]]:
+    """taskRefs 的轻量清洗：relation 不在白名单或缺 taskId 的引用直接丢弃。"""
+    if not isinstance(value, list):
+        return []
+    refs = []
+    for ref in value:
+        if not isinstance(ref, dict):
+            continue
+        task_id = _text(ref.get("taskId"))
+        relation = _text(ref.get("relation"))
+        if not task_id or relation not in RELATIONS:
+            continue
+        refs.append({"taskId": task_id, "projectId": _text(ref.get("projectId")), "relation": relation})
+    return refs
+
+
+def normalize_points(value: Any) -> list[dict[str, Any]]:
+    """AI 返回内容的轻量清洗：补齐缺省字段、丢弃非法项（非对象、无 code、code 重复）。
+
+    这里只是把模型输出整理成"形状正确"的草稿；内容是否合格仍由 `validate_points` 做最终闸门
+    （`import_content` 会再校验一次，不合格的生成内容不会入库）。
+    """
+    if not isinstance(value, list):
+        return []
+    points = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        raw_code = item.get("code")
+        code = raw_code.strip() if isinstance(raw_code, str) else ""
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        level = _text(item.get("level"))
+        points.append({
+            "code": code,
+            "title": _text(item.get("title")) or code,
+            "minutes": max(MIN_MINUTES, min(MAX_MINUTES, _int_or(item.get("minutes"), 15))),
+            "module": _text(item.get("module")) or "AI 补充",
+            "level": level if level in LEVELS else "基础",
+            "taskRefs": _normalize_refs(item.get("taskRefs")),
+            "concept": item.get("concept") if isinstance(item.get("concept"), dict) else {},
+            "predict": item.get("predict") if isinstance(item.get("predict"), dict) else {},
+            "debug": item.get("debug") if isinstance(item.get("debug"), dict) else {},
+            "code_task": item.get("code_task") if isinstance(item.get("code_task"), dict) else {},
+            "pitfalls": _text_list(item.get("pitfalls")),
+        })
+    return points
+
+
 def load_content_file(path: str | Path) -> dict[str, Any]:
     file_path = Path(path)
     try:

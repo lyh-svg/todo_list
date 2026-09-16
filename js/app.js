@@ -4514,6 +4514,21 @@ let knowledgePoints = [];
         return payload;
     }
 
+    // 完成任务后的生成回流：按 taskRefs 生成复习项，AI 只做补充。
+    // 纯增强：任何失败都只 warn，绝不打断勾选/保存或弹错误提示刷屏。
+    async function maybeGenerateReviewItems(project, node) {
+        if (!project || !node) return;
+        try {
+            const payload = await callApi('/api/review/generate', 'POST', {
+                taskId: node.id, projectId: project.id, taskText: node.text || '', count: 3,
+            });
+            const created = (payload.created || []).length;
+            if (created > 0) showToast(`已生成 ${created} 个复习知识点`);
+        } catch (error) {
+            console.warn('生成复习知识点失败', error);
+        }
+    }
+
     // ---------- 节点级保存（第六批 item 2）：把"改 1 个节点"从整棵树重写降到 1 行 ----------
 
     // 只有当这个项目"和服务端数据一致"时才走 patch：否则本地还有别的改动没落库，
@@ -5936,10 +5951,12 @@ let knowledgePoints = [];
                 saveNodeChange(owner, ops, () => saveProjects()).then(() => {
                     // patch 路径下服务端已完成，重绘一次让统计/父节点状态跟上
                     refreshAfterToggle(owner, node);
+                    if (node.completed) maybeGenerateReviewItems(owner, node);
                 });
             } else {
                 saveProjects();
                 refreshAfterToggle(owner, node);
+                if (node.completed) maybeGenerateReviewItems(owner, node);
             }
             return;
         }
