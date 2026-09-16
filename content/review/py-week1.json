@@ -481,8 +481,8 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "seen = set()\n\n\ndef dedupe(items):\n    result = []\n    for item in items:\n        if item not in seen:\n            result.append(item)\n        seen.add(item)\n    return result",
-        "rootCause": "seen 定义在函数外，多次调用之间共享，第二次调用会漏掉第一次见过的元素（跨调用污染）。",
+        "code": "seen = set()\n\n\ndef dedupe(items):\n    result = []\n    for item in items:\n        if item not in seen:\n            result.append(item)\n        seen.add(item)\n    return result\n\n\nprint(dedupe([1, 2]))\nprint(dedupe([1, 3]))",
+        "rootCause": "seen 定义在函数外，多次调用之间共享：第二次调用时 1 已经在 seen 里，于是被静默丢掉，返回 [3] 而不是 [1, 3]。",
         "fix": "把 seen = set() 放进函数内部，让它成为每次调用独立的局部状态。"
       },
       "code_task": {
@@ -1546,6 +1546,666 @@
         "依赖全局状态导致结果不稳定",
         "把打印/IO 混进计算函数",
         "为了“纯”而无脑深拷贝大对象"
+      ]
+    },
+    {
+      "code": "py.exc.flow",
+      "title": "try/except/else/finally、异常链与 traceback",
+      "minutes": 25,
+      "module": "异常",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1401",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1101",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "try 的四个子句各自什么时候执行？异常链怎么保留？",
+        "answer": [
+          "try 里的代码抛错后跳到匹配的 except；没抛错则执行 else",
+          "finally 无论是否异常、是否 return 都会执行，常用来释放资源",
+          "finally 里 return 会吞掉正在传播的异常，绝大多数情况都不该这么写",
+          "raise X from error 保留原始异常链，traceback 里能看到“The above exception was the direct cause...”"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def divide(a, b):\n    try:\n        result = a / b\n    except ZeroDivisionError:\n        return \"除零\"\n    else:\n        return result\n    finally:\n        print(\"清理\")\n\n\nprint(divide(6, 2))\nprint(divide(1, 0))",
+        "expected": [
+          "清理",
+          "3.0",
+          "清理",
+          "除零"
+        ],
+        "explain": "两次调用都会执行 finally 的打印（即使 return 也会先跑 finally）；正常路径返回 3.0，除零路径返回“除零”。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "try:\n    value = int(\"abc\")\nexcept Exception:\n    print(\"通用错误\")\nexcept ValueError:\n    print(\"值错误\")",
+        "rootCause": "except 从上往下匹配，Exception 在前会先接住 ValueError，后面的具体分支永远不可达；静态检查也会提示 unreachable。",
+        "fix": "把具体异常写在前面、宽泛的 Exception 放最后；能只捕获 ValueError 就不要捕获 Exception。"
+      },
+      "code_task": {
+        "prompt": "写 safe_parse(text)：合法整数返回 int；失败时抛自定义 ParseError，并用 raise ... from 保留原始 ValueError。",
+        "acceptance": [
+          "safe_parse(\"42\") == 42",
+          "safe_parse(\"abc\") 抛 ParseError",
+          "ParseError.__cause__ 是原始的 ValueError",
+          "finally 子句里不写 return（避免吞异常）"
+        ],
+        "reference": "class ParseError(ValueError):\n    pass\n\n\ndef safe_parse(text):\n    try:\n        return int(text)\n    except ValueError as error:\n        raise ParseError(f\"无法解析：{text!r}\") from error"
+      },
+      "pitfalls": [
+        "finally 里 return 吞掉异常",
+        "except 顺序从宽到窄",
+        "except 之后继续使用未赋值的变量",
+        "把 try 包得过大掩盖真正出错的位置"
+      ]
+    },
+    {
+      "code": "py.exc.types",
+      "title": "异常层次、自定义异常与 raise",
+      "minutes": 25,
+      "module": "异常",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1401",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "内置异常层次是怎样的？自定义异常该继承谁？",
+        "answer": [
+          "BaseException -> Exception -> 具体异常；KeyboardInterrupt/SystemExit 属于 BaseException",
+          "LookupError 是 KeyError/IndexError 的父类；OSError 涵盖文件与系统错误",
+          "自定义业务异常继承 Exception（或更具体的父类），别继承 BaseException",
+          "raise 只接受异常类或实例，Python 3 不允许 raise 字符串"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "try:\n    raise KeyError(\"缺失\")\nexcept LookupError as error:\n    print(type(error).__name__, error.args)\n\n\nclass ConfigError(ValueError):\n    pass\n\n\ntry:\n    raise ConfigError(\"配置无效\")\nexcept ValueError as error:\n    print(isinstance(error, ConfigError), str(error))",
+        "expected": [
+          "KeyError ('缺失',)",
+          "True 配置无效"
+        ],
+        "explain": "KeyError 是 LookupError 的子类所以能被捕获；ConfigError 继承 ValueError，用父类也能捕获，isinstance 仍为 True。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Cancel(BaseException):\n    pass\n\n\ndef run():\n    try:\n        raise Cancel(\"用户取消\")\n    except Exception:\n        return \"被吞掉了\"\n    return \"ok\"\n\n\nprint(run())",
+        "rootCause": "Cancel 继承 BaseException 而不是 Exception，except Exception 捕不到它，异常会直接向上冒泡，想“兜底所有业务异常”的调用方全都接不住。",
+        "fix": "自定义异常应继承 Exception（如 class Cancel(Exception)），除非确实需要绕过常规捕获（如系统级退出信号）。"
+      },
+      "code_task": {
+        "prompt": "定义 AppError -> NotFound -> UserNotFound 层次，写 get_user(users, uid)：找不到抛 UserNotFound，消息里带上 uid。",
+        "acceptance": [
+          "get_user({1: \"amy\"}, 1) == \"amy\"",
+          "get_user({}, 2) 抛 UserNotFound",
+          "UserNotFound 是 AppError 的子类，可用 except AppError 统一捕获",
+          "异常消息包含 uid，且 __cause__ 指向原始 KeyError"
+        ],
+        "reference": "class AppError(Exception):\n    pass\n\n\nclass NotFound(AppError):\n    pass\n\n\nclass UserNotFound(NotFound):\n    pass\n\n\ndef get_user(users, uid):\n    try:\n        return users[uid]\n    except KeyError as error:\n        raise UserNotFound(f\"用户不存在：{uid}\") from error"
+      },
+      "pitfalls": [
+        "自定义异常继承 BaseException",
+        "异常类名与内置异常冲突",
+        "raise 字符串（Python 3 非法）",
+        "用异常做正常流程控制"
+      ]
+    },
+    {
+      "code": "py.exc.over-catch",
+      "title": "捕获范围过大与异常吞噬",
+      "minutes": 15,
+      "module": "异常",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1103",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "为什么 except Exception: pass 很危险？该怎么收窄捕获？",
+        "answer": [
+          "捕获过宽会把真正的 bug（拼写错误、类型错误、权限问题）一起吞掉，问题被推迟到更难排查的地方",
+          "只捕获你确实能处理的异常，其余让它向上冒泡",
+          "捕获后要么恢复、要么记录日志并重抛，不能静默 pass",
+          "except Exception 会拦住 KeyboardInterrupt 之外几乎所有错误，通常只该出现在最外层兜底并记录"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def parse(value):\n    try:\n        return int(value)\n    except Exception:\n        return None\n\n\nprint(parse(\"12\"))\nprint(parse(\"abc\"))\n\ntry:\n    \"abc\" + 1\nexcept (TypeError, ValueError) as error:\n    print(type(error).__name__)",
+        "expected": [
+          "12",
+          "None",
+          "TypeError"
+        ],
+        "explain": "parse 把异常转成 None；第二段只捕获明确的 TypeError/ValueError，打印出实际异常类型。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def save(path, text):\n    try:\n        with open(path, \"w\") as handle:\n            handle.write(text)\n    except Exception:\n        pass",
+        "rootCause": "裸 except Exception + pass 把权限不足、磁盘写满、编码错误全部吃掉，调用方以为保存成功，数据却丢了。",
+        "fix": "只捕获明确的 IOError/OSError，记录日志后重新抛出（或返回明确的失败结果），其余异常不要拦。"
+      },
+      "code_task": {
+        "prompt": "写 load_config(path)：文件不存在时返回 {}，其他 OSError 继续抛；JSON 解析失败抛带路径的 ValueError；不使用裸 except。",
+        "acceptance": [
+          "路径不存在时返回 {}",
+          "目录等非文件路径抛 OSError（不被当成“默认配置”）",
+          "内容不是合法 JSON 时抛 ValueError 且消息含路径",
+          "代码中不出现裸 except / except Exception"
+        ],
+        "reference": "import json\nfrom pathlib import Path\n\n\ndef load_config(path):\n    file_path = Path(path)\n    try:\n        text = file_path.read_text(encoding=\"utf-8\")\n    except FileNotFoundError:\n        return {}\n    try:\n        return json.loads(text)\n    except json.JSONDecodeError as error:\n        raise ValueError(f\"配置不是合法 JSON：{file_path}\") from error"
+      },
+      "pitfalls": [
+        "裸 except 吞异常",
+        "except Exception 后直接 pass",
+        "连 KeyboardInterrupt/SystemExit 一起捕获",
+        "捕获后既不记录也不重抛"
+      ]
+    },
+    {
+      "code": "py.exc.eafp-assert",
+      "title": "EAFP vs LBYL、assert 的边界",
+      "minutes": 15,
+      "module": "异常",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1502",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "EAFP 和 LBYL 分别是什么？assert 能用来校验参数吗？",
+        "answer": [
+          "LBYL：先 if key in data 再取；EAFP：直接取，捕获 KeyError",
+          "EAFP 在并发/文件系统场景更安全：检查和使用之间状态可能变",
+          "assert 是调试工具，python -O 会整体移除，绝不能用于校验外部输入或业务规则",
+          "对外部输入用 if + raise ValueError，对内部不变量才用 assert"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "data = {\"name\": \"amy\"}\ntry:\n    age = data[\"age\"]\nexcept KeyError:\n    age = 0\nprint(age)\n\nvalue = data.get(\"age\")\nif value is None:\n    value = 0\nprint(value)\n\nassert value == 0, \"value 应为 0\"\nprint(\"断言通过\")",
+        "expected": [
+          "0",
+          "0",
+          "断言通过"
+        ],
+        "explain": "EAFP 用 try/except 兜底缺失键；LBYL 用 get + None 判断；断言成立所以继续执行。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def withdraw(balance, amount):\n    assert amount <= balance, \"余额不足\"\n    return balance - amount\n\n\nprint(withdraw(100, 50))\nprint(withdraw(100, 200))",
+        "rootCause": "用 assert 做业务校验：python -O 会去掉所有断言，余额不足也会直接扣钱；断言消息也不适合作为对外错误契约。",
+        "fix": "改成显式校验并抛业务异常：if amount > balance: raise ValueError(\"余额不足\")；assert 只留给内部不变量。"
+      },
+      "code_task": {
+        "prompt": "写 read_field(data, key, default) 用成员判断区分“键不存在”和“值是 None”，并写 require_positive(value) 用异常而非 assert 校验参数。",
+        "acceptance": [
+          "read_field({\"a\": None}, \"a\", 0) 返回 None 而不是 0",
+          "read_field({}, \"a\", 0) 返回 0",
+          "require_positive(0) 抛 ValueError",
+          "两个函数里都不使用 assert"
+        ],
+        "reference": "def read_field(data, key, default):\n    if key in data:\n        return data[key]\n    return default\n\n\ndef require_positive(value):\n    if value <= 0:\n        raise ValueError(f\"value 必须为正：{value}\")\n    return value"
+      },
+      "pitfalls": [
+        "用 assert 校验用户输入",
+        "依赖断言在 -O 下仍然生效",
+        "LBYL 与 EAFP 混用导致重复检查",
+        "把异常当正常控制流滥用"
+      ]
+    },
+    {
+      "code": "py.io.files",
+      "title": "文件读写：模式、文本/二进制与 with",
+      "minutes": 25,
+      "module": "文件与IO",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1501",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "open 的模式怎么选？为什么必须用 with？",
+        "answer": [
+          "r 读、w 覆盖写、a 追加、x 独占创建、+ 读写；b 表示二进制",
+          "文本模式按 encoding 解码成 str；二进制模式读写 bytes，适合图片等非文本",
+          "with open(...) as f 保证异常时也关闭文件，手动 close 容易漏",
+          "写文本记得显式指定 encoding=\"utf-8\"，别依赖平台默认编码"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from pathlib import Path\nimport tempfile\n\nwith tempfile.TemporaryDirectory() as work:\n    path = Path(work) / \"note.txt\"\n    path.write_text(\"第一行\\n第二行\\n\", encoding=\"utf-8\")\n    print(path.read_text(encoding=\"utf-8\").splitlines())\n    with path.open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(\"第三行\\n\")\n    print(len(path.read_text(encoding=\"utf-8\").splitlines()))\n    with path.open(\"rb\") as handle:\n        print(handle.read(3) == \"第\".encode(\"utf-8\"))",
+        "expected": [
+          "['第一行', '第二行']",
+          "3",
+          "True"
+        ],
+        "explain": "splitlines 按换行切成两行；a 模式追加后共三行；二进制模式读出的前 3 字节正是“第”的 UTF-8 编码。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "handle = open(\"data.txt\", \"w\")\nhandle.write(\"hello\")",
+        "rootCause": "手动 open 没有 close：数据可能长时间不落盘，文件句柄也会泄漏，异常时更是永远关不掉。",
+        "fix": "用上下文管理器：with open(\"data.txt\", \"w\", encoding=\"utf-8\") as handle: handle.write(\"hello\")。"
+      },
+      "code_task": {
+        "prompt": "写 append_lines(path, lines) 与 count_lines(path)：以 UTF-8 追加多行（每行以换行结尾，文件不存在则创建），并能数出行数。",
+        "acceptance": [
+          "文件不存在时 append_lines 会创建它",
+          "追加不覆盖已有内容",
+          "每写一行都以 \\n 结尾",
+          "count_lines 能正确数出追加后的行数"
+        ],
+        "reference": "from pathlib import Path\n\n\ndef append_lines(path, lines):\n    with Path(path).open(\"a\", encoding=\"utf-8\") as handle:\n        for line in lines:\n            handle.write(f\"{line}\\n\")\n\n\ndef count_lines(path):\n    with Path(path).open(encoding=\"utf-8\") as handle:\n        return sum(1 for _ in handle)"
+      },
+      "pitfalls": [
+        "忘记关闭文件",
+        "文本模式写 bytes",
+        "相对路径依赖当前工作目录",
+        "不指定编码导致跨平台乱码"
+      ]
+    },
+    {
+      "code": "py.json.basics",
+      "title": "JSON 序列化与类型映射",
+      "minutes": 20,
+      "module": "文件与IO",
+      "level": "基础",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "Python 对象和 JSON 之间怎么映射？哪些类型不能直接序列化？",
+        "answer": [
+          "dict<->object、list/tuple->array、str->string、int/float->number、True/False->true/false、None->null",
+          "tuple 会被序列化成数组，反序列化回来是 list，往返类型不守恒",
+          "set、datetime、自定义对象不能直接 dump，需要用 default= 转换",
+          "ensure_ascii=False 保留中文，indent 让文件可读，sort_keys 让输出稳定便于 diff"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "import json\n\npayload = {\"name\": \"amy\", \"tags\": [\"a\", \"b\"], \"age\": 3, \"ok\": True}\ntext = json.dumps(payload, ensure_ascii=False, sort_keys=True)\nprint(text)\nprint(json.loads(text) == payload)\nprint(json.dumps({\"a\": (1, 2)}))\nprint(json.dumps({\"a\": None}))",
+        "expected": [
+          "{\"age\": 3, \"name\": \"amy\", \"ok\": true, \"tags\": [\"a\", \"b\"]}",
+          "True",
+          "{\"a\": [1, 2]}",
+          "{\"a\": null}"
+        ],
+        "explain": "sort_keys 让键按字母序输出；True 序列化为 true 再解析回 True 所以相等；tuple 变数组；None 变 null。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import json\n\ndata = json.loads('{\"count\": \"3\"}')\nprint(data[\"count\"] + 1)",
+        "rootCause": "JSON 里数字写成带引号的字符串时，反序列化后仍是 str，直接 + 1 抛 TypeError；JSON 类型不会自动转成想要的 Python 类型。",
+        "fix": "按契约校验并显式转换：count = int(data[\"count\"])，转换失败按业务处理，别假设 JSON 字段类型。"
+      },
+      "code_task": {
+        "prompt": "写 save_json(path, payload) 与 load_json(path)：UTF-8、ensure_ascii=False、缩进 2；加载非法 JSON 时抛带路径的 ValueError。",
+        "acceptance": [
+          "save_json 后再 load_json 得到与原始 payload 相等的数据",
+          "文件里中文以原字符出现（不出现 \\uXXXX 转义）",
+          "文件使用 2 空格缩进",
+          "变体：内容非法时 load_json 抛 ValueError，且消息里包含文件路径"
+        ],
+        "reference": "import json\nfrom pathlib import Path\n\n\ndef save_json(path, payload):\n    text = json.dumps(payload, ensure_ascii=False, indent=2)\n    Path(path).write_text(text, encoding=\"utf-8\")\n\n\ndef load_json(path):\n    file_path = Path(path)\n    try:\n        return json.loads(file_path.read_text(encoding=\"utf-8\"))\n    except json.JSONDecodeError as error:\n        raise ValueError(f\"不是合法 JSON：{file_path}\") from error"
+      },
+      "pitfalls": [
+        "以为 tuple/set 能往返保类型",
+        "datetime 不转字符串直接 dump",
+        "忘了 ensure_ascii=False 导致中文全变转义",
+        "混淆 JSON 数字与字符串"
+      ]
+    },
+    {
+      "code": "py.path.pathlib",
+      "title": "pathlib、目录遍历与文件元数据",
+      "minutes": 30,
+      "module": "文件与IO",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1501",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "pathlib 比字符串拼路径好在哪？iterdir/glob/rglob 有什么区别？",
+        "answer": [
+          "Path 用 / 拼路径、跨平台，且把路径当对象而不是字符串",
+          "iterdir 列直接子项；glob 按模式匹配当前层；rglob 递归匹配",
+          "name/suffix/stem/parent 取路径各部分，stat() 取大小与时间等元数据",
+          "写文件前先 parent.mkdir(parents=True, exist_ok=True)，别假设目录存在"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from pathlib import Path\nimport tempfile\n\nwith tempfile.TemporaryDirectory() as work:\n    root = Path(work)\n    (root / \"a.txt\").write_text(\"a\", encoding=\"utf-8\")\n    (root / \"sub\").mkdir()\n    (root / \"sub\" / \"b.txt\").write_text(\"b\", encoding=\"utf-8\")\n    print(sorted(p.name for p in root.iterdir()))\n    print(sorted(p.name for p in root.rglob(\"*.txt\")))\n    info = (root / \"a.txt\").stat()\n    print(info.st_size)\n    print((root / \"a.txt\").suffix, (root / \"a.txt\").stem)",
+        "expected": [
+          "['a.txt', 'sub']",
+          "['a.txt', 'b.txt']",
+          "1",
+          ".txt a"
+        ],
+        "explain": "iterdir 列出直接子项（含子目录）；rglob 递归找所有 .txt；stat().st_size 是字节数；suffix 带点、stem 是不含后缀的文件名。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from pathlib import Path\n\npath = Path(\"data\") / \"notes.txt\"\npath.write_text(\"hi\", encoding=\"utf-8\")",
+        "rootCause": "父目录 data 不存在时 write_text 不会自动创建目录，直接抛 FileNotFoundError。",
+        "fix": "先建目录：path.parent.mkdir(parents=True, exist_ok=True)，再写文件。"
+      },
+      "code_task": {
+        "prompt": "写 list_files(root, suffix)：递归找出所有指定后缀的普通文件，返回按字符串排序的 Path 列表；root 不是目录时抛 FileNotFoundError。",
+        "acceptance": [
+          "递归包含子目录里的文件",
+          "只返回指定后缀的文件（过滤掉目录）",
+          "结果按路径字符串排序，稳定可预期",
+          "root 不存在或是文件时抛 FileNotFoundError"
+        ],
+        "reference": "from pathlib import Path\n\n\ndef list_files(root, suffix):\n    root_path = Path(root)\n    if not root_path.is_dir():\n        raise FileNotFoundError(f\"目录不存在：{root_path}\")\n    found = (path for path in root_path.rglob(f\"*{suffix}\") if path.is_file())\n    return sorted(found, key=lambda path: str(path))"
+      },
+      "pitfalls": [
+        "用字符串拼接路径",
+        "忘记 mkdir 父目录",
+        "glob 与 rglob 混用导致漏掉子目录",
+        "对超大目录一次性读进内存"
+      ]
+    },
+    {
+      "code": "py.import.basics",
+      "title": "import 机制、from-import 与 __main__",
+      "minutes": 25,
+      "module": "模块与导入",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1402",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1101",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "import 做了什么？__name__ == \"__main__\" 有什么用？",
+        "answer": [
+          "import 执行模块顶层代码并把模块对象绑定到名字，模块缓存在 sys.modules 里只加载一次",
+          "from x import y 只绑定 y，命名空间更干净，但名字被遮蔽时不好排查",
+          "importlib.import_module 支持运行时按字符串导入",
+          "__name__ 在直接运行脚本时是 \"__main__\"，被 import 时是模块名；入口逻辑要放进 if __name__ == \"__main__\":"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "import json\nfrom json import dumps as to_text\nfrom pathlib import Path\n\nprint(json.dumps([1]) == to_text([1]))\nprint(Path(\"a/b\").name)\nprint(__name__)",
+        "expected": [
+          "True",
+          "b",
+          "__main__"
+        ],
+        "explain": "两种导入方式指向同一个函数；Path.name 取最后一段；脚本直接运行时 __name__ 是 \"__main__\"。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import json\n\n\ndef load(text):\n    return json.loads(text)\n\n\nload(\"{bad}\")",
+        "rootCause": "模块顶层直接执行解析，别人 import 这个模块时会立刻抛 JSONDecodeError，模块无法被复用和测试。",
+        "fix": "把可执行逻辑放进函数并保护入口：if __name__ == \"__main__\": main()，import 时只定义不执行。"
+      },
+      "code_task": {
+        "prompt": "写 safe_import_name(module_name)：用 importlib 按名字导入并返回模块对象，导入失败返回 None，不吞 KeyboardInterrupt。",
+        "acceptance": [
+          "safe_import_name(\"json\") 返回模块对象",
+          "不存在的模块名返回 None",
+          "KeyboardInterrupt 不会被吞掉（只捕获 ImportError）",
+          "变体：safe_import_name(\"json.decoder\") 也能返回子模块"
+        ],
+        "reference": "import importlib\n\n\ndef safe_import_name(module_name):\n    try:\n        return importlib.import_module(module_name)\n    except ImportError:\n        return None"
+      },
+      "pitfalls": [
+        "from x import * 污染命名空间",
+        "模块顶层写副作用代码",
+        "循环导入",
+        "没有包上下文时用相对导入"
+      ]
+    },
+    {
+      "code": "py.import.packages",
+      "title": "包、相对导入与循环导入",
+      "minutes": 25,
+      "module": "模块与导入",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1402",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "包是什么？相对导入和循环导入要注意什么？",
+        "answer": [
+          "__init__.py 标记包目录，也可以承载包级导出；子模块用 pkg.mod 形式导入",
+          "相对导入 . 表示当前包、.. 表示上级包，只能在包内使用",
+          "循环导入会让模块在未初始化完时被对方读取，抛 ImportError 或拿到半成品",
+          "破解循环导入：下沉重构到第三个模块、延迟到函数内导入、或用 TYPE_CHECKING 只做类型导入"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "import json\nfrom collections import OrderedDict\n\nprint(json.__name__)\nprint(OrderedDict.__module__)\nprint(hasattr(json, \"loads\"), hasattr(json, \"no_such\"))",
+        "expected": [
+          "json",
+          "collections",
+          "True False"
+        ],
+        "explain": "模块对象有 __name__；类型/函数的 __module__ 指向定义它的模块；hasattr 可以用来探测可选接口。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "# pkg/a.py\nfrom pkg.b import helper\n\n\ndef run():\n    return helper()\n\n\n# pkg/b.py\nfrom pkg.a import run\n\n\ndef helper():\n    return \"ok\"",
+        "rootCause": "a 与 b 互相导入：先导入 a 时 b 又会去导入 a，此时 a 的 run 还没定义，导入直接失败（或拿到不完整的模块）。",
+        "fix": "把共享逻辑下沉到独立的第三个模块，或把导入放进函数内部延迟执行，只保留顶层的类型导入。"
+      },
+      "code_task": {
+        "prompt": "写 load_module_from_path(path, name=\"loaded_module\")：用 importlib.util 从任意 .py 文件加载模块，路径不是文件时返回 None。",
+        "acceptance": [
+          "加载存在的 .py 文件后能调用它里面的函数",
+          "路径不存在时返回 None",
+          "spec 或 loader 缺失时返回 None",
+          "加载失败不污染调用方命名空间（返回模块对象而不是直接 exec）"
+        ],
+        "reference": "import importlib.util\nfrom pathlib import Path\n\n\ndef load_module_from_path(path, name=\"loaded_module\"):\n    file_path = Path(path)\n    if not file_path.is_file():\n        return None\n    spec = importlib.util.spec_from_file_location(name, file_path)\n    if spec is None or spec.loader is None:\n        return None\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module"
+      },
+      "pitfalls": [
+        "循环导入",
+        "没有 __init__.py 就用相对导入",
+        "把可执行脚本塞进包顶层",
+        "__init__.py 里写重逻辑导致 import 变慢"
+      ]
+    },
+    {
+      "code": "py.env.setup",
+      "title": "venv、依赖记录与 pyproject/src 布局",
+      "minutes": 30,
+      "module": "工程化",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1403",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1404",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "为什么要用虚拟环境？依赖该记在哪里？",
+        "answer": [
+          "venv 为项目隔离解释器与第三方包，避免全局互相污染",
+          "依赖声明写进 requirements.txt 或 pyproject.toml 的 dependencies，环境才可重建",
+          "pyproject.toml 是现代标准入口（build-system / project / 工具配置），src 布局避免误导入",
+          "venv 目录、缓存、密钥不能提交进仓库；版本要能锁定"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "import sys, os\nfrom pathlib import Path\n\nprint(sys.version_info.major)\nprint(bool(sys.executable))\nprint(Path(\"pyproject.toml\").name)\nprint(os.environ.get(\"NOT_SET_VALUE\", \"默认\"))",
+        "expected": [
+          "3",
+          "True",
+          "pyproject.toml",
+          "默认"
+        ],
+        "explain": "当前解释器主版本是 3；sys.executable 指向正在运行的 Python；Path 只解析路径不检查存在；环境变量缺失时 get 返回默认值。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import pandas",
+        "rootCause": "直接 import 第三方库却不在依赖文件里声明，本地能跑是因为碰巧装过；换环境或 CI 立刻 ImportError。",
+        "fix": "在 requirements.txt / pyproject.toml 里声明依赖并在 venv 中安装；提交锁定的版本，避免“我机器上能跑”。"
+      },
+      "code_task": {
+        "prompt": "写 parse_requirements(text)：解析依赖清单文本，忽略空行与 # 注释、去掉行内注释与首尾空白，返回包名列表（保留 == 等版本约束）。",
+        "acceptance": [
+          "空行与纯注释行被忽略",
+          "行内注释（flask==2.0  # web）被去掉",
+          "版本约束 ==、>= 等原样保留",
+          "返回顺序与原文一致"
+        ],
+        "reference": "def parse_requirements(text):\n    packages = []\n    for raw in text.splitlines():\n        line = raw.split(\"#\", 1)[0].strip()\n        if line:\n            packages.append(line)\n    return packages"
+      },
+      "pitfalls": [
+        "不建 venv，全局装包",
+        "requirements 与 pyproject 声明不一致",
+        "把 venv 目录提交进仓库",
+        "依赖不锁版本导致构建漂移"
+      ]
+    },
+    {
+      "code": "py.test.pytest",
+      "title": "pytest 基础与边界用例",
+      "minutes": 20,
+      "module": "工程化",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1204",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1404",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "好测试长什么样？正常路径、边界、异常路径各要怎么覆盖？",
+        "answer": [
+          "一个测试只验证一件事，名字说清场景（test_parse_int_rejects_empty）",
+          "先写失败用例；正常值、边界值（空、0、极值）、异常路径都要覆盖",
+          "异常路径用 pytest.raises / assertRaises 显式断言，别让测试自己崩",
+          "测试之间互不依赖、不共享可变状态，不依赖网络与真实文件"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def add(a, b):\n    return a + b\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\nprint(test_add())\nprint(callable(test_add))",
+        "expected": [
+          "None",
+          "True"
+        ],
+        "explain": "test_add 没有 return 所以打印 None；能被调用说明它就是个普通函数，pytest 会按名字收集 test_* 函数并执行。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def divide(a, b):\n    return a / b\n\n\ndef test_divide():\n    assert divide(1, 0) == 0",
+        "rootCause": "把“应该抛异常”的路径写成了返回值断言：divide(1, 0) 抛的 ZeroDivisionError 会让测试直接报错，而不是验证预期行为。",
+        "fix": "用 with pytest.raises(ZeroDivisionError): divide(1, 0)（或 assertRaises）明确断言异常类型。"
+      },
+      "code_task": {
+        "prompt": "写 parse_int(text) 与覆盖正常、边界、异常三条路径的测试函数，不依赖网络或真实文件。",
+        "acceptance": [
+          "正常用例：parse_int(\" 42 \") == 42",
+          "边界用例：覆盖带前后空白的输入",
+          "异常路径：空串抛 ValueError，并用 pytest.raises 或 try/except 断言",
+          "变体：测试之间不共享可变状态（重复运行结果一致）"
+        ],
+        "reference": "def parse_int(text):\n    return int(text.strip())\n\n\ndef test_parse_int_normal():\n    assert parse_int(\" 42 \") == 42\n\n\ndef test_parse_int_rejects_empty():\n    try:\n        parse_int(\"\")\n    except ValueError:\n        return\n    raise AssertionError(\"空串应该抛 ValueError\")"
+      },
+      "pitfalls": [
+        "测试里只 print 不 assert",
+        "用例之间共享可变状态",
+        "只测正常路径",
+        "测试依赖执行顺序或外部环境"
+      ]
+    },
+    {
+      "code": "py.quality.ruff-mypy",
+      "title": "ruff/mypy 静态检查",
+      "minutes": 15,
+      "module": "工程化",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1404",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "ruff 和 mypy 各查什么？类型标注能替代运行期校验吗？",
+        "answer": [
+          "ruff 查风格、未使用变量、可疑写法（flake8 类规则）并能自动修复",
+          "mypy 在运行前检查类型一致性，能发现传错类型、返回类型不符",
+          "类型标注是给人、编辑器和 mypy 看的契约，运行时不会强制；外部输入仍需校验",
+          "把检查写进 CI 与 pre-commit，规则在 pyproject.toml 里显式配置"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def total(items: list[int]) -> int:\n    result = 0\n    for item in items:\n        result += item\n    return result\n\n\nprint(total([1, 2, 3]))\nprint(total.__annotations__[\"return\"].__name__)",
+        "expected": [
+          "6",
+          "int"
+        ],
+        "explain": "标注不影响运行结果；__annotations__ 保存了参数与返回值类型，可用于自省。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def greet(name):\n    return \"hello \" + name\n\n\nprint(greet(123))",
+        "rootCause": "没有类型标注，mypy 无法发现传入了 int；直到运行时字符串拼接才抛 TypeError，问题暴露得太晚。",
+        "fix": "标注 def greet(name: str) -> str，把 mypy 纳入 CI；对来自外部（请求、JSON）的输入仍要运行期校验。"
+      },
+      "code_task": {
+        "prompt": "给函数补全参数与返回值类型标注，并让 mypy 与 ruff 都能通过（配置写进 pyproject.toml）。",
+        "acceptance": [
+          "函数参数与返回值都有类型标注",
+          "mypy 对该函数无 error",
+          "ruff check 无 error",
+          "配置中显式选择规则集/严格度，而不是全关"
+        ],
+        "reference": "def average(values: list[float]) -> float:\n    if not values:\n        raise ValueError(\"values 不能为空\")\n    return sum(values) / len(values)"
+      },
+      "pitfalls": [
+        "以为类型标注会在运行时强制检查",
+        "注解写成字符串引发前向引用问题",
+        "忽略 ruff/mypy 报错",
+        "把 lint 规则全关掉图省事"
       ]
     }
   ]
