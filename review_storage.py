@@ -108,6 +108,28 @@ def points_for_task(task_id: str) -> list[dict[str, Any]]:
              "projectId": row["project_id"] or ""} for row in rows]
 
 
+def mark_weak(codes: list[str]) -> int:
+    """把给定 code 的 `review_states.weak` 置 1（不存在则忽略），返回影响行数。
+
+    验收失败时用它把该任务关联的知识点推进薄弱点列表；不新建状态行——
+    "知识点存在但还没学过"与"这个 code 根本不存在"都不该被凭空标弱。
+    """
+    keys: list[str] = []
+    seen: set[str] = set()
+    for code in codes or []:
+        text = str(code or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            keys.append(text)
+    if not keys:
+        return 0
+    placeholders = ",".join("?" for _ in keys)
+    with storage.state_lock(), _connection() as connection:
+        cursor = connection.execute(
+            f"UPDATE review_states SET weak=1 WHERE code IN ({placeholders})", keys)
+        return int(cursor.rowcount)
+
+
 def list_points(*, module: str = "", level: str = "", query: str = "",
                 limit: int = 200, offset: int = 0) -> dict[str, Any]:
     where, params = ["1=1"], []

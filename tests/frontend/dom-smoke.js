@@ -187,6 +187,27 @@ const documentStub = {
 };
 elementsById.set('app', documentStub.body);
 
+// 验收弹窗以前从没被真正打开过（桩里项目 assessmentEnabled:false、任务 assessmentRequired:false），
+// 于是下面两处 DOM 缺失一直没暴露，一打开验收就抛异常：
+// ① assessmentFiles 跨了两层 class（.assessment-code-tools > label > input），而解析器只保留
+//    "id 元素 + 直接挂在 id 元素下的一层 class 元素"，closest('.assessment-code-tools') 返回 null；
+// ② .assessment-consent 没有 id，document.querySelector 恒返回 null。
+// 这里补上真实祖先链，验收路径才能被冒烟真正覆盖（而不是靠关掉验收假绿）。
+{
+    const codeTools = makeEl('div');
+    codeTools.classList.add('assessment-code-tools');
+    const uploadLabel = makeEl('label');
+    uploadLabel.classList.add('assessment-upload-btn');
+    elementsById.get('assessmentForm').appendChild(codeTools);
+    codeTools.appendChild(uploadLabel);
+    uploadLabel.appendChild(elementsById.get('assessmentFiles'));
+}
+const assessmentConsent = makeEl('div');
+assessmentConsent.classList.add('assessment-consent');
+const defaultQuerySelector = documentStub.querySelector;
+documentStub.querySelector = selector => (
+    selector === '.assessment-consent' ? assessmentConsent : defaultQuerySelector(selector));
+
 function storageStub() {
     const store = new Map();
     return {
@@ -211,10 +232,17 @@ class URLSearchParamsStub {
 }
 
 class HeadersStub {
-    constructor(init) { this.map = new Map(); if (init && init.forEach) init.forEach((v, k) => this.map.set(k, v)); else Object.entries(init || {}).forEach(([k, v]) => this.map.set(k, v)); }
-    set(k, v) { this.map.set(k, v); }
-    get(k) { return this.map.get(k) || null; }
-    has(k) { return this.map.has(k); }
+    // 真实 Headers 的名字大小写不敏感：桩以前按精确 key 存，于是
+    // streamEvaluate 用 headers.get('content-type') 拿不到 'Content-Type'，
+    // 明明该走 JSON 分支却掉进"浏览器不支持流式读取"——验收提交永远失败。
+    constructor(init) {
+        this.map = new Map();
+        if (init && init.forEach) init.forEach((v, k) => this.set(k, v));
+        else Object.entries(init || {}).forEach(([k, v]) => this.set(k, v));
+    }
+    set(k, v) { this.map.set(String(k).toLowerCase(), v); }
+    get(k) { const value = this.map.get(String(k).toLowerCase()); return value === undefined ? null : value; }
+    has(k) { return this.map.has(String(k).toLowerCase()); }
 }
 
 // ---------------- fetch 桩 ----------------
@@ -240,6 +268,27 @@ const projectFixture = {
         }],
     }],
 };
+// 默认课程形态的项目（assessmentEnabled: true）：用来覆盖"勾选任务 → AI 验收 → 生成回流"这条默认路径。
+// 列表里只给摘要、打开时才拉整棵树，所以验收场景拿到的必然是这份 assessmentRequired:true 的数据，
+// 不会命中前面场景缓存的旧副本。
+const assessProjectFixture = {
+    id: 'p-assess', name: '验收项目', description: '', createdAt: today,
+    assessmentEnabled: true, reviewEnabled: false,
+    tree: [{
+        id: 'w-assess', type: 'week', text: '第1周：验收', completed: false, expanded: true, createdAt: today,
+        children: [{
+            id: 'd-assess', type: 'day', text: '验收单元', completed: false, expanded: true, createdAt: today,
+            children: [
+                { id: 'i-skip', type: 'item', text: '跳过实现的任务', completed: false, completedAt: null,
+                  optional: false, assessmentRequired: true, assessmentHistory: 0, createdAt: today,
+                  assessment: { questionPassed: true, questionScore: 90 }, children: [] },
+                { id: 'i-full', type: 'item', text: '完整通过的任务', completed: false, completedAt: null,
+                  optional: false, assessmentRequired: true, assessmentHistory: 0, createdAt: today,
+                  assessment: null, children: [] },
+            ],
+        }],
+    }],
+};
 const workbenchFixture = {
     today, serverToday: today, horizonDays: 7,
     groups: {
@@ -260,6 +309,8 @@ const fetchUrls = [];
 const projectPostBodies = [];
 // 记录复习自评的请求体：断言"点第 3 个按钮 = 档位 3"，而不是只断言"发过这个请求"。
 const reviewAnswerBodies = [];
+// 记录生成回流的请求体：验收失败必须带 remedial:true + gap，验收通过则不带。
+const reviewGenerateBodies = [];
 async function fetchStub(url, options = {}) {
     const path = String(url).split('?')[0];
     fetchLog.push(`${options.method || 'GET'} ${path}`);
@@ -269,7 +320,10 @@ async function fetchStub(url, options = {}) {
         headers: new HeadersStub({ 'Content-Type': 'application/json' }),
         json: async () => payload, text: async () => JSON.stringify(payload), blob: async () => ({}),
     });
-    if (path === '/api/projects') return reply(200, { projects: [{ id: 'p1', name: '测试项目', description: '', createdAt: today, assessmentEnabled: false, archived: false, stats: { total: 1, remaining: 1, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 }], reviewTotals: { today: 0, overdue: 0 }, serverToday: today, usedToday: today });
+    if (path === '/api/projects') return reply(200, { projects: [
+        { id: 'p1', name: '测试项目', description: '', createdAt: today, assessmentEnabled: false, archived: false, stats: { total: 1, remaining: 1, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 },
+        { id: 'p-assess', name: '验收项目', description: '', createdAt: today, assessmentEnabled: true, archived: false, stats: { total: 2, remaining: 2, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 },
+    ], reviewTotals: { today: 0, overdue: 0 }, serverToday: today, usedToday: today });
     if (path === '/api/project' && (options.method || 'GET') === 'POST' && options.body) {
         try { projectPostBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
     }
@@ -277,7 +331,8 @@ async function fetchStub(url, options = {}) {
         // 真实服务按请求的 id 返回对应项目；桩也要保持一致，
         // 否则前端会发现"返回的 id 和当前项目 id 不一致"而退回列表页
         const requested = new URLSearchParamsStub(String(url).split('?')[1] || '').get('id') || 'p1';
-        return reply(200, { project: { ...projectFixture, id: requested }, revision: 1 });
+        const base = requested === 'p-assess' ? assessProjectFixture : projectFixture;
+        return reply(200, { project: { ...base, id: requested }, revision: 1 });
     }
     if (path === '/api/background') return reply(404, {});
     if (path === '/api/config') return reply(200, { ready: true, models: { flash: 'f', pro: 'p' }, error: '' });
@@ -299,9 +354,14 @@ async function fetchStub(url, options = {}) {
     });
     if (path === '/api/import') return reply(200, { backup: 'before-import-smoke.zip',
         ok: true,
+        // 导入响应是"导入后的完整项目列表"：真实服务会把已有项目一起回传，
+        // 这里带上默认课程项目，后面的验收场景才有一个未缓存的默认课程可打开。
         projects: [{ id: 'imp-1', name: '导入的项目', description: '', createdAt: today,
                      assessmentEnabled: false, archived: false, reviewEnabled: false,
-                     stats: { total: 1, remaining: 1, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 }]
+                     stats: { total: 1, remaining: 1, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 },
+                   { id: 'p-assess', name: '验收项目', description: '', createdAt: today,
+                     assessmentEnabled: true, archived: false, reviewEnabled: false,
+                     stats: { total: 2, remaining: 2, optionalTotal: 0, optionalCompleted: 0 }, _revision: 1 }]
     });
     if (path === '/api/project/plan') return reply(200, {
         ok: true,
@@ -365,6 +425,36 @@ async function fetchStub(url, options = {}) {
             intervalDays: 14, streak: 1, lapses: 0, weak: false, lastGrade: 4 } });
     }
     if (path === '/api/review/session') return reply(200, { ok: true, sessionId: 's-review-1' });
+    // 生成回流：第一次生成有新增（inserted 2），已挂过点的任务 inserted 0（前端应静默）。
+    if (path === '/api/review/generate') {
+        let request = {};
+        try { request = JSON.parse(options.body || '{}'); } catch (error) { request = {}; }
+        reviewGenerateBodies.push(request);
+        const fresh = request.taskId !== 'i-full';
+        return reply(200, {
+            ok: true,
+            inserted: fresh ? 2 : 0,
+            unchanged: fresh ? 0 : 2,
+            created: [{ code: `py.ai.${request.taskId}.1`, title: '复习知识点' }],
+            usedAi: false,
+        });
+    }
+    // 验收出题：固定三道题（与真实 /api/question 契约一致）。
+    if (path === '/api/question') return reply(200, {
+        questions: ['验收题一：讲清机制', '验收题二：预测输出', '验收题三：定位 bug'], focus: '机制' });
+    // 验收判分：回答写成 FAIL 就判不通过（用于覆盖"失败 → 补漏题"分支）。
+    if (path === '/api/evaluate') {
+        let request = {};
+        try { request = JSON.parse(options.body || '{}'); } catch (error) { request = {}; }
+        const failed = String(request.answer || '') === 'FAIL';
+        return reply(200, { result: {
+            passed: !failed, score: failed ? 40 : 92,
+            summary: failed ? '没讲清核心机制' : '核心机制已讲清',
+            reply: failed ? '再想一次求值时机' : '通过',
+            strengths: [], problems: failed ? ['把自由变量当成全局变量'] : [],
+            missingEvidence: [], nextAction: failed ? '补一个最小实验' : '',
+        } });
+    }
     if (path === '/api/review/points') return reply(200, { points: [{ code: 'py.a.b', title: '示例知识点',
         minutes: 10, module: '容器', level: '基础', origin: 'builtin', due: today, weak: true, lastGrade: 2,
         pitfalls: ['可变默认参数'] },
@@ -982,6 +1072,89 @@ function step(name, fn) {
     check('立即练一次的会话用的是这一题的题面',
         textOf(elementsById.get('reviewQuestionPrompt')).includes('写出下面代码的输出'),
         textOf(elementsById.get('reviewQuestionPrompt')).slice(0, 160));
+
+    // ⑯ 默认课程（assessmentEnabled: true + 每个任务 assessmentRequired: true）：
+    //     勾选任务直接进 AI 验收，验收通过必须走生成回流（POST /api/review/generate）；
+    //     验收失败必须带 remedial:true + gap 生成补漏题。
+    //     桩以前把 assessmentEnabled 关掉、任务全是 assessmentRequired:false，
+    //     导致"完成任务 → 生成复习项"在默认路径上是死代码却照样全绿。
+    async function openAssessItem(text) {
+        elementsById.get('backBtn').dispatch('click');
+        await sleep(150);
+        const card = findAll(elementsById.get('projectGrid'), el => textOf(el).includes('验收项目'))[0];
+        if (card) card.dispatch('click');
+        await sleep(150);
+        for (let round = 0; round < 6; round += 1) {
+            if (findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes(text)).length > 0) break;
+            // 只点"还收起着的分组行"：连展开的行一起点会把刚展开的又收起来。
+            const collapsed = findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes('▶')
+                && !findAll(el, child => child.classList.contains('arrow')
+                    && child.classList.contains('expanded')).length);
+            if (collapsed.length === 0) break;
+            collapsed.forEach(row => row.dispatch('click'));
+            await sleep(30);
+        }
+        return findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes(text))[0];
+    }
+
+    // 路径 A：第一阶段已通过 → 第二阶段留空提交，跳过实现阶段直接通过（js/app.js 跳过实现那条通过路径）。
+    const skipRow = await openAssessItem('跳过实现的任务');
+    check('验收任务行渲染出来了（assessmentRequired:true，默认课程路径）', Boolean(skipRow),
+        textOf(elementsById.get('treeRoot')).slice(0, 200));
+    const generateBeforeSkip = fetchLog.filter(line => line === 'POST /api/review/generate').length;
+    if (skipRow) {
+        const checkbox = findAll(skipRow, el => el.classList.contains('checkbox'))[0];
+        step('勾选验收任务打开验收弹窗不抛异常', () => checkbox.dispatch('click'));
+        await sleep(120);
+        check('验收弹窗打开（body 进入 assessment-open）',
+            documentStub.body.classList.contains('assessment-open'));
+        step('留空提交验收（跳过实现阶段）不抛异常', () => elementsById.get('assessmentForm').dispatch('submit'));
+        await sleep(200);
+    }
+    check('验收通过（跳过实现阶段）后 POST 了 /api/review/generate',
+        fetchLog.filter(line => line === 'POST /api/review/generate').length > generateBeforeSkip,
+        JSON.stringify(fetchLog.slice(-6)));
+    check('确有新增时才提示"已生成 N 个复习知识点"',
+        String(elementsById.get('toastMessage').textContent).includes('已生成 2 个复习知识点'),
+        String(elementsById.get('toastMessage').textContent));
+
+    // 路径 B：完整走完三道题（先失败一次 → 补漏题）+ 实现阶段通过。
+    const fullRow = await openAssessItem('完整通过的任务');
+    check('第二个验收任务行渲染出来了', Boolean(fullRow), textOf(elementsById.get('treeRoot')).slice(0, 200));
+    if (fullRow) {
+        const checkbox = findAll(fullRow, el => el.classList.contains('checkbox'))[0];
+        checkbox.dispatch('click');
+        await sleep(200);
+        check('验收弹窗生成出三道针对题',
+            fetchLog.includes('POST /api/question')
+            && textOf(elementsById.get('assessmentModal')).includes('题目已生成，请回答当前题'),
+            textOf(elementsById.get('assessmentModal')).slice(0, 200));
+        const remedialBefore = reviewGenerateBodies.filter(body => body.remedial).length;
+        elementsById.get('assessmentAnswer').value = 'FAIL';
+        elementsById.get('assessmentForm').dispatch('submit');
+        await sleep(200);
+        const remedialBodies = reviewGenerateBodies.filter(body => body.remedial);
+        check('问题阶段验收失败后带 remedial + gap 生成补漏题',
+            remedialBodies.length > remedialBefore
+            && remedialBodies.some(body => body.remedial === true && String(body.gap || '').includes('自由变量')),
+            JSON.stringify(reviewGenerateBodies.slice(-2)));
+        // 三道题连续通过 → 进入实现阶段。
+        for (let index = 0; index < 3; index += 1) {
+            elementsById.get('assessmentAnswer').value = `正确答案 ${index + 1}`;
+            elementsById.get('assessmentForm').dispatch('submit');
+            await sleep(150);
+        }
+        const generateBeforeFull = fetchLog.filter(line => line === 'POST /api/review/generate').length;
+        elementsById.get('assessmentAnswer').value = '我按 None 哨兵重写了实现';
+        elementsById.get('assessmentForm').dispatch('submit');
+        await sleep(250);
+        check('完整验收通过后 POST 了 /api/review/generate',
+            fetchLog.filter(line => line === 'POST /api/review/generate').length > generateBeforeFull,
+            JSON.stringify(fetchLog.slice(-6)));
+        check('零新增（inserted=0）时不再误报"已生成 N 个"',
+            !String(elementsById.get('toastMessage').textContent).includes('已生成'),
+            String(elementsById.get('toastMessage').textContent));
+    }
 
     await sleep(80);
     check('事件处理器里没有未处理的异步异常', asyncErrors.length === 0, asyncErrors.slice(0, 3).join(' || '));

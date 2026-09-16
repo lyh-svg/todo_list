@@ -10,6 +10,9 @@ LEVELS = ("基础", "实用", "进阶")
 RELATIONS = ("introduces", "exercises")
 MIN_MINUTES = 5
 MAX_MINUTES = 30
+# AI 生成的知识点必须落在这个命名空间里：否则模型返回一个和内置 code 相同的值，
+# `import_content` 会把它当成"更新"直接覆盖内置内容。
+AI_CODE_PREFIX = "py.ai."
 
 
 def _text(value: Any) -> str:
@@ -114,6 +117,9 @@ def _normalize_refs(value: Any) -> list[dict[str, str]]:
 def normalize_points(value: Any) -> list[dict[str, Any]]:
     """AI 返回内容的轻量清洗：补齐缺省字段、丢弃非法项（非对象、无 code、code 重复）。
 
+    只接受 `AI_CODE_PREFIX`（`py.ai.`）命名空间里的 code：模型若返回内置 code，
+    在这里就被丢掉，绝不会走到 `import_content` 去覆盖内置知识点。
+
     这里只是把模型输出整理成"形状正确"的草稿；内容是否合格仍由 `validate_points` 做最终闸门
     （`import_content` 会再校验一次，不合格的生成内容不会入库）。
     """
@@ -126,7 +132,7 @@ def normalize_points(value: Any) -> list[dict[str, Any]]:
             continue
         raw_code = item.get("code")
         code = raw_code.strip() if isinstance(raw_code, str) else ""
-        if not code or code in seen:
+        if not code or not code.startswith(AI_CODE_PREFIX) or code in seen:
             continue
         seen.add(code)
         level = _text(item.get("level"))

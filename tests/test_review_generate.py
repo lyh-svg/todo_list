@@ -27,6 +27,7 @@ os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP.name) / "summary.sqlite3
 
 import ai_service  # noqa: E402
 import local_server  # noqa: E402
+import prompts  # noqa: E402
 import review_content  # noqa: E402
 import review_storage  # noqa: E402
 import storage  # noqa: E402
@@ -124,6 +125,42 @@ class PointsForTaskTests(unittest.TestCase):
         self.assertEqual(review_storage.points_for_task("1313"), [])
 
 
+class MarkWeakTests(unittest.TestCase):
+    """验收失败标弱：只动已存在的 review_states 行，未知 code 忽略。"""
+
+    def setUp(self) -> None:
+        reset_review_data()
+
+    def test_mark_weak_flags_existing_codes_and_ignores_unknown(self) -> None:
+        self.assertFalse(review_storage.read_state("py.gen.intro")["weak"])
+        affected = review_storage.mark_weak(["py.gen.intro", "py.gen.exercise", "py.gen.nope"])
+        self.assertEqual(affected, 2)
+        self.assertTrue(review_storage.read_state("py.gen.intro")["weak"])
+        self.assertTrue(review_storage.read_state("py.gen.exercise")["weak"])
+        self.assertIsNone(review_storage.read_state("py.gen.nope"))
+
+    def test_mark_weak_without_codes_is_noop(self) -> None:
+        self.assertEqual(review_storage.mark_weak([]), 0)
+        self.assertEqual(review_storage.mark_weak(["   ", ""]), 0)
+
+
+class AiCodeNamespaceTests(unittest.TestCase):
+    """AI 生成的 code 只能落在 py.ai. 命名空间，绝不能覆盖内置知识点。"""
+
+    def test_normalize_points_drops_non_ai_codes(self) -> None:
+        normalized = review_content.normalize_points([
+            ai_draft(REAL_POINT_CODE), ai_draft("py.ai.1202.1")])
+        self.assertEqual([point["code"] for point in normalized], ["py.ai.1202.1"])
+
+    def test_generate_never_returns_builtin_code(self) -> None:
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key", "TODO_AI_MOCK": ""}, clear=False):
+            with mock.patch.object(ai_service, "_post_json",
+                                   return_value={"points": [ai_draft(REAL_POINT_CODE)]}):
+                generated = ai_service.generate_review_points(
+                    task_id=REAL_TASK_ID, project_id="p-1", task_text="默认参数", count=3)
+        self.assertEqual(generated, [], "模型返回内置 code 时必须被过滤，不能覆盖内置内容")
+
+
 def ai_draft(code=None):
     """AI 返回的原始草稿：缺 code/module/level/taskRefs，由生成侧补齐。"""
     draft = {
@@ -212,6 +249,35 @@ class ReviewGenerateAiTests(unittest.TestCase):
                 self.assertEqual(ai_service.grade_review_answer(
                     code=REAL_POINT_CODE, question_type="concept", answer="x", reference={}), {})
 
+    def test_mock_remedial_points_use_remedial_namespace(self) -> None:
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
+            generated = ai_service.generate_review_points(
+                task_id="1202", project_id="p-1202", task_text="可变默认参数",
+                count=2, remedial=True, gap="把自由变量说成全局变量")
+        self.assertEqual([entry["code"] for entry in generated],
+                         ["py.ai.1202.remedial.1", "py.ai.1202.remedial.2"])
+        self.assertEqual(review_content.validate_points(generated), [])
+        for entry in generated:
+            self.assertTrue(all(kind in entry for kind in review_content.QUESTION_TYPES))
+            self.assertTrue(any(ref["taskId"] == "1202" and ref["relation"] == "exercises"
+                                for ref in entry["taskRefs"]))
+        self.assertIn("自由变量", generated[0]["title"])
+
+    def test_real_remedial_branch_uses_remedial_prompt_and_gap(self) -> None:
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key", "TODO_AI_MOCK": ""}, clear=False):
+            with mock.patch.object(ai_service, "_post_json",
+                                   return_value={"points": [ai_draft()]}) as fake:
+                generated = ai_service.generate_review_points(
+                    task_id="1301", project_id="p-2", task_text="闭包",
+                    count=2, remedial=True, gap="答非所问：没讲清自由变量绑定")
+        fake.assert_called_once()
+        body = fake.call_args.args[1]
+        self.assertEqual(body["messages"][0]["content"], prompts.REVIEW_REMEDIAL_PROMPT)
+        self.assertNotEqual(prompts.REVIEW_REMEDIAL_PROMPT, prompts.REVIEW_POINTS_PROMPT)
+        self.assertIn("自由变量", body["messages"][1]["content"])
+        self.assertEqual([entry["code"] for entry in generated], ["py.ai.1301.remedial.1"])
+        self.assertEqual(review_content.validate_points(generated), [])
+
 
 class _QuietHandler(local_server.TodoHandler):
     def log_message(self, *args) -> None:
@@ -254,6 +320,7 @@ class ReviewGenerateHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["usedAi"])
+        self.assertEqual(payload["inserted"], 0, "已存在的预规划点不能算新增")
         self.assertEqual([entry["code"] for entry in payload["created"]],
                          ["py.gen.intro", "py.gen.exercise"])
         self.assertTrue(all("origin" not in entry for entry in payload["created"]))
@@ -266,10 +333,60 @@ class ReviewGenerateHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["usedAi"])
         self.assertEqual(len(payload["created"]), 2)
+        self.assertEqual(payload["inserted"], 2)
+        self.assertEqual(payload["unchanged"], 0)
         self.assertTrue(all(entry["origin"] == "ai" for entry in payload["created"]))
         linked = {entry["code"] for entry in review_storage.points_for_task("88888")}
         self.assertEqual(linked, {entry["code"] for entry in payload["created"]})
         self.assertTrue(all(review_storage.read_state(code) is not None for code in linked))
+        # 再次生成同一任务：没有新写入 → inserted 归零（前端据此静默，不再误报"已生成 N 个"）。
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
+            status, again = self.call("/api/review/generate",
+                                      {"taskId": "88888", "projectId": "p-9",
+                                       "taskText": "闭包", "count": 2})
+        self.assertEqual(status, 200)
+        self.assertEqual(again["inserted"], 0)
+        self.assertTrue(again["created"])
+
+    def test_generate_remedial_marks_weak_and_reports_inserted(self) -> None:
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
+            status, payload = self.call("/api/review/generate",
+                                        {"taskId": "1202", "projectId": "p-1202",
+                                         "taskText": "可变默认参数", "count": 2,
+                                         "gap": "说不清默认参数求值时机", "remedial": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["usedAi"])
+        self.assertEqual(payload["inserted"], 2)
+        remedial = [entry["code"] for entry in payload["created"]
+                    if entry["code"].startswith("py.ai.1202.remedial.")]
+        self.assertEqual(len(remedial), 2)
+        # 该任务所有相关知识点（含预规划点）都要进薄弱点列表。
+        for code in ("py.gen.intro", "py.gen.exercise", "py.ai.1202.remedial.1"):
+            self.assertTrue(review_storage.read_state(code)["weak"], code)
+
+    def test_generate_remedial_repeat_is_unchanged_and_stays_weak(self) -> None:
+        body = {"taskId": "1202", "projectId": "p-1202", "taskText": "可变默认参数",
+                "count": 2, "gap": "说不清求值时机", "remedial": True}
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
+            first = self.call("/api/review/generate", body)[1]
+            second = self.call("/api/review/generate", body)[1]
+        self.assertEqual(first["inserted"], 2)
+        self.assertEqual(second["inserted"], 0, "补漏题已存在时不能重复计为新增")
+        self.assertEqual(second["unchanged"], 2)
+        self.assertTrue(review_storage.read_state("py.ai.1202.remedial.1")["weak"])
+
+    def test_generate_remedial_without_ai_still_marks_weak(self) -> None:
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": ""}, clear=False):
+            status, payload = self.call("/api/review/generate",
+                                        {"taskId": "1202", "projectId": "p-1202",
+                                         "taskText": "可变默认参数", "remedial": True,
+                                         "gap": "没讲清机制"})
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["usedAi"])
+        self.assertEqual(payload["inserted"], 0)
+        # 没有 AI 也把该任务已有的知识点标弱（补漏题本身退化为空，但薄弱点列表照常更新）。
+        for code in ("py.gen.intro", "py.gen.exercise"):
+            self.assertTrue(review_storage.read_state(code)["weak"], code)
 
     def test_generate_missing_task_id_is_400(self) -> None:
         status, payload = self.call("/api/review/generate", {"projectId": "p-1"})

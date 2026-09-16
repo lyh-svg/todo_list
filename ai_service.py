@@ -17,6 +17,7 @@ from prompts import (
     QUESTION_PROMPT,
     REVIEW_GRADE_PROMPT,
     REVIEW_POINTS_PROMPT,
+    REVIEW_REMEDIAL_PROMPT,
     SUMMARY_PROMPT,
     SYSTEM_PROMPT,
 )
@@ -715,19 +716,27 @@ def is_configured() -> bool:
     return _mock_enabled() or bool(read_settings().get("DEEPSEEK_API_KEY"))
 
 
-def generate_review_points(*, task_id: str, project_id: str, task_text: str, count: int = 3) -> list[dict]:
+def generate_review_points(*, task_id: str, project_id: str, task_text: str, count: int = 3,
+                           remedial: bool = False, gap: str = "") -> list[dict]:
     """按任务补 1~3 个知识点；mock 模式返回固定样例，真实分支失败时返回空列表。
+
+    `remedial=True` 时走"针对失败点出补漏题"的提示词：`gap` 是验收失败的信息，
+    mock 模式返回固定补漏点（code 形如 `py.ai.<taskId>.remedial.<n>`），
+    真实分支把失败点一起发给模型。两种模式生成的 taskRefs 都回指当前任务。
 
     生成结果先过 `review_content.normalize_points` 清洗，再保证每个点都有一条回指当前任务的
     taskRef（模型漏写时补 exercises），最后逐条过 `validate_points` 闸门——不合格的点直接丢弃，
     不让整次生成失败（AI 是可选增强，不是完成任务的阻塞项）。
     """
     count = _review_point_count(count)
+    focus = str(gap or "").strip() or task_text.strip()
     if _mock_enabled():
-        base = task_text.strip()[:20] or task_id
+        base = focus[:20] or task_id
+        namespace = f"py.ai.{task_id}.remedial" if remedial else f"py.ai.{task_id}"
+        label = "补漏点" if remedial else "补充点"
         return [{
-            "code": f"py.ai.{task_id}.{index + 1}",
-            "title": f"{base} · 补充点 {index + 1}",
+            "code": f"{namespace}.{index + 1}",
+            "title": f"{base} · {label} {index + 1}",
             "minutes": 15, "module": "AI 补充", "level": "基础",
             "taskRefs": [{"taskId": task_id, "projectId": project_id, "relation": "exercises"}],
             "concept": {"prompt": f"用自己的话解释：{base}（第 {index + 1} 点）", "answer": ["AI 生成的要点"]},
@@ -737,15 +746,16 @@ def generate_review_points(*, task_id: str, project_id: str, task_text: str, cou
             "pitfalls": ["边界输入"],
         } for index in range(count)]
     settings = read_settings()
+    user_payload = {"任务": task_text, "任务ID": task_id, "项目ID": project_id, "数量": count}
+    if remedial:
+        user_payload["失败点"] = gap
     request_body = {
         "model": model_aliases(settings).get("flash", "deepseek-chat"),
         "temperature": 0.3,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": REVIEW_POINTS_PROMPT},
-            {"role": "user", "content": json.dumps(
-                {"任务": task_text, "任务ID": task_id, "项目ID": project_id, "数量": count},
-                ensure_ascii=False)},
+            {"role": "system", "content": REVIEW_REMEDIAL_PROMPT if remedial else REVIEW_POINTS_PROMPT},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ],
     }
     try:
@@ -755,9 +765,10 @@ def generate_review_points(*, task_id: str, project_id: str, task_text: str, cou
     draft = parsed.get("points") if isinstance(parsed, dict) else None
     if not isinstance(draft, list):
         return []
+    fallback_prefix = f"py.ai.{task_id}.remedial" if remedial else f"py.ai.{task_id}"
     for index, point in enumerate(draft, start=1):
         if isinstance(point, dict):
-            point.setdefault("code", f"py.ai.{task_id}.{index}")
+            point.setdefault("code", f"{fallback_prefix}.{index}")
     points = []
     for point in review_content.normalize_points(draft):
         if task_id and not any(ref["taskId"] == task_id for ref in point["taskRefs"]):

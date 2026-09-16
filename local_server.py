@@ -889,20 +889,31 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     wanted = int(payload.get("count") or 3)
                 except (TypeError, ValueError):
                     raise ValueError("count 必须是数字") from None
+                # 验收失败时带 remedial=true + gap：针对失败点生成补漏题，并把该任务关联的知识点标弱。
+                # 补漏题不受"已有预规划点就不再补"的约束——否则已挂过知识点的任务永远补不了漏。
+                remedial = bool(payload.get("remedial"))
+                gap = str(payload.get("gap") or "").strip()
                 points = review_storage.points_for_task(task_id)
                 created = [{"code": point["code"], "title": point["title"]} for point in points[:5]]
+                inserted = unchanged = 0
                 used_ai = False
-                if len(created) < wanted and ai_service.is_configured():
+                if (remedial or len(created) < wanted) and ai_service.is_configured():
                     generated = ai_service.generate_review_points(
                         task_id=task_id, project_id=str(payload.get("projectId") or ""),
                         task_text=str(payload.get("taskText") or ""),
-                        count=wanted)
+                        count=wanted, remedial=remedial, gap=gap)
                     if generated:
-                        review_storage.import_content(generated, origin="ai")
+                        imported = review_storage.import_content(generated, origin="ai")
+                        inserted = int(imported.get("inserted") or 0)
+                        unchanged = int(imported.get("unchanged") or 0)
                         created.extend({"code": point["code"], "title": point["title"],
                                         "origin": "ai"} for point in generated)
                         used_ai = True
-                self.send_json(200, {"ok": True, "created": created[:5], "usedAi": used_ai})
+                if remedial:
+                    review_storage.mark_weak(
+                        [point["code"] for point in review_storage.points_for_task(task_id)])
+                self.send_json(200, {"ok": True, "inserted": inserted, "unchanged": unchanged,
+                                     "created": created[:5], "usedAi": used_ai})
             elif path == "/api/review/ai-grade":
                 code = str(payload.get("code") or "").strip()
                 kind = str(payload.get("type") or "").strip()

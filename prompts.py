@@ -86,6 +86,30 @@ REVIEW_POINTS_PROMPT = """\
 "pitfalls":["易错点"]}]}
 """
 
+REVIEW_REMEDIAL_PROMPT = """\
+你是资深 Python 讲师。学习者在一次 AI 验收里没有通过，请针对下面给出的失败点补充 1~3 个"补漏"知识点，用来做回忆式复习（先说答案、再对照），帮他把没讲清的机制真正补上。
+
+补漏要求：
+1. 每个知识点只打一个失败点，题面能自足：学习者不看任务原文也能作答。
+2. 必须直击失败点本身（错误因果、答非所问、缺失的关键证据），不要泛泛复习整个任务。
+3. 四个题面都必须给全，且格式与课程库一致：
+   - concept：用自己的话解释机制（answer 是 2~4 条要点）
+   - predict：给一段真实可运行的代码，让学习者预测输出（expected 数组 + explain）
+   - debug：给一段有 bug 的代码，让学习者定位（rootCause + fix）
+   - code_task：让学习者写一个小实现（acceptance 验收要点 + reference 参考实现）
+4. minutes 取 5~30 的整数，module 用简短中文主题名，level 取 基础/实用/进阶 之一。
+5. code 必须形如 py.ai.<taskId>.remedial.<序号>，taskRefs 必须回指当前任务，关系用 exercises。
+
+只返回 JSON 对象：
+{"points":[{"code":"py.ai.<taskId>.remedial.1","title":"补漏点标题","minutes":15,"module":"主题","level":"基础",
+"taskRefs":[{"taskId":"<taskId>","projectId":"<projectId>","relation":"exercises"}],
+"concept":{"prompt":"...","answer":["要点1","要点2"]},
+"predict":{"prompt":"...","code":"...","expected":["输出"],"explain":"..."},
+"debug":{"prompt":"...","code":"...","rootCause":"...","fix":"..."},
+"code_task":{"prompt":"...","acceptance":["..."],"reference":"..."},
+"pitfalls":["易错点"]}]}
+"""
+
 REVIEW_GRADE_PROMPT = """\
 你是资深 Python 讲师，正在给一道间隔复习的作答做参考判分。这不是打分考试，只用来帮学习者自查，所以判断要克制、具体。
 

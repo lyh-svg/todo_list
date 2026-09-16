@@ -2859,6 +2859,7 @@ let knowledgePoints = [];
         if (skipsImplementation) {
             try {
                 const completedNode = assessmentNode;
+                const completedProject = owningProjectOfNode(completedNode);
                 completedNode.assessment = {
                     ...(completedNode.assessment || {}),
                     passed: true,
@@ -2876,6 +2877,10 @@ let knowledgePoints = [];
                 assessmentNode = null;
                 await showProjectsView();
                 showToast('已通过');
+                // 验收通过 → 走生成回流（默认课程每个任务都 assessmentRequired，勾选直接进验收，
+                // 不在这里调用的话"完成任务 → 生成复习项"在默认路径上永远不会发生）。
+                // 项目对象在进入本分支时就取好了：showProjectsView() 会把内存里的树换成列表摘要。
+                maybeGenerateReviewItems(completedProject, completedNode);
             } catch (error) {
                 assessmentResult.hidden = false;
                 assessmentResult.classList.add('failed');
@@ -2960,6 +2965,8 @@ let knowledgePoints = [];
                     renderAssessmentConversation();
                     assessmentAnswer.value = '';
                     assessmentServiceStatus.textContent = '本题未通过，请根据反馈修改后再次提交';
+                    // 问题阶段失败 → 同样针对失败点生成补漏题（失败只 warn，不阻断）。
+                    maybeGenerateRemedial(owningProjectOfNode(assessmentNode), assessmentNode, result);
                     return;
                 }
                 if (assessmentQuestionIndex + 1 < assessmentQuestionItems.length) {
@@ -2995,15 +3002,22 @@ let knowledgePoints = [];
             markProjectDirty(owningProjectOfNode(assessmentNode));
             await saveProjects();
             if (result.passed) {
+                const passedNode = assessmentNode;
+                // 项目对象必须在 showProjectsView() 之前取：它会把内存里的树换成列表摘要。
+                const passedProject = owningProjectOfNode(passedNode);
                 assessmentModal.setAttribute('hidden', '');
                 document.body.classList.remove('assessment-open');
                 assessmentNode = null;
                 await showProjectsView();
                 showToast('已通过');
+                // 验收通过 → 走生成回流（与跳过实现阶段的路径同一处理，见 toggleNodeCompleted 只负责非验收任务）。
+                maybeGenerateReviewItems(passedProject, passedNode);
             } else {
                 renderDetail();
                 showAssessmentResult(result);
                 assessmentServiceStatus.textContent = '尚未通过，请按反馈补漏';
+                // 验收失败 → 针对失败点生成补漏题，相关知识点进薄弱点列表（失败只 warn）。
+                maybeGenerateRemedial(owningProjectOfNode(assessmentNode), assessmentNode, result);
             }
         } catch (error) {
             showAssessmentLive(false);
@@ -4516,16 +4530,42 @@ let knowledgePoints = [];
 
     // 完成任务后的生成回流：按 taskRefs 生成复习项，AI 只做补充。
     // 纯增强：任何失败都只 warn，绝不打断勾选/保存或弹错误提示刷屏。
+    // 只有真的写入了新知识点（inserted>0）才提示；已挂过点的任务静默，避免每次完成都误报"已生成 N 个"。
     async function maybeGenerateReviewItems(project, node) {
         if (!project || !node) return;
         try {
             const payload = await callApi('/api/review/generate', 'POST', {
                 taskId: node.id, projectId: project.id, taskText: node.text || '', count: 3,
             });
-            const created = (payload.created || []).length;
-            if (created > 0) showToast(`已生成 ${created} 个复习知识点`);
+            const inserted = Number(payload.inserted) || 0;
+            if (inserted > 0) showToast(`已生成 ${inserted} 个复习知识点`);
         } catch (error) {
             console.warn('生成复习知识点失败', error);
+        }
+    }
+
+    // 验收失败时的补漏：把失败点作为 gap 发回后端，针对失败点生成补漏题并标弱。
+    // 同样只增强不阻断——失败只 warn，不弹错误、不影响验收结果展示。
+    function assessmentGapText(result) {
+        const parts = [];
+        if (result && result.summary) parts.push(String(result.summary));
+        const problems = result && Array.isArray(result.problems) ? result.problems : [];
+        problems.forEach(item => parts.push(String(item)));
+        const missing = result && Array.isArray(result.missingEvidence) ? result.missingEvidence : [];
+        missing.forEach(item => parts.push('缺证据：' + String(item)));
+        if (result && result.nextAction) parts.push('下一步：' + String(result.nextAction));
+        return parts.filter(Boolean).join('\n').slice(0, 2000);
+    }
+
+    async function maybeGenerateRemedial(project, node, result) {
+        if (!project || !node) return;
+        try {
+            await callApi('/api/review/generate', 'POST', {
+                taskId: node.id, projectId: project.id, taskText: node.text || '',
+                gap: assessmentGapText(result), remedial: true, count: 2,
+            });
+        } catch (error) {
+            console.warn('生成补漏题失败', error);
         }
     }
 
