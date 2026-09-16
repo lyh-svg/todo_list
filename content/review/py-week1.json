@@ -1061,6 +1061,492 @@
         "在闭包外继续修改被捕获变量",
         "分不清 nonlocal 与 global 的作用对象"
       ]
+    },
+    {
+      "code": "py.flow.iteration",
+      "title": "for 迭代协议、range/enumerate/zip、边遍历边改",
+      "minutes": 20,
+      "module": "流程控制",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "for 循环背后发生了什么？边遍历边修改容器为什么危险？",
+        "answer": [
+          "for 依次调用 iter(对象) 的 __next__，直到 StopIteration",
+          "range 只产生下标不产生列表；enumerate 同时给下标；zip 以最短序列为准",
+          "迭代器是一次性的，遍历完就空了；可迭代对象可以重复取迭代器",
+          "边遍历边增删会让索引错位，正确做法是倒序删或先收集再统一处理"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "for index, value in enumerate([\"a\", \"b\"], start=1):\n    print(index, value)\nfor left, right in zip([1, 2, 3], \"ab\"):\n    print(left, right)\nprint(list(range(2, 8, 3)))",
+        "expected": [
+          "1 a",
+          "2 b",
+          "1 a",
+          "2 b",
+          "[2, 5]"
+        ],
+        "explain": "enumerate 从 start=1 开始编号；zip 以最短的 \"ab\" 为准，第三个数字被丢弃；range(2, 8, 3) 产生 2 和 5。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "nums = [1, 2, 2, 3]\nfor value in nums:\n    if value == 2:\n        nums.remove(value)\nprint(nums)",
+        "rootCause": "边遍历边删除导致索引错位：删掉一个 2 后后面的元素前移，迭代器却继续往后走，跳过了下一个 2。",
+        "fix": "用新列表过滤（[n for n in nums if n != 2]），或收集要删的元素后统一删，或倒序遍历删除。"
+      },
+      "code_task": {
+        "prompt": "写 pairwise(items)：返回相邻元素对列表，接受任意可迭代对象（含生成器），且不修改输入。",
+        "acceptance": [
+          "pairwise([1, 2, 3]) == [(1, 2), (2, 3)]",
+          "元素少于 2 个时返回 []",
+          "调用 pairwise 后原列表内容不变",
+          "变体：pairwise(iter([1, 2, 3])) 同样返回 [(1, 2), (2, 3)]（生成器只遍历一次也能用）"
+        ],
+        "reference": "def pairwise(items):\n    values = list(items)\n    return [(values[index], values[index + 1]) for index in range(len(values) - 1)]"
+      },
+      "pitfalls": [
+        "边遍历边修改容器",
+        "zip 长度不等时以为会补齐",
+        "对迭代器重复遍历拿到空结果",
+        "用 range(len(x)) 却忘了边界"
+      ]
+    },
+    {
+      "code": "py.flow.while-break-else",
+      "title": "while、break/continue 与循环 else",
+      "minutes": 15,
+      "module": "流程控制",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "while 和 for 怎么选？循环的 else 什么时候执行？",
+        "answer": [
+          "次数未知、靠条件收敛用 while；遍历序列用 for",
+          "break 立即结束整个循环，continue 只跳过本次剩余语句",
+          "循环 else 只在循环正常结束（没有 break）时执行，常用来写“没找到”分支",
+          "while 必须在循环体内推进条件变量，否则死循环"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "n = 0\nwhile n < 3:\n    n += 1\n    if n == 2:\n        continue\n    print(n)\n\nfor value in [1, 3, 5]:\n    if value % 2 == 0:\n        print(\"有偶数\")\n        break\nelse:\n    print(\"全是奇数\")",
+        "expected": [
+          "1",
+          "3",
+          "全是奇数"
+        ],
+        "explain": "continue 跳过了 n == 2 的打印；for 循环没有遇到 break，所以执行 else 分支打印“全是奇数”。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "index = 0\nwhile index < 3:\n    print(index)\n    if index == 1:\n        index += 1",
+        "rootCause": "只在 index == 1 时推进循环变量：index 为 0 时既不推进也不退出，循环条件永远成立，程序死循环。",
+        "fix": "把 index += 1 移到循环体末尾无条件执行（或用 for 遍历 range(3)），保证每轮都朝出口前进。"
+      },
+      "code_task": {
+        "prompt": "写 first_negative(nums)：返回第一个负数，没有则返回 None；用提前 return 或 for-else 实现，不使用额外标志位。",
+        "acceptance": [
+          "first_negative([1, -2, 3]) 返回 -2",
+          "first_negative([1, 2]) 返回 None",
+          "first_negative([]) 返回 None",
+          "不依赖真值判断：0 不会被当成负数"
+        ],
+        "reference": "def first_negative(nums):\n    for value in nums:\n        if value < 0:\n            return value\n    return None"
+      },
+      "pitfalls": [
+        "忘了推进 while 的条件变量",
+        "else 绑错循环（缩进层级）",
+        "以为 break 能跳出多层循环",
+        "把循环 else 当 if-else 用"
+      ]
+    },
+    {
+      "code": "py.comprehension.basics",
+      "title": "推导式与生成器表达式（含独立作用域）",
+      "minutes": 25,
+      "module": "流程控制",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "列表/字典/集合推导式怎么写？生成器表达式和它们有什么本质区别？",
+        "answer": [
+          "列表推导式 [表达式 for 元素 in 可迭代 if 条件]，字典用 {k: v ...}，集合用 {表达式 ...}",
+          "生成器表达式用圆括号，惰性求值、只遍历一次、几乎不占内存",
+          "Python 3 推导式有独立作用域，循环变量不会泄漏到外层",
+          "嵌套推导式按书写顺序展开：先 for 外层，再 for 内层"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "nums = [1, 2, 3, 4]\nprint([n * n for n in nums if n % 2 == 0])\nprint({n: n * n for n in nums})\nprint(sorted({n % 2 for n in nums}))\ngen = (n for n in nums if n > 2)\nprint(list(gen), sum(gen))",
+        "expected": [
+          "[4, 16]",
+          "{1: 1, 2: 4, 3: 9, 4: 16}",
+          "[0, 1]",
+          "[3, 4] 0"
+        ],
+        "explain": "四种形态输出一致；生成器表达式是一次性迭代器，list(gen) 已把它耗尽，再 sum(gen) 只能得到 0。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "nums = [1, 2, 3]\ngen = (n * 2 for n in nums)\nprint(sum(gen))\nprint(sum(gen))",
+        "rootCause": "生成器表达式惰性且一次性，第一次 sum 已经耗尽它，第二次求和得到 0；它不会记住结果。",
+        "fix": "需要重复使用就落地成 list（doubled = [n * 2 for n in nums]），或每次重新创建生成器表达式。"
+      },
+      "code_task": {
+        "prompt": "写 normalize_names(names)：用一条推导式去掉首尾空白、转小写，并跳过去空白后为空的项。",
+        "acceptance": [
+          "normalize_names([\" A \", \"b\", \"  \"]) == [\"a\", \"b\"]",
+          "返回新列表，原列表不变",
+          "空列表返回 []",
+          "用一条列表推导式实现（不写显式 for 循环）"
+        ],
+        "reference": "def normalize_names(names):\n    return [name.strip().lower() for name in names if name.strip()]"
+      },
+      "pitfalls": [
+        "生成器表达式重复迭代",
+        "在推导式里塞复杂副作用",
+        "嵌套推导式的 for 顺序写反",
+        "以为推导式会泄漏循环变量"
+      ]
+    },
+    {
+      "code": "py.flow.match-case",
+      "title": "match/case 模式匹配与守卫",
+      "minutes": 20,
+      "module": "流程控制",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "match/case 和普通的 if-elif 有什么不同？写模式时要注意什么？",
+        "answer": [
+          "case 里是模式不是表达式：字面量、序列模式、映射模式、类模式、捕获变量、_ 通配",
+          "捕获变量会绑定任何值，所以 case 变量的分支会吃掉后面所有分支",
+          "if 守卫写在模式后：case [x, y] if x > y:",
+          "匹配是自上而下取第一个成功项，顺序决定语义"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def describe(value):\n    match value:\n        case 0:\n            return \"零\"\n        case [x, y]:\n            return f\"两点 {x},{y}\"\n        case {\"type\": \"user\", **rest}:\n            return f\"用户 {sorted(rest)}\"\n        case _:\n            return \"其他\"\n\n\nprint(describe(0))\nprint(describe([1, 2]))\nprint(describe({\"type\": \"user\", \"name\": \"amy\"}))\nprint(describe(3.5))",
+        "expected": [
+          "零",
+          "两点 1,2",
+          "用户 ['name']",
+          "其他"
+        ],
+        "explain": "0 命中字面量模式；列表命中序列模式并解包；dict 命中映射模式且 **rest 收集剩余键；3.5 落到通配 _。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def handle(command):\n    match command:\n        case [\"go\", steps]:\n            return steps\n        case [\"go\", steps] if steps > 0:\n            return steps * 2\n        case _:\n            return 0",
+        "rootCause": "第一个 case 的捕获模式能匹配所有 [\"go\", 任意值]，它排在前面，带守卫的分支永远不可达，负数也走了第一条。",
+        "fix": "把带守卫的分支放到前面，或给第一个 case 加守卫，让“更具体的模式”先匹配。"
+      },
+      "code_task": {
+        "prompt": "写 parse_event(event)：用 match/case 处理 (\"click\", x, y)、(\"key\", name)、{\"kind\": \"scroll\", \"delta\": n} 三种输入，其他返回 None。",
+        "acceptance": [
+          "parse_event((\"click\", 1, 2)) == (\"click\", 1, 2)",
+          "parse_event((\"key\", \"a\")) == (\"key\", \"a\")",
+          "parse_event({\"kind\": \"scroll\", \"delta\": 5}) == (\"scroll\", 5)",
+          "parse_event(\"nope\") is None 且不抛异常"
+        ],
+        "reference": "def parse_event(event):\n    match event:\n        case (\"click\", x, y):\n            return (\"click\", x, y)\n        case (\"key\", name):\n            return (\"key\", name)\n        case {\"kind\": \"scroll\", \"delta\": value}:\n            return (\"scroll\", value)\n        case _:\n            return None"
+      },
+      "pitfalls": [
+        "通配/捕获分支放太前导致后面不可达",
+        "在 case 里用变量名当常量（实际是捕获）",
+        "守卫分支顺序写反",
+        "把 match 当成会穿透的 switch"
+      ]
+    },
+    {
+      "code": "py.func.basics",
+      "title": "定义、调用与返回值语义",
+      "minutes": 10,
+      "module": "函数",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1102",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "函数没有 return 时返回什么？print 和 return 有什么区别？",
+        "answer": [
+          "函数不写 return 或只写 return，返回 None",
+          "print 把内容写到标准输出，return 把结果交给调用方，两者互不替代",
+          "默认参数在定义时求值；参数是局部名，函数内的临时变量不会污染外部",
+          "一个函数只做一件事，返回值类型保持稳定"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def greet(name, greeting=\"你好\"):\n    return f\"{greeting}，{name}\"\n\n\nprint(greet(\"Amy\"))\nprint(greet(\"Bob\", \"Hi\"))\nresult = greet(\"Cy\")\nprint(result, type(result).__name__)\n\n\ndef no_return():\n    print(\"执行了\")\n\n\nprint(no_return())",
+        "expected": [
+          "你好，Amy",
+          "Hi，Bob",
+          "你好，Cy str",
+          "执行了",
+          "None"
+        ],
+        "explain": "调用按位置传参覆盖默认值；greet 有 return 所以拿到 str；no_return 只打印，返回 None，外层 print 再打印一次 None。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def double(value):\n    value * 2\n\n\nprint(double(3))",
+        "rootCause": "函数体只有表达式没有 return，计算结果被丢弃，函数返回 None。",
+        "fix": "加 return：return value * 2。"
+      },
+      "code_task": {
+        "prompt": "写 describe_number(n)：返回 \"负\"、\"零\"、\"正\" 三个字符串，每个分支都显式 return。",
+        "acceptance": [
+          "describe_number(-1) == \"负\"",
+          "describe_number(0) == \"零\"",
+          "describe_number(1) == \"正\"",
+          "函数没有 print，返回值类型恒为 str"
+        ],
+        "reference": "def describe_number(n):\n    if n < 0:\n        return \"负\"\n    if n == 0:\n        return \"零\"\n    return \"正\""
+      },
+      "pitfalls": [
+        "漏写 return（拿到 None）",
+        "把 print 当返回值",
+        "参数名与全局变量同名造成遮蔽",
+        "默认参数用可变对象"
+      ]
+    },
+    {
+      "code": "py.func.signature",
+      "title": "参数全解：位置/关键字/默认/*args/**kwargs/仅限/转发",
+      "minutes": 30,
+      "module": "函数",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1302",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "1101",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "一个函数签名的参数顺序规则是什么？/ 和 * 各起什么作用？",
+        "answer": [
+          "顺序：仅限位置 / 位置或关键字 / *args / 仅限关键字 / **kwargs",
+          "调用时位置参数必须在关键字参数之前；一个参数不能传两次",
+          "def f(base, /, path, *, secure=True)：/ 之前只能位置传，* 之后只能关键字传",
+          "转发用 f(*args, **kwargs)，注意别把显式参数和 **kwargs 撞名"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def tag(text, prefix=\"[\", suffix=\"]\"):\n    return f\"{prefix}{text}{suffix}\"\n\n\nprint(tag(\"x\"))\nprint(tag(\"x\", suffix=\")\"))\nprint(tag(\"x\", \"(\", \")\"))\n\n\ndef collect(*args, **kwargs):\n    return args, sorted(kwargs.items())\n\n\nprint(collect(1, 2, a=3))",
+        "expected": [
+          "[x]",
+          "[x)",
+          "(x)",
+          "((1, 2), [('a', 3)])"
+        ],
+        "explain": "默认值按声明顺序生效；关键字参数可单独覆盖 suffix；位置参数按顺序填 prefix/suffix；*args 收位置参数、**kwargs 收关键字参数。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def send(message, to, cc=None):\n    return f\"{message} -> {to}\"\n\n\nprint(send(\"hello\", cc=\"amy\"))",
+        "rootCause": "to 没有默认值，是必需的位置或关键字参数；这次调用只给了 message 和 cc，缺 to，抛 TypeError。",
+        "fix": "补上 to（send(\"hello\", \"amy\")），或把参数设计成都有默认值/用关键字强制传参并在函数里校验。"
+      },
+      "code_task": {
+        "prompt": "写 build_url(base, /, path, *, secure=True, **params)：base/path 只能位置传参，secure 只能关键字传参，params 按插入顺序拼查询串。",
+        "acceptance": [
+          "build_url(\"example.com\", \"api\") == \"https://example.com/api\"",
+          "build_url(\"example.com\", \"api\", secure=False) 用 http",
+          "build_url(\"example.com\", \"api\", page=2, size=10) 得到 ?page=2&size=10",
+          "用关键字传 base 会抛 TypeError（仅限位置参数）"
+        ],
+        "reference": "def build_url(base, /, path, *, secure=True, **params):\n    scheme = \"https\" if secure else \"http\"\n    query = \"&\".join(f\"{key}={value}\" for key, value in params.items())\n    url = f\"{scheme}://{base}/{path}\"\n    return f\"{url}?{query}\" if query else url"
+      },
+      "pitfalls": [
+        "位置参数与关键字参数顺序冲突",
+        "以为 *args 后面的参数还能位置传",
+        "可变对象当默认值",
+        "**kwargs 与显式参数撞名导致 TypeError"
+      ]
+    },
+    {
+      "code": "py.func.functional",
+      "title": "一等函数、lambda 与 map/filter/sorted-key",
+      "minutes": 25,
+      "module": "函数",
+      "level": "基础",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "函数为什么能像数据一样传递？lambda 适合用在哪、不适合用在哪？",
+        "answer": [
+          "函数是一等对象：可以赋值、当参数、当返回值、放进容器",
+          "lambda 是只能写一个表达式的匿名函数，适合短小的 key/回调",
+          "map/filter 返回惰性迭代器，要 list 得显式转换；sorted(key=...) 是最常用的函数式接口",
+          "复杂逻辑用 def 更可读，也更好调试和复用"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "nums = [1, 2, 3, 4]\nprint(list(map(lambda n: n * 2, nums)))\nprint(list(filter(lambda n: n % 2 == 0, nums)))\nprint(sorted(nums, key=lambda n: -n))\nfrom functools import reduce\nprint(reduce(lambda a, b: a + b, nums, 0))",
+        "expected": [
+          "[2, 4, 6, 8]",
+          "[2, 4]",
+          "[4, 3, 2, 1]",
+          "10"
+        ],
+        "explain": "map/filter 是惰性的，用 list 取出结果；key 取负实现降序；reduce 带初值 0 累加得到 10。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "nums = [1, 2, 3]\nresult = map(lambda n: n * 2, nums)\nprint(list(result))\nprint(len(result))",
+        "rootCause": "map 返回的是一次性迭代器：list(result) 已经把它耗尽，而且迭代器没有长度，len(result) 直接抛 TypeError。",
+        "fix": "需要多次使用或求长度就先落地：doubled = list(map(...))，之后用 doubled 做所有操作。"
+      },
+      "code_task": {
+        "prompt": "写 compose(*funcs)：返回一个组合函数，按从右到左的顺序依次应用；不传函数时返回恒等函数。",
+        "acceptance": [
+          "compose()(5) == 5",
+          "compose(lambda x: x + 1, lambda x: x * 2)(3) == 7（先 *2 再 +1）",
+          "支持任意多个函数，顺序为从右到左",
+          "不修改传入的函数，也不依赖全局状态"
+        ],
+        "reference": "def compose(*funcs):\n    def composed(value):\n        for func in reversed(funcs):\n            value = func(value)\n        return value\n\n    return composed"
+      },
+      "pitfalls": [
+        "把 map/filter 的迭代器当列表反复用",
+        "lambda 里塞多步逻辑",
+        "忘记 list() 导致打印出 <map object>",
+        "sorted 的 key 返回了不可比较的类型"
+      ]
+    },
+    {
+      "code": "py.func.recursion",
+      "title": "递归、基准情形与递归深度",
+      "minutes": 20,
+      "module": "函数",
+      "level": "基础",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "写递归必须保证什么？什么时候不该用递归？",
+        "answer": [
+          "必须有基准情形（最小的、直接可解的情况），且每次递归都朝它靠近",
+          "递归适合树/嵌套结构；线性累积用迭代更省栈",
+          "Python 默认递归深度约 1000，超了抛 RecursionError",
+          "能用循环或显式栈替代时优先替代，或加缓存避免重复子问题"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def fact(n):\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n\n\nprint(fact(5))\n\n\ndef flatten(items):\n    result = []\n    for item in items:\n        if isinstance(item, list):\n            result.extend(flatten(item))\n        else:\n            result.append(item)\n    return result\n\n\nprint(flatten([1, [2, [3, 4]], 5]))",
+        "expected": [
+          "120",
+          "[1, 2, 3, 4, 5]"
+        ],
+        "explain": "fact 的基准是 n <= 1；flatten 对 list 递归、对普通元素直接收集，能处理任意深度嵌套。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def countdown(n):\n    print(n)\n    if n == 0:\n        return\n    countdown(n - 1)\n\n\ncountdown(-1)",
+        "rootCause": "基准情形只判断 n == 0，负数从 -1 开始每次减 1 只会越来越小，永远到不了 0，最终 RecursionError。",
+        "fix": "基准情形要覆盖边界：改成 if n <= 0: return，并在入口校验 n 必须是整数。"
+      },
+      "code_task": {
+        "prompt": "写 depth(value)：返回嵌套列表的最大深度；非 list 视为第 0 层，空 list 深度为 1。",
+        "acceptance": [
+          "depth([]) == 1",
+          "depth([1, 2]) == 1",
+          "depth([1, [2, [3]]]) == 3",
+          "变体：depth([[[]]]) == 3（中间层为空列表也按一层算）"
+        ],
+        "reference": "def depth(value):\n    if not isinstance(value, list):\n        return 0\n    if not value:\n        return 1\n    return 1 + max(depth(item) for item in value)"
+      },
+      "pitfalls": [
+        "基准情形缺失或写错方向",
+        "递归深度超限",
+        "重复子问题没有记忆化",
+        "对线性数据也用递归导致爆栈"
+      ]
+    },
+    {
+      "code": "py.func.pure-refactor",
+      "title": "纯函数、副作用与重构边界",
+      "minutes": 20,
+      "module": "函数",
+      "level": "基础",
+      "taskRefs": [
+        {
+          "taskId": "1304",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "什么是纯函数？为什么它更好测、更好重构？",
+        "answer": [
+          "纯函数：相同输入必得相同输出，且不产生可观察副作用（不改入参、不碰全局、不做 IO）",
+          "副作用包括：修改入参、写全局/文件/网络、打印、依赖时间与随机数",
+          "重构边界：把计算与 IO/状态分开，计算部分保持纯，IO 放在外层",
+          "纯函数不意味着复制一切：不改入参即可，必要时返回新对象"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def add_item(items, item):\n    return items + [item]\n\n\noriginal = [1]\nupdated = add_item(original, 2)\nprint(original, updated)\n\ntotal = 0\n\n\ndef impure(n):\n    global total\n    total += n\n    return total\n\n\nprint(impure(1), impure(2), total)",
+        "expected": [
+          "[1] [1, 2]",
+          "1 3 3"
+        ],
+        "explain": "add_item 返回新列表，original 不受影响；impure 依赖并修改全局 total，所以两次调用结果不同，最后 total 是 3。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def apply_discount(prices, rate):\n    for index, price in enumerate(prices):\n        prices[index] = price * (1 - rate)\n    return prices\n\n\nprices = [100, 200]\nprint(apply_discount(prices, 0.1))\nprint(prices)",
+        "rootCause": "函数原地改写了调用方的列表，是隐藏副作用：再调用一次会重复打折，别的持有者也会莫名看到变化。",
+        "fix": "改成纯函数返回新列表：return [price * (1 - rate) for price in prices]；需要原地更新时由调用方显式决定。"
+      },
+      "code_task": {
+        "prompt": "写纯函数 summarize(lines)：返回 (行数, 去重后的单词数)，不打印、不修改入参、不读写全局与文件。",
+        "acceptance": [
+          "summarize([\"a b\", \"b c\"]) == (2, 3)",
+          "summarize([]) == (0, 0)",
+          "调用后入参列表内容不变",
+          "函数体内没有任何 print/open/global 语句"
+        ],
+        "reference": "def summarize(lines):\n    words = set()\n    for line in lines:\n        words.update(line.split())\n    return len(lines), len(words)"
+      },
+      "pitfalls": [
+        "函数偷偷修改入参",
+        "依赖全局状态导致结果不稳定",
+        "把打印/IO 混进计算函数",
+        "为了“纯”而无脑深拷贝大对象"
+      ]
     }
   ]
 }
