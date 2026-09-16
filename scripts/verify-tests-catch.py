@@ -102,7 +102,7 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "视图切换必须覆盖全部视图（否则退不出去）",
         "js/app.js",
-        "        [projectsView, detailView, reviewView, workbenchView].forEach(view => {",
+        "        [projectsView, detailView, reviewView, reviewSessionView, knowledgeView, workbenchView].forEach(view => {",
         "        [projectsView, detailView, reviewView].forEach(view => {",
         [sys.executable, "-m", "unittest",
          "tests.test_frontend_references.FrontendReferenceTests.test_view_switching_is_centralized"],

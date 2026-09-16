@@ -91,6 +91,18 @@ class ServerProcess:
     def base(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
+    def seed_builtin_review_content(self) -> None:
+        """把内置第 1 周复习内容导入这个临时库。
+
+        真实启动路径（local_server.main）目前只建 schema，不会调
+        `review_storage.ensure_content_imported()`；不先导入的话，知识点库与复习队列
+        在这个空临时库上都是空的，浏览器测试根本走不到会话。这里用一个子进程按同一套
+        TODO_* 环境变量导入——子进程继承 `self.env`，与真服务用的是同一个临时库，
+        真实 data/ 全程只读。
+        """
+        script = "import storage, review_storage; storage.ensure_schema(); review_storage.ensure_content_imported()"
+        subprocess.run([sys.executable, "-c", script], cwd=str(APP_DIR), env=self.env, check=True)
+
     def start(self) -> None:
         self.handle = self.log.open("wb")
         self.process = subprocess.Popen(
@@ -183,6 +195,8 @@ class BrowserFlowTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory(prefix="todo-browser-")
         cls.workdir = Path(cls.tmp.name)
         cls.server = ServerProcess(cls.workdir)
+        # 复习会话流程（test_07c）要用内置知识点：先把内容导入临时库再起服务。
+        cls.server.seed_builtin_review_content()
         cls.server.start()
         # 缺系统 NSS/NSPR 时，scripts/browser-test.sh 会把 deb 解包到 .playwright-libs；
         # 这里自动带上它，这样直接跑 unittest 也能启动浏览器（不需要 sudo）。
@@ -426,6 +440,41 @@ class BrowserFlowTests(unittest.TestCase):
                     if method == "POST" and path == "project" and body]
         self.assertNotIn(patched_project, uploaded,
                          f"走 patch 的项目不该再整棵树上传：{paths}")
+
+    def test_07c_review_session_flow(self) -> None:
+        """复习会话：出题 → 先回忆 → 揭示后才见答案 → 五档自评 → 总结。
+
+        入口按 Task 10~12 后的真实 UI 走：顶栏「复习」打开的是复习页（reviewView），
+        知识点库在「更多工具」里；库里每个知识点卡片的按钮才是"立即练一次"进会话。
+        前一条用例（07b）把页面留在项目详情页，而「更多工具」只在项目列表页可见，
+        所以先回列表页——否则点 #openKnowledgeBtn 会一直等"元素可见"直到超时。
+        """
+        if self.page.query_selector("#detailView.active"):
+            self.page.click("#backBtn")
+        self.page.wait_for_selector("#projectsView.active", timeout=15000)
+        self.open_more_tools()
+        self.page.click("#openKnowledgeBtn")
+        self.page.wait_for_selector("#knowledgeView.active", timeout=15000)
+        self.page.wait_for_selector("#knowledgeList .knowledge-item", timeout=15000)
+        card = self.page.query_selector("#knowledgeList .knowledge-item")
+        self.assertIsNotNone(card, "知识点库里应该有内置第 1 周知识点")
+        practice = card.query_selector("button")
+        self.assertIsNotNone(practice, "每个知识点卡片都要有进入会话的按钮")
+        practice.click()
+        self.page.wait_for_selector("#reviewSessionView.active", timeout=15000)
+        prompt = self.page.inner_text("#reviewQuestionPrompt")
+        self.assertTrue(prompt.strip(), "应该有题面")
+        # 关键：还没点「看答案」时不能泄露答案。
+        panel = self.page.query_selector("#reviewAnswerPanel")
+        self.assertTrue(panel is None or not panel.is_visible(), "揭示前不该显示答案面板")
+        self.page.fill("#reviewAnswerInput", "我自己的回忆")
+        self.page.click("#reviewRevealBtn")
+        self.page.wait_for_selector("#reviewAnswerPanel:not([hidden])", timeout=10000)
+        self.assertIn("参考答案", self.page.inner_text("#reviewAnswerPanel"))
+        self.page.wait_for_selector("#reviewGradeButtons:not([hidden])", timeout=10000)
+        self.page.click("#reviewGradeButtons .review-grade-btn[data-grade='4']")
+        self.page.wait_for_selector("#reviewSessionSummary:not([hidden])", timeout=15000)
+        self.assertIn("本次复习完成", self.page.inner_text("#reviewSessionSummary"))
 
     def test_08_no_page_errors(self) -> None:
         """整条流程下来不允许有未捕获的前端异常。"""

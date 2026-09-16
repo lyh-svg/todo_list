@@ -407,11 +407,13 @@ async function fetchStub(url, options = {}) {
         // 桩里写死一份会让"第二题"的断言失去意义。
         let revealRequest = {};
         try { revealRequest = JSON.parse(options.body || '{}'); } catch (error) { revealRequest = {}; }
-        const predictReveal = { code: 'py.a.b', type: 'predict', title: '示例知识点',
+        // 知识点 code 在 reveal 里叫 pointCode（题面片段才叫 code），与
+        // review_storage.reveal 的真实返回一致；两个都叫 code 会撞重复键。
+        const predictReveal = { pointCode: 'py.a.b', type: 'predict', title: '示例知识点',
             prompt: '写出下面代码的输出', expected: ['[1]', '[1, 2]'],
             code: 'def add(a, b):\n    return a + b\n\nprint(add(1, 2))',
             explain: '第二次调用复用了同一个列表', pitfalls: ['可变默认参数'], history: [], state: null };
-        const debugReveal = { code: 'py.a.c', type: 'debug', title: '示例知识点二',
+        const debugReveal = { pointCode: 'py.a.c', type: 'debug', title: '示例知识点二',
             prompt: '找出下面代码的问题', code: 'def total(items=[]):\n    items.append(1)\n    return items',
             rootCause: '可变默认参数被复用', fix: 'items=None 再兜底成 []',
             pitfalls: ['可变默认参数'], history: [], state: null };
