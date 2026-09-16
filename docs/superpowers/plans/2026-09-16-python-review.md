@@ -3090,7 +3090,13 @@ if __name__ == "__main__":
 - [ ] **Step 4: 跑基准**
 
 Run: `timeout 900 python3 scripts/benchmark_review.py`
-Expected: 打印类似 `{"answerWhileSavingMs": 12.0, "fullSaveWithAnswerMs": 395.0, ...}`；**若答题耗时超过 100ms**，在 `review_storage` 里改成"答题先写内存队列、按批落库"（在 `apply_grade` 里累积到 `_pending_attempts`，由 `flush_review_attempts()` 每 5 题或退出会话时写入），并重跑基准与全部复习测试。
+Expected: 打印类似 `{"answerWaitedForSaveMs": 8.0, "saveWaitedForAnswerMs": 8.0, "fullSaveMs": 7.4, "baselineSaveMs": 6.7, "note": ...}`。
+
+**Step 4 的门槛与结论（实测后修订）**：修订前写的是"若答题耗时超过 100ms 就改成答题先写内存、按批落库"。实测（`scripts/benchmark_review.py`，中位数）：
+- **真实规模（223 节点，即用户库现状）**：`answerWaitedForSaveMs=7.7ms`、`saveWaitedForAnswerMs=7.5ms`、`fullSaveMs=7.4ms`、`baselineSaveMs=6.7ms` —— 远低于门槛。
+- **极端合成规模（单项目 1 万节点整棵树保存）**：`answerWaitedForSaveMs=155.6ms`、`saveWaitedForAnswerMs=172.8ms`、`fullSaveMs=172.4ms`、`baselineSaveMs=157.3ms` —— 超过 100ms。
+
+**决定：本批不做批量化落库。** 理由：(1) 门槛针对的是日常使用规模，真实库是 223 节点（约 8ms）；(2) 1 万节点单项目的整棵树保存本身就是 172ms 的极重操作，批量化只能把"答题等待"从 155ms 降到仍需等待下一次 flush，却会牺牲"答完即落库"的语义（`apply_grade` 之后立刻 `read_state` 能看到结果，多个测试依赖这一点）；(3) 已有更合适的优化方向（第六批的节点级 patch）。**记录为已知取舍**：1 万节点单项目 + 同时整树保存的极端组合下，答题可能等待约 150ms。
 
 - [ ] **Step 5: 全量检查**
 
