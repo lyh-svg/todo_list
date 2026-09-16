@@ -143,6 +143,16 @@ class SummaryTests(unittest.TestCase):
                 with mock.patch.object(storage, "read_app_settings", return_value=settings):
                     self.assertEqual(review_storage._settings(), expected)
 
+    def test_settings_control_queue_limit_and_new_slots(self) -> None:
+        storage.update_app_settings({"reviewDailyLimit": 7, "reviewNewPerDay": 3})
+        settings = review_storage._settings()
+        self.assertEqual(settings["limit"], 7)
+        self.assertEqual(settings["newPerDay"], 3)
+        storage.update_app_settings({"reviewDailyLimit": 99, "reviewNewPerDay": -5})
+        settings = review_storage._settings()
+        self.assertEqual(settings["limit"], 15)
+        self.assertEqual(settings["newPerDay"], 0)
+
     def test_streak_counts_consecutive_days(self) -> None:
         review_storage.apply_grade("py.a.b", "concept", 3, today="2026-09-15")
         review_storage.apply_grade("py.a.b", "predict", 3, today="2026-09-16")

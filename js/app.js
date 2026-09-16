@@ -52,6 +52,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
     const exportCsvBtn = document.getElementById('exportCsvBtn');
     const runAutoArchiveBtn = document.getElementById('runAutoArchiveBtn');
     const trashRetentionInput = document.getElementById('trashRetentionInput');
+    const reviewDailyLimitInput = document.getElementById('reviewDailyLimitInput');
+    const reviewNewPerDayInput = document.getElementById('reviewNewPerDayInput');
     const autoArchiveDaysInput = document.getElementById('autoArchiveDaysInput');
     const autoArchiveToggle = document.getElementById('autoArchiveToggle');
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
@@ -4911,6 +4913,11 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             if (!response.ok) throw new Error(payload.error || '读取设置失败');
             const settings = payload.settings || {};
             trashRetentionInput.value = String(settings.trashRetentionDays || 7);
+            // 显式 0 是合法设置（关闭每日新知识点），不能用 || 兜底
+            const reviewLimitValue = settings.reviewDailyLimit;
+            reviewDailyLimitInput.value = String(reviewLimitValue === undefined || reviewLimitValue === null ? 10 : reviewLimitValue);
+            const reviewNewValue = settings.reviewNewPerDay;
+            reviewNewPerDayInput.value = String(reviewNewValue === undefined || reviewNewValue === null ? 2 : reviewNewValue);
             autoArchiveDaysInput.value = String(settings.autoArchiveDays || 30);
             autoArchiveToggle.checked = Boolean(settings.autoArchiveEnabled);
             settingsStatus.textContent = `回收站保留 ${settings.trashRetentionDays} 天；`
@@ -4926,6 +4933,8 @@ const projectReviewToggle = document.getElementById('projectReviewToggle');
             await callApi('/api/settings', 'POST', {
                 settings: {
                     trashRetentionDays: Number(trashRetentionInput.value),
+                    reviewDailyLimit: Number(reviewDailyLimitInput.value) || 10,
+                    reviewNewPerDay: Number(reviewNewPerDayInput.value) || 0,
                     autoArchiveDays: Number(autoArchiveDaysInput.value),
                     autoArchiveEnabled: autoArchiveToggle.checked,
                 },

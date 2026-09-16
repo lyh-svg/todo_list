@@ -30,6 +30,8 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "trashRetentionDays": TRASH_RETENTION_DAYS,   # 回收站保留天数 1~365
     "autoArchiveEnabled": False,                  # 是否自动归档"全部完成且很久没动"的项目
     "autoArchiveDays": 30,                        # 多久没动算"很久" 1~3650
+    "reviewDailyLimit": 10,                       # 每日复习上限 5~15
+    "reviewNewPerDay": 2,                         # 每日新知识点名额 0~5
 }
 MIN_TRASH_RETENTION_DAYS = 1
 MAX_TRASH_RETENTION_DAYS = 365
@@ -1042,6 +1044,12 @@ def read_app_settings(connection: sqlite3.Connection | None = None) -> dict[str,
         merged["autoArchiveDays"] = _clean_int(
             stored.get("autoArchiveDays"), minimum=1, maximum=MAX_AUTO_ARCHIVE_DAYS,
             default=settings["autoArchiveDays"])
+        merged["reviewDailyLimit"] = _clean_int(
+            stored.get("reviewDailyLimit"), minimum=5, maximum=15,
+            default=settings["reviewDailyLimit"])
+        merged["reviewNewPerDay"] = _clean_int(
+            stored.get("reviewNewPerDay"), minimum=0, maximum=5,
+            default=settings["reviewNewPerDay"])
         return merged
 
     if connection is not None:
@@ -1077,6 +1085,12 @@ def update_app_settings(patch: dict[str, Any]) -> dict[str, Any]:
             if not 1 <= days <= MAX_AUTO_ARCHIVE_DAYS:
                 raise ValueError(f"自动归档天数应在 1~{MAX_AUTO_ARCHIVE_DAYS} 天之间")
             settings["autoArchiveDays"] = days
+        if "reviewDailyLimit" in patch:
+            settings["reviewDailyLimit"] = _clean_int(
+                patch.get("reviewDailyLimit"), minimum=5, maximum=15, default=10)
+        if "reviewNewPerDay" in patch:
+            settings["reviewNewPerDay"] = _clean_int(
+                patch.get("reviewNewPerDay"), minimum=0, maximum=5, default=2)
         encoded = _json(settings)
         row = connection.execute("SELECT 1 FROM app_state WHERE key=?", (SETTINGS_KEY,)).fetchone()
         if row:

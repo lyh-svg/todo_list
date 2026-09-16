@@ -105,6 +105,9 @@ check('活动：可以清空历史', /clearActivityBtn\.addEventListener/.test(s
 check('设置：回收站保留天数与自动归档可配置', html.includes('id="trashRetentionInput"')
     && html.includes('id="autoArchiveDaysInput"') && html.includes('id="autoArchiveToggle"'));
 check('设置：保存走 /api/settings', /async function saveSettingsFromUi[\s\S]{0,500}\/api\/settings/.test(src));
+check('设置：每日复习上限与新增名额可配置',
+    html.includes('id="reviewDailyLimitInput"') && html.includes('id="reviewNewPerDayInput"')
+    && /reviewDailyLimit[\s\S]{0,200}reviewNewPerDay/.test(src));
 check('自动归档：有"立即归档已完成项目"入口', html.includes('id="runAutoArchiveBtn"') && /\/api\/archive\/auto/.test(src));
 check('已完成筛选仍在（项目列表过滤器）', html.includes('<option value="completed">已完成</option>')
     && /projectFilters\.status === 'completed'/.test(src));

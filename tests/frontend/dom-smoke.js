@@ -250,6 +250,9 @@ async function fetchStub(url, options = {}) {
         }
         return reply(200, { items: [] });
     }
+    if (path === '/api/settings') return reply(200, { settings: {
+        trashRetentionDays: 7, autoArchiveEnabled: false, autoArchiveDays: 30,
+        reviewDailyLimit: 10, reviewNewPerDay: 2 } });
     if (path === '/api/memos') return reply(200, { memos: [], databaseBytes: 0 });
     if (path === '/api/inbox/add') return reply(200, { ok: true, node: { ...projectFixture.tree[0].children[0].children[0], id: 'i-new', text: '新任务' }, revision: 2, projectId: 'inbox' });
     if (path === '/api/batch') return reply(200, { ok: true, changed: 1, spawned: 0, failed: [], projects: [] });
@@ -345,6 +348,9 @@ function step(name, fn) {
     await sleep(60);
     check('init() 之后恰好一个视图 active', activeViews().length === 1, JSON.stringify(activeViews()));
     check('启动拉取了项目列表与工作台所需接口', fetchLog.some(line => line.includes('/api/projects')), JSON.stringify(fetchLog.slice(0, 6)));
+    check('设置面板有每日复习上限与新增名额输入框',
+        Boolean(elementsById.get('reviewDailyLimitInput')) && Boolean(elementsById.get('reviewNewPerDayInput')),
+        '缺少设置输入框');
 
     // ① 打开今日工作台
     step('点击「今日工作台」不抛异常', () => elementsById.get('openWorkbenchBtn').dispatch('click'));
