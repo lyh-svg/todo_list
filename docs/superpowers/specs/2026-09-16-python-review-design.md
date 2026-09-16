@@ -272,7 +272,7 @@ CREATE TABLE review_sessions (
 | POST | `/api/review/generate` | `{taskId, projectId}` → AI 补充知识点/补漏题（3～5 项，幂等入库，`origin='ai'`） |
 | GET | `/api/review/points?module=&level=&query=&limit=&offset=` | 知识点库浏览（含掌握度、taskRefs），支持"立即练一次" |
 | GET | `/api/review/history?code=&limit=` | 某知识点的历史答案与错误记录 |
-| POST | `/api/review/plan` | 生成/刷新今日计划（默认由 queue 即算即出） |
+| — | ~~`/api/review/plan`~~ | **不实现**：队列由 `/api/review/queue` 即算即出，避免多维护一份"今日计划"状态（实施计划 Task 7 已记录） |
 
 ## 13. 会话状态机与调度细节
 
