@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "week": 1,
+  "level": "基础",
+  "points": [
+    {
+      "code": "py.mutability.default-arg",
+      "title": "可变默认参数与求值时机",
+      "minutes": 20,
+      "module": "函数",
+      "level": "基础",
+      "taskRefs": [{"taskId": "1103", "relation": "introduces"}],
+      "concept": {"prompt": "默认参数什么时候求值？", "answer": ["函数定义时求值一次", "可变对象会在调用间共享"]},
+      "predict": {"prompt": "写出输出并解释", "code": "def add(item, items=[]):\n    items.append(item)\n    return items\nprint(add(1))\nprint(add(2))", "expected": ["[1]", "[1, 2]"], "explain": "第二次调用复用了定义时创建的同一个列表"},
+      "debug": {"prompt": "找出 bug", "code": "def cache(k, store={}):\n    return store.setdefault(k, [])", "rootCause": "store 在函数定义时创建一次，被所有调用共享", "fix": "改成 store=None，函数体内 store = {} if store is None else store"},
+      "code_task": {"prompt": "用 None 哨兵重写", "acceptance": ["多次调用互不影响", "带一个 unittest 用例"], "reference": "def add(item, items=None):\n    items = [] if items is None else items\n    items.append(item)\n    return items"},
+      "pitfalls": ["默认值是可变对象", "把默认值当每次新建", "调用侧共享同一列表"]
+    }
+  ]
+}
