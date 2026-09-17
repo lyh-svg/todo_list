@@ -17,10 +17,6 @@
         {
           "taskId": "6404",
           "relation": "exercises"
-        },
-        {
-          "taskId": "6504",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -47,13 +43,8 @@
         "prompt": "下面代码想按瓶颈选并发方案，但 classify 的两个分支永远都只走同一条，找出问题、说明根因并给出修法",
         "code": "import time\n\n\ndef classify(func, *args):\n    cpu_before = time.process_time()\n    wall_before = time.perf_counter()\n    func(*args)\n    wall = time.perf_counter() - wall_before\n    cpu = time.process_time() - cpu_before\n    return \"io-bound\" if cpu > wall else \"cpu-bound\"\n\n\ndef nap(seconds):\n    time.sleep(seconds)\n\n\ndef spin(rounds):\n    total = 0\n    for index in range(rounds):\n        total += index\n    return total\n\n\nprint(\"nap ->\", classify(nap, 0.05))\nprint(\"spin ->\", classify(spin, 200_000))\n",
         "rootCause": "判定条件写反了：I/O 密集的特征是 CPU 时间远小于墙钟时间（cpu < wall），代码却写成 cpu > wall 才算 io-bound；nap 的 cpu 接近 0 而 wall 约 0.05 秒，于是它被判成 cpu-bound，而 spin 里 wall 与 cpu 接近、cpu 略小，也被判成 cpu-bound，两个函数输出同一条分支。",
-        "fix": "把比较方向改成 cpu < wall 时为 io-bound（更稳的写法是引入阈值，例如 cpu < wall * 0.5），修复后 nap 输出 io-bound、spin 输出 cpu-bound。",
-        "fixed": "import time\n\n\ndef classify(func, *args):\n    cpu_before = time.process_time()\n    wall_before = time.perf_counter()\n    func(*args)\n    wall = time.perf_counter() - wall_before\n    cpu = time.process_time() - cpu_before\n    return \"io-bound\" if cpu < wall else \"cpu-bound\"\n\n\ndef nap(seconds):\n    time.sleep(seconds)\n\n\ndef spin(rounds):\n    total = 0\n    for index in range(rounds):\n        total += index\n    return total\n\n\nprint(\"nap ->\", classify(nap, 0.05))\nprint(\"spin ->\", classify(spin, 200_000))\n",
-        "expect_fixed": [
-          "nap -> io-bound"
-        ]
+        "fix": "把比较方向改成 cpu < wall 时为 io-bound（更稳的写法是引入阈值，例如 cpu < wall * 0.5），修复后 nap 输出 io-bound、spin 输出 cpu-bound。"
       },
-      "analyze": "并发是结构，并行是执行方式：单核上时间片轮转跑两个线程是并发，双核上真正同时跑才是并行。选方案得先量瓶颈：wall 远大于 cpu 就是 I/O 密集，用线程/asyncio；两者接近就是 CPU 密集，多核上用多进程。",
       "code_task": {
         "prompt": "实现 classify_workload(func, *args, samples=3)：用 time.perf_counter 与 time.process_time 采样，返回 {\"wall\", \"cpu\", \"kind\"}，kind 在 cpu/wall 比值大于等于 0.5 时是 \"cpu-bound\"，否则是 \"io-bound\"；再写 unittest 证明纯计算函数被判为 cpu-bound、time.sleep 函数被判为 io-bound。",
         "acceptance": [
@@ -85,10 +76,6 @@
         {
           "taskId": "6104",
           "relation": "exercises"
-        },
-        {
-          "taskId": "6504",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -116,13 +103,8 @@
         "prompt": "下面代码想用线程安全地累加，但结果偶尔少加，找出问题、说明根因并给出修法（提示：不要依赖调度顺序复现，用事件人为拉长中间态）",
         "code": "import threading\n\ntotal = 0\nread_done = threading.Event()\nresume = threading.Event()\n\n\ndef slow_increment():\n    global total\n    pending = total\n    read_done.set()\n    resume.wait(timeout=1.0)\n    total = pending + 1\n\n\ndef fast_increment():\n    global total\n    total = total + 1\n\n\nslow = threading.Thread(target=slow_increment)\nslow.start()\nread_done.wait(timeout=1.0)\nfast = threading.Thread(target=fast_increment)\nfast.start()\nfast.join(timeout=1.0)\nresume.set()\nslow.join(timeout=1.0)\nprint(\"total =\", total)\n",
         "rootCause": "total = total + 1 是读-改-写三步而不是原子操作：slow_increment 读走旧值 0 后停在中间态，fast_increment 也读到 0 并写回 1，slow_increment 恢复后用自己手里的 pending=0 写回 1，两次自增只剩一次，输出 total = 1。GIL 只保证每条字节码不撕裂，管不了这种跨线程的复合操作。",
-        "fix": "用 threading.Lock 把读-改-写整段放进临界区（with lock: total = total + 1），或改成消息传递不让两个线程共享这个变量；修复后输出 total = 2。",
-        "fixed": "import threading\n\ntotal = 0\nlock = threading.Lock()\nread_done = threading.Event()\nresume = threading.Event()\n\n\ndef slow_increment():\n    global total\n    with lock:\n        pending = total\n        read_done.set()\n        resume.wait(timeout=1.0)\n        total = pending + 1\n\n\ndef fast_increment():\n    global total\n    with lock:\n        total = total + 1\n\n\nslow = threading.Thread(target=slow_increment)\nslow.start()\nread_done.wait(timeout=1.0)\nresume.set()\nfast = threading.Thread(target=fast_increment)\nfast.start()\nfast.join(timeout=1.0)\nslow.join(timeout=1.0)\nprint(\"total =\", total)\n",
-        "expect_fixed": [
-          "total = 2"
-        ]
+        "fix": "用 threading.Lock 把读-改-写整段放进临界区（with lock: total = total + 1），或改成消息传递不让两个线程共享这个变量；修复后输出 total = 2。"
       },
-      "analyze": "GIL 保护的是解释器：引用计数、字节码边界。它不保护业务不变量。判断一个操作能不能省锁，看的不是它写了几行，而是它编译成几条字节码、中间有没有可被观察的状态。",
       "code_task": {
         "prompt": "写一个演示“GIL 不保护复合操作”的确定性实验：用两个 Event 让两个线程交错执行读-改-写，证明丢更新必然发生（计数为 1 而不是 2）；再实现 locked_increment 用 Lock 修复，断言加锁后计数为 2。用 unittest 组织，并对共享状态与锁做清理。",
         "acceptance": [
@@ -157,7 +139,7 @@
         },
         {
           "taskId": "6204",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -184,13 +166,8 @@
         "prompt": "下面这段“用线程给纯计算提速”的代码跑完没有任何异常，但也完全没有变快，找出设计问题、说明根因并给出修法",
         "code": "import threading\nimport time\n\n\ndef spin(rounds, results, slot):\n    total = 0\n    for index in range(rounds):\n        total += index * index\n    results[slot] = total\n\n\nresults = [0, 0]\nstarted = time.perf_counter()\nthreads = []\nfor slot in range(2):\n    thread = threading.Thread(target=spin, args=(400_000, results, slot))\n    threads.append(thread)\nfor thread in threads:\n    thread.start()\nfor thread in threads:\n    thread.join(timeout=5.0)\nelapsed = time.perf_counter() - started\nprint(\"both finished:\", all(not t.is_alive() for t in threads))\nprint(\"slower than half the serial time:\", elapsed < 0.05)\n",
         "rootCause": "这段代码想用多线程并行做纯 Python 计算，但同一个解释器里只有一个线程能持有 GIL 执行字节码，两个 spin 只能轮流跑，墙上时间约等于两者之和，最后一行 elapsed < 0.05 预期为 False；线程在这里只增加了切换开销，一点多核都没用上。",
-        "fix": "CPU 密集任务改用 concurrent.futures.ProcessPoolExecutor 或 multiprocessing（每个进程一个解释器、各持一把 GIL，才能真并行），或者改用会释放 GIL 的扩展做计算；修好后同样的 workload 会缩短 wall 时间。",
-        "fixed": "import time\nfrom concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor\n\n\ndef spin(rounds):\n    total = 0\n    for index in range(rounds):\n        total += index * index\n    return total\n\n\nif __name__ == \"__main__\":\n    with ThreadPoolExecutor(max_workers=2) as executor:\n        threaded = list(executor.map(spin, [200_000, 200_000]))\n    with ProcessPoolExecutor(max_workers=2) as executor:\n        processed = list(executor.map(spin, [200_000, 200_000]))\n    print(\"same results:\", sorted(threaded) == sorted(processed))\n    print(\"both modes completed:\", (len(threaded), len(processed)) == (2, 2))\n    print(\"threads cannot use two cores for bytecode: True\")\n",
-        "expect_fixed": [
-          "same results: True"
-        ]
+        "fix": "CPU 密集任务改用 concurrent.futures.ProcessPoolExecutor 或 multiprocessing（每个进程一个解释器、各持一把 GIL，才能真并行），或者改用会释放 GIL 的扩展做计算；修好后同样的 workload 会缩短 wall 时间。"
       },
-      "analyze": "判断多线程有没有用的方法只有一个：看在等待上重叠了多少。sleep/recv/read 会释放 GIL，纯 Python 循环不会。所以“线程是不是有用”不是绝对的，取决于任务在等还是在算。",
       "code_task": {
         "prompt": "写一个报告函数 compare_models(workload, items)：分别用串行和 ThreadPoolExecutor(max_workers=3) 跑同一批任务，返回每个模式的 wall 时间与完成顺序，并对 I/O 密集 workload（time.sleep）断言线程模式的 wall 明显小于串行之和，对纯 CPU workload 只断言结果一致、不做提速断言。用 unittest 覆盖两条路径。",
         "acceptance": [
@@ -227,7 +204,7 @@
       "concept": {
         "prompt": "sys.setswitchinterval 调的是什么？它和“某段代码是不是原子”是什么关系？",
         "answer": [
-          "它设置解释器在多长时间（秒）后考虑把 GIL 交给别的线程；默认值在几十毫秒量级（如 0.005），它只影响切换频率、不影响正确性",
+          "它设置解释器在多长时间（秒）后考虑把 GIL 交给别的线程；默认值是 0.005 秒 = 5 毫秒，属于几毫秒量级，它只影响切换频率、不影响正确性",
           "把间隔调大能减少切换开销，让 CPU 密集线程跑得更连贯；调小会让线程更频繁交替，但都不能让纯 Python 计算真正并行",
           "原子性的判据是“编译成几条字节码、中间有没有可被观察的状态”，而不是“执行得快不快”或者“区间调多大”",
           "依赖切换间隔来避免竞态是错的方向：即使把间隔调到很大，线程仍可能在任意字节码边界被切换（阻塞 I/O 也会释放 GIL），所以共享可变状态必须用锁或消息传递保护",
@@ -249,13 +226,8 @@
         "prompt": "下面代码把切换间隔调到 10 秒，想让共享列表的“裁剪 + 追加”变原子，结果写入的数据全丢了，找出问题、说明根因并给出修法（提示：用两个 Event 固定交错时刻，让覆盖必然发生）",
         "code": "import sys\nimport threading\n\nsys.setswitchinterval(10.0)\n\nshared = []\ntrim_read = threading.Event()\nappend_done = threading.Event()\n\n\ndef trim():\n    snapshot = list(shared)\n    trim_read.set()\n    append_done.wait(timeout=1.0)\n    shared[:] = snapshot\n\n\ndef append():\n    trim_read.wait(timeout=1.0)\n    shared.append(1)\n    shared.append(2)\n    append_done.set()\n\n\ntrimmer = threading.Thread(target=trim)\nappender = threading.Thread(target=append)\ntrimmer.start()\nappender.start()\ntrimmer.join(timeout=2.0)\nappender.join(timeout=2.0)\nprint(\"final:\", shared)\nprint(\"both kept:\", shared == [1, 2])\nprint(\"threads done:\", not trimmer.is_alive() and not appender.is_alive())\n",
         "rootCause": "trim 先读走快照（此时 shared 是空列表），append 随后写入 [1, 2]，最后 trim 用 shared[:] = snapshot 把空快照整体写回，覆盖掉刚追加的数据，于是 final 是 []、both kept 为 False。把 setswitchinterval 调到 10 秒并没有修好它——切换间隔只降低切换频率，读-改-写之间的字节码边界依然存在（何况线程在 I/O 或加锁时会主动释放 GIL），这里的交错是用两个 Event 确定性构造出来的。",
-        "fix": "把读快照与整体写回放进同一把 Lock 的临界区（或者改用 queue.Queue 做消息传递），让“读-改-写”整体不可分割；修复后 final 为 [1, 2]、both kept 为 True。",
-        "fixed": "import sys\nimport threading\n\nsys.setswitchinterval(10.0)\n\nshared = []\nlock = threading.Lock()\ntrim_read = threading.Event()\nappend_done = threading.Event()\n\n\ndef trim():\n    with lock:\n        snapshot = list(shared)\n        shared[:] = snapshot\n\n\ndef append():\n    with lock:\n        shared.append(1)\n        shared.append(2)\n\n\ntrimmer = threading.Thread(target=trim)\nappender = threading.Thread(target=append)\ntrimmer.start()\nappender.start()\ntrimmer.join(timeout=2.0)\nappender.join(timeout=2.0)\nprint(\"final:\", shared)\nprint(\"both kept:\", shared == [1, 2])\nprint(\"threads done:\", not trimmer.is_alive() and not appender.is_alive())\n",
-        "expect_fixed": [
-          "both kept: True"
-        ]
+        "fix": "把读快照与整体写回放进同一把 Lock 的临界区（或者改用 queue.Queue 做消息传递），让“读-改-写”整体不可分割；修复后 final 为 [1, 2]、both kept 为 True。"
       },
-      "analyze": "切换间隔是性能旋钮不是正确性旋钮。想确认一段代码是否原子，去看 dis，而不是去调 setswitchinterval。真正需要的是把读-改-写整体放进临界区，或者干脆不共享可变状态。",
       "code_task": {
         "prompt": "实现 explain_atomic(statement)：返回该语句编译后的非 RESUME/CACHE 指令名列表与指令条数；写 unittest 断言 x = x + 1 与 items = items + [x] 的指令数都严格多于单条赋值 x = 1（说明读-改-写不是原子操作），并断言 sys.setswitchinterval 读回值等于设置值。不要断言具体指令条数，避免绑定解释器版本。",
         "acceptance": [
@@ -285,11 +257,7 @@
           "relation": "introduces"
         },
         {
-          "taskId": "6203",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6303",
+          "taskId": "6104",
           "relation": "exercises"
         },
         {
@@ -324,13 +292,8 @@
         "prompt": "下面代码声称“已经等所有线程结束”，但打印时还有线程在跑，找出问题、说明根因并给出修法",
         "code": "import threading\nimport time\n\nfinished = []\n\n\ndef worker(slot, seconds):\n    time.sleep(seconds)\n    finished.append(slot)\n\n\nthreads = [threading.Thread(target=worker, args=(slot, 0.15)) for slot in (1, 2)]\nfor thread in threads:\n    thread.start()\nfor thread in threads:\n    thread.join(timeout=0.01)\nprint(\"finished:\", sorted(finished))\nprint(\"still alive:\", sum(1 for thread in threads if thread.is_alive()))\n",
         "rootCause": "join(timeout=0.01) 只是“最多等 10 毫秒”，超时就原样返回，不等于线程结束；两个线程各睡 0.15 秒，所以在打印时都还活着，finished 是空列表、still alive 是 2。想确保等到结束就必须用足够长的超时并在返回后检查 is_alive，或用 Event/队列显式确认完成。",
-        "fix": "把 join 的超时改成能覆盖工作时间的值（例如 2.0），并在 join 之后断言 not thread.is_alive()；若超时是业务语义，就把超时后的线程当作未完成处理（记录并等待或走取消路径），不要直接假设它已完成。",
-        "fixed": "import threading\nimport time\n\nfinished = []\n\n\ndef worker(slot, seconds):\n    time.sleep(seconds)\n    finished.append(slot)\n\n\nthreads = [threading.Thread(target=worker, args=(slot, 0.15)) for slot in (1, 2)]\nfor thread in threads:\n    thread.start()\nfor thread in threads:\n    thread.join(timeout=2.0)\n    assert not thread.is_alive(), \"worker did not finish in time\"\nprint(\"finished:\", sorted(finished))\nprint(\"still alive:\", sum(1 for thread in threads if thread.is_alive()))\n",
-        "expect_fixed": [
-          "finished: [1, 2]"
-        ]
+        "fix": "把 join 的超时改成能覆盖工作时间的值（例如 2.0），并在 join 之后断言 not thread.is_alive()；若超时是业务语义，就把超时后的线程当作未完成处理（记录并等待或走取消路径），不要直接假设它已完成。"
       },
-      "analyze": "join(timeout) 的返回值永远是 None，所以“有没有等到”只能看 is_alive()。把 join 加超时是防挂死的正确做法，但超时分支必须显式处理，否则它就从保险变成了假绿。",
       "code_task": {
         "prompt": "实现 run_with_deadline(target, timeout)：启动一个线程执行 target，最多等 timeout 秒，返回 {\"status\": \"done\"|\"timeout\", \"alive\": bool, \"result\": ...}；decorator 版不需要，但要处理目标函数抛异常的传播（把异常对象放进返回结果）。用 unittest 覆盖按时完成、超时、抛异常三条路径，所有 join 都带 timeout，测试结束后没有存活线程。",
         "acceptance": [
@@ -339,7 +302,7 @@
           "目标函数抛异常时返回的 error 字段是该异常实例，主线程不崩溃",
           "同一 Thread 对象第二次 start 抛 RuntimeError（单独用例验证），所有线程最终都不存活"
         ],
-        "reference": "import threading\nimport time\nimport unittest\n\n\ndef run_with_deadline(target, timeout):\n    box = {\"result\": None, \"error\": None}\n\n    def runner():\n        try:\n            box[\"result\"] = target()\n        except BaseException as exc:  # 线程里未捕获异常不会传到主线程，必须自己接住\n            box[\"error\"] = exc\n\n    thread = threading.Thread(target=runner)\n    thread.start()\n    thread.join(timeout=timeout)\n    status = \"done\" if not thread.is_alive() else \"timeout\"\n    return {\"status\": status, \"alive\": thread.is_alive(), \"result\": box[\"result\"], \"error\": box[\"error\"]}\n\n\nclass RunWithDeadlineTest(unittest.TestCase):\n    def test_finishes_before_deadline(self):\n        outcome = run_with_deadline(lambda: 6 * 7, timeout=2.0)\n        self.assertEqual(outcome[\"status\"], \"done\")\n        self.assertFalse(outcome[\"alive\"])\n        self.assertEqual(outcome[\"result\"], 42)\n\n    def test_times_out_and_reports_alive(self):\n        def slow():\n            time.sleep(0.3)\n\n        outcome = run_with_deadline(slow, timeout=0.01)\n        self.assertEqual(outcome[\"status\"], \"timeout\")\n        self.assertTrue(outcome[\"alive\"])\n        self.assertIsNone(outcome[\"result\"])\n\n    def test_worker_exception_is_returned(self):\n        def boom():\n            raise ValueError(\"bad input\")\n\n        outcome = run_with_deadline(boom, timeout=2.0)\n        self.assertEqual(outcome[\"status\"], \"done\")\n        self.assertIsInstance(outcome[\"error\"], ValueError)\n        self.assertEqual(str(outcome[\"error\"]), \"bad input\")\n\n    def test_thread_object_cannot_restart(self):\n        thread = threading.Thread(target=lambda: None)\n        thread.start()\n        thread.join(timeout=2.0)\n        with self.assertRaises(RuntimeError):\n            thread.start()\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import threading\nimport time\nimport unittest\n\n\ndef run_with_deadline(target, timeout):\n    box = {\"result\": None, \"error\": None}\n\n    def runner():\n        try:\n            box[\"result\"] = target()\n        except BaseException as exc:  # 线程里未捕获异常不会传到主线程，必须自己接住\n            box[\"error\"] = exc\n\n    thread = threading.Thread(target=runner)\n    thread.start()\n    thread.join(timeout=timeout)\n    status = \"done\" if not thread.is_alive() else \"timeout\"\n    return {\"status\": status, \"alive\": thread.is_alive(), \"result\": box[\"result\"], \"error\": box[\"error\"]}\n\n\nclass RunWithDeadlineTest(unittest.TestCase):\n    def test_finishes_before_deadline(self):\n        outcome = run_with_deadline(lambda: 6 * 7, timeout=2.0)\n        self.assertEqual(outcome[\"status\"], \"done\")\n        self.assertFalse(outcome[\"alive\"])\n        self.assertEqual(outcome[\"result\"], 42)\n\n    def test_times_out_and_reports_alive(self):\n        def slow():\n            time.sleep(0.3)\n\n        outcome = run_with_deadline(slow, timeout=0.01)\n        self.assertEqual(outcome[\"status\"], \"timeout\")\n        self.assertTrue(outcome[\"alive\"])\n        self.assertIsNone(outcome[\"result\"])\n\n    def test_worker_exception_is_returned(self):\n        def boom():\n            raise ValueError(\"bad input\")\n\n        outcome = run_with_deadline(boom, timeout=2.0)\n        self.assertEqual(outcome[\"status\"], \"done\")\n        self.assertIsInstance(outcome[\"error\"], ValueError)\n        self.assertEqual(str(outcome[\"error\"]), \"bad input\")\n\n    def test_thread_object_cannot_restart(self):\n        thread = threading.Thread(target=lambda: None)\n        thread.start()\n        thread.join(timeout=2.0)\n        with self.assertRaises(RuntimeError):\n            thread.start()\n\n    def test_no_threads_left_alive_eventually(self):\n        baseline = threading.active_count()\n        run_with_deadline(lambda: time.sleep(0.2), timeout=0.01)  # 故意留下一条慢线程\n        deadline = time.perf_counter() + 2.0\n        while threading.active_count() > baseline and time.perf_counter() < deadline:\n            time.sleep(0.01)\n        self.assertEqual(threading.active_count(), baseline)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "把 join(timeout) 返回当成功后直接读结果",
@@ -362,10 +325,6 @@
         {
           "taskId": "6303",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6404",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -392,16 +351,11 @@
         "explain": "显式给 daemon=True，所以第一行是 True。线程进入 stop.wait(timeout=1.0) 时还活着，is_alive 为 True；主线程 stop.set() 之后 worker 走完函数返回，join 正常结束，alive 为 False，两个事件都已追加。线程结束后就从 threading.enumerate() 里消失，所以 enumerated 为 False。最后新建的线程没有指定 daemon，它的 daemon 属性继承自创建它的主线程（False），因此不设守护的线程会阻止解释器退出——这正是常驻 worker 必须用停止信号而不是 daemon 的原因。"
       },
       "debug": {
-        "prompt": "下面代码想“主线程干完就走”，结果进程一直不结束，找出问题、说明根因并给出修法",
-        "code": "import threading\n\nstop = threading.Event()\n\n\ndef supervisor():\n    while not stop.is_set():\n        stop.wait(timeout=0.05)\n\n\nworker = threading.Thread(target=supervisor)\nworker.start()\nprint(\"main done, worker alive:\", worker.is_alive())\n",
-        "rootCause": "worker 是非守护线程且循环条件依赖 stop 事件，但主线程打印完就结束、从来没有人调用 stop.set()：非守护线程会阻止解释器退出，于是进程挂在那里直到被外部杀掉。根因是把“循环能否退出”寄托在没人触发的信号上，同时又没有 daemon 或 join 收尾。",
-        "fix": "要么在 main 结束前 stop.set() 再 worker.join(timeout) 收尾（推荐：给自己一个明确的关闭流程），要么明确接受丢弃语义时设 daemon=True；修复后程序打印主线程信息并立即正常退出。",
-        "fixed": "import threading\n\nstop = threading.Event()\n\n\ndef supervisor():\n    while not stop.is_set():\n        stop.wait(timeout=0.05)\n    print(\"supervisor saw the stop signal\")\n\n\nworker = threading.Thread(target=supervisor)\nworker.start()\nprint(\"main done, worker alive:\", worker.is_alive())\nstop.set()\nworker.join(timeout=2.0)\nassert not worker.is_alive(), \"worker still running: process would hang on exit\"\nprint(\"process can exit now:\", not worker.is_alive())\n",
-        "expect_fixed": [
-          "process can exit now: True"
-        ]
+        "prompt": "下面代码想“主线程干完就走”，但非守护 worker 一直在等一个没人触发的信号，真实运行会被它拖住；找出问题、说明根因并给出修法（演示已用 join(timeout) 把观察限制在 1 秒内）",
+        "code": "import threading\n\nstop = threading.Event()\n\n\ndef supervisor():\n    while not stop.is_set():\n        stop.wait(timeout=0.05)\n\n\nworker = threading.Thread(target=supervisor, name=\"supervisor\")\nworker.start()\nprint(\"main done, worker alive:\", worker.is_alive())\nworker.join(timeout=1.0)\nprint(\"stuck:\", worker.is_alive())\nprint(\"stuck: worker 未在 1 秒内自行退出\" if worker.is_alive() else \"worker exited\")\n# 演示收尾：触发停止信号，避免非守护线程把解释器拖住\nstop.set()\nworker.join(timeout=1.0)\nprint(\"after stop, worker alive:\", worker.is_alive())\n",
+        "rootCause": "worker 是非守护线程且循环条件依赖 stop 事件，但主线程从来不调用 stop.set()：真实运行时非守护线程会阻止解释器退出，进程挂在那里直到被外部杀掉。这里用 worker.join(timeout=1.0) 把观察限制在 1 秒内，输出 stuck: True 与“worker 未在 1 秒内自行退出”；最后再 stop.set() 只是为了不让演示本身挂住。根因是把“循环能否退出”寄托在没人触发的信号上，同时又没有 daemon 或 join 收尾。",
+        "fix": "要么在 main 结束前 stop.set() 再 worker.join(timeout) 收尾（推荐：给自己一个明确的关闭流程），要么明确接受丢弃语义时设 daemon=True；修复后 stuck 为 False、打印 worker exited 并立即正常退出。"
       },
-      "analyze": "守护与否是退出语义的选择题：daemon 表示“可以随时丢弃”，非守护表示“必须等我干完”。选前者就要接受数据可能没写完，选后者就必须准备停止信号，否则就是把挂死写进了设计。",
       "code_task": {
         "prompt": "实现一个可由信号停止的后台线程类 StoppableWorker：run 循环从 queue.Queue 取任务，收到哨兵 None 就退出；提供 stop() 发送哨兵并 join(timeout)；提供 is_running()。用 unittest 覆盖正常处理、stop 之后线程结束、stop 是幂等的不抛异常。",
         "acceptance": [
@@ -437,10 +391,6 @@
         {
           "taskId": "6204",
           "relation": "exercises"
-        },
-        {
-          "taskId": "6503",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -468,13 +418,8 @@
         "prompt": "下面代码想统计“每个文件的结果”，却把不同文件的结果串在一起，找出问题、说明根因并给出修法",
         "code": "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\ndef digest(name):\n    time.sleep(0.01 * (3 - len(name)))\n    return name.upper()\n\n\nnames = [\"a\", \"bb\", \"ccc\"]\nwith ThreadPoolExecutor(max_workers=3) as executor:\n    futures = [executor.submit(digest, name) for name in names]\nfinished = [future.result(timeout=5.0) for future in sorted(futures, key=lambda f: not f.done())]\n\nprint(\"names:\", names)\nprint(\"results:\", finished)\nprint(\"pairs:\", list(zip(names, finished)))\n",
         "rootCause": "结果与输入靠 Future 的下标绑定，但这里用 sorted(futures, key=lambda f: not f.done()) 按“是否已完成”重排，完成顺序一变，finished 的顺序就不再对应 names 的顺序，zip 出来的 pair 会把 \"a\" 配到 \"CCC\" 这类错位结果上。",
-        "fix": "不要按完成状态重排 Future：要么直接用 futures 的提交顺序（[future.result() for future in futures]），要么用 executor.map 按输入顺序取，要么改成 as_completed 但显式把 future 与输入一起打包（提交时携带名字，收集时读回名字），这样结果与输入永远可关联。",
-        "fixed": "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\ndef digest(name):\n    time.sleep(0.01 * (3 - len(name)))\n    return name.upper()\n\n\nnames = [\"a\", \"bb\", \"ccc\"]\nwith ThreadPoolExecutor(max_workers=3) as executor:\n    futures = [executor.submit(digest, name) for name in names]\n    finished = [future.result(timeout=5.0) for future in futures]\n\nprint(\"names:\", names)\nprint(\"results:\", finished)\nprint(\"pairs:\", list(zip(names, finished)))\nprint(\"first pair is the first input:\", list(zip(names, finished))[0] == (\"a\", \"A\"))\n",
-        "expect_fixed": [
-          "first pair is the first input: True"
-        ]
+        "fix": "不要按完成状态重排 Future：要么直接用 futures 的提交顺序（[future.result() for future in futures]），要么用 executor.map 按输入顺序取，要么改成 as_completed 但显式把 future 与输入一起打包（提交时携带名字，收集时读回名字），这样结果与输入永远可关联。"
       },
-      "analyze": "线程池解决的是“线程怎么复用”，不解决“结果怎么关联”。关联靠 Future 对象或显式打包的 key，一旦按完成顺序重排却没有带 key，就会得到语义正确但配对错误的结果。",
       "code_task": {
         "prompt": "实现 map_files(paths, digest, max_workers)：用 ThreadPoolExecutor 读取纯文本文件并计算摘要（用 hashlib.sha256），返回 {path: digest} 字典，保证结果与输入路径一一对应；输入顺序打乱后返回的映射不变。用 unittest + tempfile 造文件，覆盖多文件、空文件、path 不存在时错误映射到该 path（不影响其它文件）。",
         "acceptance": [
@@ -508,10 +453,6 @@
           "relation": "introduces"
         },
         {
-          "taskId": "6502",
-          "relation": "exercises"
-        },
-        {
           "taskId": "6504",
           "relation": "exercises"
         }
@@ -522,7 +463,7 @@
           "Future 的生命周期是 pending → running → finished；finished 又分正常返回（有 result）、抛异常（有 exception）和被取消（cancelled）三种结局",
           "done() 只回答“是否已经结束”，不区分成功失败；cancelled() 回答“是否被取消”；exception() 返回异常对象或 None，不会重新抛出",
           "result(timeout) 三种行为：正常返回结果、抛 CancelledError（已取消）、重抛 worker 的原始异常；未完成时带 timeout 会抛 TimeoutError，不带 timeout 会一直阻塞",
-          "run() 只对已完成的 Future 有意义，且 python3.13 起对未完成的 Future 调用 run 会抛 InvalidStateError（以前是 RuntimeError，未来版本会拦截），一般不需要手写状态机",
+          "对已经完成的 Future 再调用 set_result/set_exception 会抛 concurrent.futures._base.InvalidStateError（实测消息形如 FINISHED: <Future … state=finished returned int>），所以每个 Future 的结果只能设置一次；concurrent.futures.Future 没有 run() 方法（3.8–3.14 的 _base.py 里都不存在 def run(），不要在概念里提它",
           "取消只能针对尚未开始执行的任务：已经在跑的线程无法被抢占，cancel() 返回 False；想要可中断语义要在任务内部检查取消标志"
         ]
       },
@@ -545,13 +486,8 @@
         "prompt": "下面代码想收集所有任务的失败原因，但一个任务出错后整个收集就崩了，找出问题、说明根因并给出修法",
         "code": "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef parse(token):\n    if token == \"bad\":\n        raise ValueError(\"cannot parse bad\")\n    time.sleep(0.01)\n    return int(token)\n\n\ntokens = [\"1\", \"bad\", \"3\"]\nwith ThreadPoolExecutor(max_workers=2) as executor:\n    futures = [executor.submit(parse, token) for token in tokens]\n    results = [future.result(timeout=5.0) for future in futures]\nprint(\"results:\", results)\n",
         "rootCause": "future.result() 会把 worker 的异常在主线程重新抛出，而这里在列表推导里直接取每个 Future 的结果：轮到 \"bad\" 那个 Future 时 ValueError 冒泡，收集循环中断，results 根本不会打印，其它任务的结果也一起丢了。异常没有被逐条转成数据。",
-        "fix": "在每个 Future 上单独处理：用 exception() 先看有没有异常，或对 result() 加 try/except，把失败记录成 {token: error} 继续收集；修复后能把 [1, error, 3] 这样的混合结果打出来而不中断。",
-        "fixed": "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef parse(token):\n    if token == \"bad\":\n        raise ValueError(\"cannot parse bad\")\n    time.sleep(0.01)\n    return int(token)\n\n\ntokens = [\"1\", \"bad\", \"3\"]\nresults = []\nwith ThreadPoolExecutor(max_workers=2) as executor:\n    futures = [executor.submit(parse, token) for token in tokens]\n    for future in futures:\n        error = future.exception(timeout=5.0)\n        results.append(error if error is not None else future.result(timeout=5.0))\nprint(\"results:\", [item if not isinstance(item, BaseException) else \"error\" for item in results])\nprint(\"failures kept:\", [type(item).__name__ for item in results if isinstance(item, BaseException)])\n",
-        "expect_fixed": [
-          "failures kept: ['ValueError']"
-        ]
+        "fix": "在每个 Future 上单独处理：用 exception() 先看有没有异常，或对 result() 加 try/except，把失败记录成 {token: error} 继续收集；修复后能把 [1, error, 3] 这样的混合结果打出来而不中断。"
       },
-      "analyze": "Future 是结果容器不是调度器：它记住了“成功值或异常对象”。收集端必须先决定失败怎么表示（跳过、占位、汇总），否则 result() 的重抛会把一次局部失败升级成整批失败。",
       "code_task": {
         "prompt": "实现 collect(tasks, max_workers)：tasks 是 (key, callable) 列表，返回 {\"ok\": {key: value}, \"failed\": {key: exception}}，要求任何单个失败都不影响其它任务的结果收集；再实现一个 TimeoutError 分支：单个任务超时时把它记成 TimeoutError 而不是让整个收集失败。用 unittest 覆盖全成功、混合失败、单任务超时。",
         "acceptance": [
@@ -579,10 +515,6 @@
         {
           "taskId": "6201",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6202",
-          "relation": "exercises"
         },
         {
           "taskId": "6502",
@@ -615,13 +547,8 @@
         "prompt": "下面代码用 as_completed 按完成顺序收集结果，打印出来的顺序与输入对不上，找出问题、说明根因并给出修法",
         "code": "import time\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n\n\ndef job(name, seconds):\n    time.sleep(seconds)\n    return name\n\n\nplan = [(\"slow\", 0.1), (\"fast\", 0.02)]\nwith ThreadPoolExecutor(max_workers=2) as executor:\n    futures = [executor.submit(job, name, seconds) for name, seconds in plan]\n    mapping = {}\n    for index, future in enumerate(as_completed(futures)):\n        mapping[index] = future.result(timeout=1.0)\nprint(\"mapping:\", mapping)\nprint(\"matches input order:\", mapping[0] == plan[0][0])\n",
         "rootCause": "as_completed 按完成顺序产出 Future，而这里用 enumerate 的下标做键：下标 0 记下的是最先完成的 fast，下标 1 是 slow，于是 mapping[0] 是 \"fast\"；但判断用的是 plan[0][0]（也就是 \"slow\"），最后一行 matches input order 输出 False，结果与输入完全错位。根因是结果关联用了完成顺序的下标，而不是输入的 key。",
-        "fix": "提交时就建立 {future: name} 映射（或把 name 打包进任务返回值），收集时用 future 去查而不是用完成顺序的下标；修复后 mapping 用名字做键、matches input order 为 True。",
-        "fixed": "import time\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n\n\ndef job(name, seconds):\n    time.sleep(seconds)\n    return name\n\n\nplan = [(\"slow\", 0.1), (\"fast\", 0.02)]\nwith ThreadPoolExecutor(max_workers=2) as executor:\n    futures = {executor.submit(job, name, seconds): name for name, seconds in plan}\n    mapping = {}\n    for future in as_completed(futures):\n        mapping[futures[future]] = future.result(timeout=1.0)\nprint(\"mapping:\", mapping)\nprint(\"matches input order:\", sorted(mapping) == sorted(name for name, _ in plan))\n",
-        "expect_fixed": [
-          "matches input order: True"
-        ]
+        "fix": "提交时就建立 {future: name} 映射（或把 name 打包进任务返回值），收集时用 future 去查而不是用完成顺序的下标；修复后 mapping 用名字做键、matches input order 为 True。"
       },
-      "analyze": "as_completed 给的顺序是“完成顺序”，不是“输入顺序”。用它就必须自带 key（放进任务返回值或建 future→key 字典），否则一旦快慢变化，下标语义就会错位。",
       "code_task": {
         "prompt": "实现 first_wins(tasks, deadline)：tasks 是 (key, seconds) 列表，用线程池并发跑，通过 as_completed 在 deadline 秒内按完成顺序收集，返回 {\"order\": [...], \"pending\": [...]}；超过 deadline 时未完成的 key 进入 pending（用 as_completed 的 timeout + future.done() 判断）。用 unittest 覆盖全部按时完成、部分超时两种情况，并断言结果用 key 关联而不是位置。",
         "acceptance": [
@@ -649,14 +576,6 @@
         {
           "taskId": "6201",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6203",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6502",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -685,14 +604,9 @@
       "debug": {
         "prompt": "下面代码想给“缓存命中”造一个现成的 Future 返回，却抛了 InvalidStateError，找出问题、说明根因并给出修法",
         "code": "from concurrent.futures import Future\n\n\ndef cached_result(store, key):\n    future = Future()\n    if key in store:\n        future.set_result(store[key])\n    future.set_result(None)\n    return future\n\n\nstore = {\"answer\": 42}\nprint(\"result:\", cached_result(store, \"answer\").result(timeout=0.1))\n",
-        "rootCause": "命中缓存时 set_result 已经调用过一次，后面那行无条件的 set_result(None) 又对同一个 Future 再设一次结果，CPython 抛 InvalidStateError: invalid state；根因是缺少 else 分支，把“未命中”的兜底写成了“无论如何都再设一次”。",
-        "fix": "用 if/else 保证每条路径只设置一次结果（命中 set_result、未命中 set_result(None) 或返回占位），修复后打印 result: 42 且不再抛 InvalidStateError。",
-        "fixed": "from concurrent.futures import Future\n\n\ndef cached_result(store, key):\n    future = Future()\n    if key in store:\n        future.set_result(store[key])\n    else:\n        future.set_result(None)\n    return future\n\n\nstore = {\"answer\": 42}\nprint(\"result:\", cached_result(store, \"answer\").result(timeout=0.1))\nprint(\"miss:\", cached_result(store, \"missing\").result(timeout=0.1))\n",
-        "expect_fixed": [
-          "miss: None"
-        ]
+        "rootCause": "命中缓存时 set_result 已经调用过一次，后面那行无条件的 set_result(None) 又对同一个 Future 再设一次结果，CPython 抛 concurrent.futures._base.InvalidStateError: FINISHED: <Future … state=finished returned int>（地址随运行变化）；根因是缺少 else 分支，把“未命中”的兜底写成了“无论如何都再设一次”。",
+        "fix": "用 if/else 保证每条路径只设置一次结果（命中 set_result、未命中 set_result(None) 或返回占位），修复后打印 result: 42 且不再抛 InvalidStateError。"
       },
-      "analyze": "Future 是“结果可能已经就绪”的统一容器：同步实现用 set_result 造一个现成 Future，调用方不必区分走没走过线程池。这也解释了为什么 set_result 只能一次：结果必须唯一。",
       "code_task": {
         "prompt": "实现两个执行器类 SerialExecutor 与 PoolExecutor，都提供 submit(func, *args) -> Future 与 map(func, iterable) -> list；SerialExecutor 用 Future.set_result/set_exception 立刻完成，PoolExecutor 用 ThreadPoolExecutor 包装。用 unittest 断言两种实现的结果完全一致，且提交失败函数时异常都通过 future.exception() 暴露。",
         "acceptance": [
@@ -723,10 +637,6 @@
         },
         {
           "taskId": "6304",
-          "relation": "introduces"
-        },
-        {
-          "taskId": "6502",
           "relation": "exercises"
         }
       ],
@@ -754,16 +664,11 @@
         "explain": "maxsize=1 的队列初始为空：get_nowait 在没有元素时抛 queue.Empty。put 入队后 qsize 为 1、full() 为 True，再 put 一个且在 0.1 秒内没人取走，就抛 queue.Full——这就是有界队列的背压。get(timeout=0.1) 取出 \"first\"，随后 task_done() 把未完成任务数减到 0，join() 才会返回；如果漏掉 task_done，join 会一直阻塞。最后队列已空，所以 left 是 0。"
       },
       "debug": {
-        "prompt": "下面代码的生产者消费者看起来都在跑，但 join() 永远不返回，找出问题、说明根因并给出修法",
-        "code": "import queue\nimport threading\n\nwork = queue.Queue(maxsize=2)\nseen = []\n\n\ndef worker():\n    while True:\n        item = work.get(timeout=1.0)\n        if item is None:\n            return\n        seen.append(item)\n\n\nthread = threading.Thread(target=worker)\nthread.start()\nfor item in (1, 2, 3):\n    work.put(item)\nwork.put(None)\nthread.join(timeout=2.0)\nwork.join()\nprint(\"worker finished:\", not thread.is_alive())\nprint(\"seen:\", seen)\n",
-        "rootCause": "消费者取到元素后从来没有调用 work.task_done()，所以队列的 unfinished_tasks 计数一直是 3，work.join() 在等一个永远不来的确认，于是卡住（thread.join(timeout=2.0) 本身会返回，但下一行的 work.join() 没有超时会永久阻塞）。根因是把 join 当成“等线程结束”用，而 Queue.join 等的是 task_done 计数。",
-        "fix": "消费者在每次成功处理（以及取到哨兵）后调用 work.task_done()，或者明确改用 thread.join 等消费者结束而不用 queue.join；修复后能打印 worker finished: True 与 seen: [1, 2, 3]。",
-        "fixed": "import queue\nimport threading\n\nwork = queue.Queue(maxsize=2)\nseen = []\n\n\ndef worker():\n    while True:\n        item = work.get(timeout=1.0)\n        try:\n            if item is None:\n                return\n            seen.append(item)\n        finally:\n            work.task_done()\n\n\nthread = threading.Thread(target=worker)\nthread.start()\nfor item in (1, 2, 3):\n    work.put(item)\nwork.put(None)\nthread.join(timeout=2.0)\nwork.join()\nprint(\"worker finished:\", not thread.is_alive())\nprint(\"seen:\", seen)\n",
-        "expect_fixed": [
-          "worker finished: True"
-        ]
+        "prompt": "下面代码的生产者消费者看起来都在跑，但 queue.join() 永远不返回，找出问题、说明根因并给出修法（演示用一条 daemon 线程把 join 的观察限制在 1 秒内）",
+        "code": "import queue\nimport threading\n\nwork = queue.Queue(maxsize=2)\nseen = []\n\n\ndef worker():\n    while True:\n        item = work.get(timeout=1.0)\n        if item is None:\n            return\n        seen.append(item)\n\n\nthread = threading.Thread(target=worker)\nthread.start()\nfor item in (1, 2, 3):\n    work.put(item, timeout=1.0)\nwork.put(None, timeout=1.0)\nthread.join(timeout=2.0)\nfinisher = threading.Thread(target=work.join, daemon=True)\nfinisher.start()\nfinisher.join(timeout=1.0)\nprint(\"worker finished:\", not thread.is_alive())\nprint(\"seen:\", seen)\nprint(\"queue.join returned in 1s:\", not finisher.is_alive())\nif finisher.is_alive():\n    print(\"stuck: queue.join 未在 1 秒内返回, unfinished_tasks =\", work.unfinished_tasks)\n",
+        "rootCause": "消费者取到元素后从来没有调用 work.task_done()，所以队列的 unfinished_tasks 计数一直是 4，work.join() 在等一个永远不来的确认。Queue.join() 本身没有 timeout 参数，这里用一条 daemon 线程去跑 join 并 join(timeout=1.0) 观察：输出 queue.join returned in 1s: False、unfinished_tasks = 4。根因是把 join 当成“等线程结束”用，而 Queue.join 等的是 task_done 计数。",
+        "fix": "消费者在每次成功处理（以及取到哨兵）后调用 work.task_done()，或者明确改用 thread.join 等消费者结束而不用 queue.join；修复后 queue.join returned in 1s 为 True、unfinished_tasks 归零。"
       },
-      "analyze": "有界队列的价值是把“生产太快”变成可观测的阻塞，而不是内存爆炸。消费完必须 task_done，否则 join 等的是不存在的确认。这两条合起来才是可退出的生产者消费者。",
       "code_task": {
         "prompt": "实现 run_pipeline(items, maxsize=2, workers=2)：生产线程把 items 放进有界 Queue，多个消费线程把每个元素的两倍写进 results，全部处理完后优雅退出（哨兵 + task_done + join）。返回排好序的结果列表。用 unittest 验证结果正确、队列最终为空、没有存活线程，并用 maxsize=1 验证背压不会死锁。",
         "acceptance": [
@@ -795,10 +700,6 @@
         {
           "taskId": "6304",
           "relation": "exercises"
-        },
-        {
-          "taskId": "6504",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -825,22 +726,17 @@
         "prompt": "下面代码停止时总会卡住（join 超时、线程仍未退出），找出问题、说明根因并给出修法",
         "code": "import queue\nimport threading\n\nwork = queue.Queue()\nseen = []\n\n\ndef worker():\n    while True:\n        item = work.get(timeout=1.0)\n        try:\n            if item is None:\n                return\n            seen.append(item)\n        finally:\n            work.task_done()\n\n\nworkers = [threading.Thread(target=worker) for _ in range(3)]\nfor thread in workers:\n    thread.start()\nfor task in (1, 2, 3):\n    work.put(task)\nwork.put(None)\nfor thread in workers:\n    thread.join(timeout=0.5)\nprint(\"processed:\", sorted(seen))\nprint(\"still running:\", sum(1 for thread in workers if thread.is_alive()))\n",
         "rootCause": "3 个消费者却只入队了 1 个哨兵 None：只有一个线程能取到它并退出，另外两个取完任务后一直阻塞在 get(timeout=1.0) 上循环，join(timeout=0.5) 等不到它们，于是 still running 输出 2。根因是哨兵数量与消费者数量不匹配。",
-        "fix": "按消费者数量发送哨兵（for _ in workers: work.put(None)），并让 join 的超时覆盖最后一个任务的完成时间；修复后 processed 是 [1, 2, 3]，still running 是 0。",
-        "fixed": "import queue\nimport threading\n\nwork = queue.Queue()\nseen = []\n\n\ndef worker():\n    while True:\n        item = work.get(timeout=1.0)\n        try:\n            if item is None:\n                return\n            seen.append(item)\n        finally:\n            work.task_done()\n\n\nworkers = [threading.Thread(target=worker) for _ in range(3)]\nfor thread in workers:\n    thread.start()\nfor task in (1, 2, 3):\n    work.put(task)\nfor _ in workers:\n    work.put(None)\nfor thread in workers:\n    thread.join(timeout=2.0)\nwork.join()\nprint(\"processed:\", sorted(seen))\nprint(\"still running:\", sum(1 for thread in workers if thread.is_alive()))\n",
-        "expect_fixed": [
-          "still running: 0"
-        ]
+        "fix": "按消费者数量发送哨兵（for _ in workers: work.put(None)），并让 join 的超时覆盖最后一个任务的完成时间；修复后 processed 是 [1, 2, 3]，still running 是 0。"
       },
-      "analyze": "停止信号的数量要等于等待者的数量。除此之外，发送顺序、超时与收尾顺序都要想清楚：先任务后哨兵保证排空，join 之后再 queue.join 保证不丢确认。",
       "code_task": {
         "prompt": "实现 class WorkerPool：构造时给定 worker 数与处理函数，start() 启动线程，submit(item) 入队，shutdown(timeout) 发送与 worker 数相同的哨兵、join 全部线程并返回报告 {\"processed\": n, \"failed\": [...], \"stopped\": bool}。worker 内部异常要收集到 failed 而不杀死线程。用 unittest 覆盖正常关闭、单个任务失败、shutdown 幂等。",
         "acceptance": [
           "shutdown 后所有 worker 线程都不存活，stopped 为 True，processed 等于成功任务数",
           "某个任务处理抛异常时该异常进入 failed 列表，其它任务照常处理",
           "连续两次 shutdown 不抛异常（幂等），第二次不重复处理任务",
-          "所有 get/put/join 都带 timeout，队列最终为空，测试结束后没有残留线程"
+          "所有 get/put 都带 timeout（Queue.join 本身没有 timeout 参数，靠 task_done 计数保证它返回），shutdown 后队列最终为空（empty()/qsize()==0），测试结束后没有残留线程"
         ],
-        "reference": "import queue\nimport threading\nimport unittest\n\n\nclass WorkerPool:\n    def __init__(self, handler, workers=2, maxsize=0):\n        self.handler = handler\n        self.work = queue.Queue(maxsize=maxsize)\n        self.processed = 0\n        self.failed = []\n        self.lock = threading.Lock()\n        self.threads = [threading.Thread(target=self._run) for _ in range(workers)]\n        self._closed = False\n\n    def start(self):\n        for thread in self.threads:\n            thread.start()\n        return self\n\n    def submit(self, item, timeout=2.0):\n        self.work.put(item, timeout=timeout)\n\n    def _run(self):\n        while True:\n            item = self.work.get(timeout=5.0)\n            try:\n                if item is None:\n                    return\n                try:\n                    self.handler(item)\n                except Exception as exc:\n                    with self.lock:\n                        self.failed.append((item, exc))\n                else:\n                    with self.lock:\n                        self.processed += 1\n            finally:\n                self.work.task_done()\n\n    def shutdown(self, timeout=5.0):\n        if not self._closed:\n            self._closed = True\n            for _ in self.threads:\n                self.work.put(None, timeout=timeout)\n        for thread in self.threads:\n            thread.join(timeout=timeout)\n        self.work.join()\n        stopped = all(not thread.is_alive() for thread in self.threads)\n        return {\"processed\": self.processed, \"failed\": list(self.failed), \"stopped\": stopped}\n\n\nclass WorkerPoolTest(unittest.TestCase):\n    def test_all_tasks_processed_then_stop(self):\n        seen = []\n        pool = WorkerPool(seen.append, workers=3).start()\n        for item in range(6):\n            pool.submit(item)\n        report = pool.shutdown()\n        self.assertTrue(report[\"stopped\"])\n        self.assertEqual(report[\"processed\"], 6)\n        self.assertEqual(sorted(seen), list(range(6)))\n        self.assertEqual(report[\"failed\"], [])\n\n    def test_handler_failure_is_collected(self):\n        def handler(item):\n            if item == \"bad\":\n                raise ValueError(\"bad item\")\n\n        pool = WorkerPool(handler, workers=2).start()\n        for item in (\"ok\", \"bad\", \"also-ok\"):\n            pool.submit(item)\n        report = pool.shutdown()\n        self.assertEqual(report[\"processed\"], 2)\n        self.assertEqual([item for item, _ in report[\"failed\"]], [\"bad\"])\n        self.assertIsInstance(report[\"failed\"][0][1], ValueError)\n\n    def test_shutdown_is_idempotent(self):\n        pool = WorkerPool(lambda item: None, workers=2).start()\n        pool.submit(1)\n        first = pool.shutdown()\n        second = pool.shutdown()\n        self.assertEqual(first[\"processed\"], 1)\n        self.assertEqual(second[\"processed\"], 1)\n        self.assertTrue(second[\"stopped\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import queue\nimport threading\nimport unittest\n\n\nclass WorkerPool:\n    def __init__(self, handler, workers=2, maxsize=0):\n        self.handler = handler\n        self.work = queue.Queue(maxsize=maxsize)\n        self.processed = 0\n        self.failed = []\n        self.lock = threading.Lock()\n        self.threads = [threading.Thread(target=self._run) for _ in range(workers)]\n        self._closed = False\n\n    def start(self):\n        for thread in self.threads:\n            thread.start()\n        return self\n\n    def submit(self, item, timeout=2.0):\n        self.work.put(item, timeout=timeout)\n\n    def _run(self):\n        while True:\n            item = self.work.get(timeout=5.0)\n            try:\n                if item is None:\n                    return\n                try:\n                    self.handler(item)\n                except Exception as exc:\n                    with self.lock:\n                        self.failed.append((item, exc))\n                else:\n                    with self.lock:\n                        self.processed += 1\n            finally:\n                self.work.task_done()\n\n    def shutdown(self, timeout=5.0):\n        if not self._closed:\n            self._closed = True\n            for _ in self.threads:\n                self.work.put(None, timeout=timeout)\n        for thread in self.threads:\n            thread.join(timeout=timeout)\n        self.work.join()\n        stopped = all(not thread.is_alive() for thread in self.threads)\n        return {\"processed\": self.processed, \"failed\": list(self.failed), \"stopped\": stopped}\n\n\nclass WorkerPoolTest(unittest.TestCase):\n    def test_all_tasks_processed_then_stop(self):\n        seen = []\n        pool = WorkerPool(seen.append, workers=3).start()\n        for item in range(6):\n            pool.submit(item)\n        report = pool.shutdown()\n        self.assertTrue(report[\"stopped\"])\n        self.assertEqual(report[\"processed\"], 6)\n        self.assertEqual(sorted(seen), list(range(6)))\n        self.assertEqual(report[\"failed\"], [])\n        self.assertTrue(pool.work.empty())\n        self.assertEqual(pool.work.qsize(), 0)\n\n    def test_handler_failure_is_collected(self):\n        def handler(item):\n            if item == \"bad\":\n                raise ValueError(\"bad item\")\n\n        pool = WorkerPool(handler, workers=2).start()\n        for item in (\"ok\", \"bad\", \"also-ok\"):\n            pool.submit(item)\n        report = pool.shutdown()\n        self.assertEqual(report[\"processed\"], 2)\n        self.assertEqual([item for item, _ in report[\"failed\"]], [\"bad\"])\n        self.assertIsInstance(report[\"failed\"][0][1], ValueError)\n\n    def test_shutdown_is_idempotent(self):\n        pool = WorkerPool(lambda item: None, workers=2).start()\n        pool.submit(1)\n        first = pool.shutdown()\n        second = pool.shutdown()\n        self.assertEqual(first[\"processed\"], 1)\n        self.assertEqual(second[\"processed\"], 1)\n        self.assertTrue(second[\"stopped\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "哨兵数量少于消费者数量",
@@ -859,14 +755,6 @@
         {
           "taskId": "6304",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6303",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6502",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -893,13 +781,8 @@
         "prompt": "下面代码有一个 worker 处理失败后整个程序就不结束了，找出问题、说明根因并给出修法",
         "code": "import queue\nimport threading\n\nwork = queue.Queue()\nok = []\n\n\ndef worker():\n    while True:\n        item = work.get(timeout=1.0)\n        if item is None:\n            return\n        if item == \"bad\":\n            raise ValueError(\"cannot handle bad\")\n        ok.append(item)\n        work.task_done()\n\n\nthread = threading.Thread(target=worker)\nthread.start()\nwork.put(\"good\")\nwork.put(\"bad\")\nprint(\"ok before failure:\", ok)\nprint(\"worker alive after failure:\", thread.is_alive())\nprint(\"worker exited with unhandled exception: ValueError\")\n",
         "rootCause": "worker 没有捕获处理阶段的异常：遇到 \"bad\" 时 ValueError 从 run 里抛出，线程当场结束，task_done 也没有执行（它写在 raise 之后），于是队列的未完成计数永远差一个，任何后续 work.join() 都会永久阻塞，消费者数量也少了一个。异常在线程里也不会传到主线程，只能看到 traceback 而拿不到失败数据。",
-        "fix": "把处理逻辑包进 try/except，把失败记进 errors 列表，并用 try/finally 保证 task_done 一定执行；修复后输出 ok: ['good']、errors: ['ValueError']，线程仍然存活可继续处理后续任务。",
-        "fixed": "import queue\nimport threading\n\nwork = queue.Queue()\nok = []\nerrors = []\nstop = threading.Event()\n\n\ndef worker():\n    while not stop.is_set():\n        try:\n            item = work.get(timeout=0.2)\n        except queue.Empty:\n            continue\n        try:\n            if item == \"bad\":\n                raise ValueError(\"cannot handle bad\")\n            ok.append(item)\n        except ValueError as exc:\n            errors.append(type(exc).__name__)\n        finally:\n            work.task_done()\n\n\nthread = threading.Thread(target=worker)\nthread.start()\nwork.put(\"good\")\nwork.put(\"bad\")\nwork.join()\nstop.set()\nthread.join(timeout=2.0)\nprint(\"ok:\", ok)\nprint(\"errors:\", errors)\nprint(\"worker alive:\", thread.is_alive())\n",
-        "expect_fixed": [
-          "errors: ['ValueError']"
-        ]
+        "fix": "把处理逻辑包进 try/except，把失败记进 errors 列表，并用 try/finally 保证 task_done 一定执行；修复后输出 ok: ['good']、errors: ['ValueError']，线程仍然存活可继续处理后续任务。"
       },
-      "analyze": "worker 里的异常必须被翻译成两种东西之一：收进结果（失败数据）或触发停止（放弃剩余任务）。让它裸奔的后果不只是少一条数据，而是 task_done 失配导致 join 永久阻塞。",
       "code_task": {
         "prompt": "实现 drain(work, max_items, timeout)：从一个可能有界队列里取最多 max_items 个元素，返回 {\"items\": [...], \"full_seen\": bool, \"empty_seen\": bool}；入队侧实现 try_put(work, item, timeout) 返回 True/False 表示是否入队成功（False 表示队列满）。用 unittest 覆盖：有界队列写满时 try_put 返回 False、drain 取到 Empty、以及取满 max_items 立即返回。",
         "acceptance": [
@@ -931,10 +814,6 @@
         {
           "taskId": "6104",
           "relation": "exercises"
-        },
-        {
-          "taskId": "6203",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -960,13 +839,8 @@
         "prompt": "下面代码给“写”加了锁，结果还是丢更新，找出问题、说明根因并给出修法",
         "code": "import threading\n\nlock = threading.Lock()\nbarrier = threading.Barrier(2)\ntotal = 0\n\n\ndef increment():\n    global total\n    pending = total\n    barrier.wait(timeout=1.0)\n    with lock:\n        total = pending + 1\n\n\nthreads = [threading.Thread(target=increment) for _ in range(2)]\nfor thread in threads:\n    thread.start()\nfor thread in threads:\n    thread.join(timeout=2.0)\nprint(\"total:\", total)\nprint(\"both finished:\", all(not thread.is_alive() for thread in threads))\n",
         "rootCause": "锁只包住了写回，读取 pending = total 发生在锁外：两个线程都先读到 0，然后才在锁内写回 pending+1=1，锁保护了“写”但没有保护“读-改-写”这个整体，所以 total 仍然是 1。临界区范围太小是根因，不是锁没生效。",
-        "fix": "把读取与写回一起放进同一个 with lock 块（pending 的读取也要在锁内），修复后 total 为 2。",
-        "fixed": "import threading\n\nlock = threading.Lock()\nbarrier = threading.Barrier(2)\ntotal = 0\n\n\ndef increment():\n    global total\n    with lock:\n        pending = total\n        total = pending + 1\n\n\nthreads = [threading.Thread(target=increment) for _ in range(2)]\nfor thread in threads:\n    thread.start()\nfor thread in threads:\n    thread.join(timeout=2.0)\nprint(\"total:\", total)\nprint(\"both finished:\", all(not thread.is_alive() for thread in threads))\n",
-        "expect_fixed": [
-          "total: 2"
-        ]
+        "fix": "把读取与写回一起放进同一个 with lock 块（pending 的读取也要在锁内），修复后 total 为 2。"
       },
-      "analyze": "判断锁范围的方法是画“读了哪些共享状态、写回什么”这条链：链上的每一步都要在同一个临界区里。只锁写回是最常见的假安全——代码看起来有锁，结果依然取决于交错。",
       "code_task": {
         "prompt": "实现 class Counter：increment()、value()、snapshot() 三个方法都受同一把 Lock 保护，并写一个测试用多个线程并发自增 200 次后断言最终值等于总次数；再实现一个 broken_increment 只锁写回，用 Barrier 构造确定性丢更新（断言结果为 1）作为反例。",
         "acceptance": [
@@ -994,10 +868,6 @@
         {
           "taskId": "6301",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6505",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1024,16 +894,11 @@
         "explain": "outer(1) 进入 with rlock 后递归调用 outer(2)，同一线程再次 acquire 只是把递归计数加到 2，所以能打印 depth 2 并正常返回；离开时计数递减，两层都退出后锁真正释放，_is_owned() 为 False（这是 CPython 内部接口，仅用于演示计数已归零）。作为对照，普通 Lock 在同一线程第二次 acquire(timeout=0.05) 拿不到锁，返回 False——同样的写法换成 Lock 就会自我死锁，所以重入场景必须用 RLock。"
       },
       "debug": {
-        "prompt": "下面代码把递归函数整体放进普通 Lock，程序在 1 秒内没有完成，找出问题、说明根因并给出修法",
-        "code": "import threading\nimport time\n\nlock = threading.Lock()\ndepth_log = []\ndone = threading.Event()\n\n\ndef visit(node):\n    with lock:\n        depth_log.append(node)\n        if node < 2:\n            visit(node + 1)\n\n\nworker = threading.Thread(target=lambda: (visit(0), done.set()))\nworker.start()\nfinished = done.wait(timeout=0.5)\nprint(\"finished in time:\", finished)\nprint(\"worker still alive:\", worker.is_alive())\nprint(\"visited:\", depth_log)\n",
-        "rootCause": "visit 用普通 Lock 保护整个递归体：第二次进入临界区时仍是同一个线程，Lock 不可重入，于是永久等待自己持有的锁，worker 卡在 visit(1) 里出不来；done 事件不会被设置，wait(timeout=0.5) 超时，depth_log 只有 [0]，线程还活着。",
-        "fix": "把 Lock 换成 threading.RLock（可重入），或把加锁范围移到递归调用之外；修复后 worker 正常返回，visited 为 [0, 1, 2]，finished in time 为 True。",
-        "fixed": "import threading\nimport time\n\nlock = threading.RLock()\ndepth_log = []\ndone = threading.Event()\n\n\ndef visit(node):\n    with lock:\n        depth_log.append(node)\n        if node < 2:\n            visit(node + 1)\n\n\nworker = threading.Thread(target=lambda: (visit(0), done.set()))\nworker.start()\nfinished = done.wait(timeout=0.5)\nprint(\"finished in time:\", finished)\nprint(\"worker still alive:\", worker.is_alive())\nprint(\"visited:\", depth_log)\n",
-        "expect_fixed": [
-          "visited: [0, 1, 2]"
-        ]
+        "prompt": "下面代码把递归函数整体放进普通 Lock，程序在 0.5 秒内没有完成，找出问题、说明根因并给出修法（worker 设为 daemon 只为演示不把解释器拖住）",
+        "code": "import threading\n\nlock = threading.Lock()\ndepth_log = []\ndone = threading.Event()\n\n\ndef visit(node):\n    with lock:\n        depth_log.append(node)\n        if node < 2:\n            visit(node + 1)\n\n\nworker = threading.Thread(target=lambda: (visit(0), done.set()), daemon=True)\nworker.start()\nfinished = done.wait(timeout=0.5)\nprint(\"finished in time:\", finished)\nprint(\"worker still alive:\", worker.is_alive())\nprint(\"visited:\", depth_log)\nprint(\"stuck: 递归加锁未在 0.5 秒内完成\" if not finished else \"递归加锁已完成\")\n",
+        "rootCause": "visit 用普通 Lock 保护整个递归体：第二次进入临界区时仍是同一个线程，Lock 不可重入，于是永久等待自己持有的锁，worker 卡在 visit(1) 里出不来；done 事件不会被设置，wait(timeout=0.5) 超时，输出 finished in time: False、worker still alive: True、visited: [0]。根因是普通 Lock 不支持同一线程重入；worker 设为 daemon 后演示结束不会阻塞解释器。",
+        "fix": "把 Lock 换成 threading.RLock（可重入），或把加锁范围移到递归调用之外；修复后 finished in time 为 True、visited 为 [0, 1, 2]、worker still alive 为 False。"
       },
-      "analyze": "重入需求来自“锁的边界跨了函数调用”。RLock 能让代码先跑通，但更干净的做法是把锁收敛到一个入口：同一线程反复进出临界区通常说明共享状态的边界没划清。",
       "code_task": {
         "prompt": "实现 class RecursiveCounter：add_tree(node) 递归累加一个嵌套 dict/list 结构里的数字，整个过程由一把 RLock 保护，并暴露 total()。用 unittest 断言结果正确，并断言同一线程可以重复 acquire（计数正确），另一个线程拿不到锁。",
         "acceptance": [
@@ -1058,10 +923,6 @@
       "module": "同步",
       "level": "进阶",
       "taskRefs": [
-        {
-          "taskId": "6301",
-          "relation": "introduces"
-        },
         {
           "taskId": "6505",
           "relation": "introduces"
@@ -1092,13 +953,8 @@
         "prompt": "下面代码想等到“缓冲区已就绪”再返回，但每次都直接返回 False，找出问题、说明根因并给出修法",
         "code": "import threading\n\nstate = {\"buffer\": []}\nready = threading.Event()\n\n\ndef fill():\n    state[\"buffer\"].append(\"data\")\n    ready.wait(timeout=1.0)\n\n\nworker = threading.Thread(target=fill)\nworker.start()\nvalue = ready.wait(timeout=0.5)\nworker.join(timeout=2.0)\nprint(\"ready signalled:\", value)\nprint(\"buffer:\", state[\"buffer\"])\n",
         "rootCause": "生产者只用 ready.wait 等待、从来没有 ready.set()：fill 填完数据后自己也在等这个事件，而主线程同样在等，谁都不去置位，主线程 wait(timeout=0.5) 超时返回 False（worker 也会在 1 秒后超时）。根因是把“等待”写成了“通知”。",
-        "fix": "生产者写完数据后调用 ready.set() 通告事实，消费者再用 wait(timeout) 等它；修复后 ready signalled 为 True，buffer 里有数据。",
-        "fixed": "import threading\n\nstate = {\"buffer\": []}\nready = threading.Event()\n\n\ndef fill():\n    state[\"buffer\"].append(\"data\")\n    ready.set()\n\n\nworker = threading.Thread(target=fill)\nworker.start()\nvalue = ready.wait(timeout=0.5)\nworker.join(timeout=2.0)\nprint(\"ready signalled:\", value)\nprint(\"buffer:\", state[\"buffer\"])\n",
-        "expect_fixed": [
-          "ready signalled: True"
-        ]
+        "fix": "生产者写完数据后调用 ready.set() 通告事实，消费者再用 wait(timeout) 等它；修复后 ready signalled 为 True，buffer 里有数据。"
       },
-      "analyze": "Event 表达“已经发生”，每次 wait 问的是同一个历史事实。等待一个需要重复出现的条件（数据来了、槽位空出）要用 Condition 或 Queue；用 Event 加 clear 很容易丢信号。",
       "code_task": {
         "prompt": "实现 run_when_ready(target, dependencies)：启动 len(dependencies) 个线程各执行一个依赖函数，全部完成后用 Event 通告，主线程等到后执行 target，返回 {\"completed\": [...], \"timed_out\": bool, \"elapsed_under_limit\": bool}。用 unittest 覆盖全部按时完成、某个依赖超时（timed_out 为 True）两种情况，所有 wait/join 都带 timeout。",
         "acceptance": [
@@ -1126,10 +982,6 @@
         {
           "taskId": "6505",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6302",
-          "relation": "exercises"
         },
         {
           "taskId": "6304",
@@ -1161,13 +1013,8 @@
         "prompt": "下面代码用 Condition 同步，生产者的通知在后台线程里报错，找出问题、说明根因并给出修法",
         "code": "import threading\n\ncondition = threading.Condition()\nslots = []\nwaiting = threading.Event()\nnotify_result = []\n\n\ndef consumer():\n    with condition:\n        waiting.set()\n        condition.wait_for(lambda: bool(slots), timeout=0.3)\n        print(\"consumer saw data:\", bool(slots))\n\n\ndef producer():\n    waiting.wait(timeout=1.0)\n    slots.append(\"item\")\n    try:\n        condition.notify_all()\n    except RuntimeError as exc:\n        notify_result.append(str(exc))\n\n\nworker = threading.Thread(target=consumer)\nworker.start()\nmade = threading.Thread(target=producer)\nmade.start()\nworker.join(timeout=2.0)\nmade.join(timeout=2.0)\nprint(\"notify_result:\", notify_result)\nprint(\"notified while holding the lock:\", not notify_result)\n",
         "rootCause": "producer 修改共享状态与 notify 都没有持有 condition 的锁，而 Condition.notify 要求调用方持有底层锁：CPython 在这里直接抛 RuntimeError(\"cannot notify on un-acquired lock\")，通知没有发出去，消费者只能等 wait_for 超时（靠谓词复查才碰巧看到数据，属于运气而不是同步）。根因是用 Condition 却没在锁内改状态并通知。",
-        "fix": "把改状态与 notify_all 一起放进 with condition 块，让通知发生在持有锁期间；修复后 notify_result 为空、notified while holding the lock 输出 True，消费者不再依赖超时。",
-        "fixed": "import threading\n\ncondition = threading.Condition()\nslots = []\nwaiting = threading.Event()\nnotify_result = []\n\n\ndef consumer():\n    with condition:\n        waiting.set()\n        condition.wait_for(lambda: bool(slots), timeout=0.3)\n        print(\"consumer saw data:\", bool(slots))\n\n\ndef producer():\n    waiting.wait(timeout=1.0)\n    with condition:\n        slots.append(\"item\")\n        try:\n            condition.notify_all()\n        except RuntimeError as exc:\n            notify_result.append(str(exc))\n\n\nworker = threading.Thread(target=consumer)\nworker.start()\nmade = threading.Thread(target=producer)\nmade.start()\nworker.join(timeout=2.0)\nmade.join(timeout=2.0)\nprint(\"notify_result:\", notify_result)\nprint(\"notified while holding the lock:\", not notify_result)\n",
-        "expect_fixed": [
-          "notified while holding the lock: True"
-        ]
+        "fix": "把改状态与 notify_all 一起放进 with condition 块，让通知发生在持有锁期间；修复后 notify_result 为空、notified while holding the lock 输出 True，消费者不再依赖超时。"
       },
-      "analyze": "Condition 的正确用法是一句话：改状态在锁内、判断谓词在循环里、通知在锁内。wait_for 把循环写进了库函数，所以优先用它而不是手写 while + wait。",
       "code_task": {
         "prompt": "用 threading.Condition 实现 class BoundedBuffer：put(item, timeout) 在满时等待、get(timeout) 在空时等待，返回 (item, True) 或 (None, False)（超时）。用 unittest 覆盖：容量为 1 时第二次 put 阻塞、消费者取走后 put 成功、get 超时返回 False、生产者消费者多轮后总数守恒。",
         "acceptance": [
@@ -1193,15 +1040,11 @@
       "level": "进阶",
       "taskRefs": [
         {
-          "taskId": "6505",
+          "taskId": "6502",
           "relation": "introduces"
         },
         {
           "taskId": "6204",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6502",
           "relation": "exercises"
         }
       ],
@@ -1229,13 +1072,8 @@
         "prompt": "下面代码用一个“允许 1 个并发”的信号量保护下载，但下载失败一次之后所有调用都开始超时，找出问题、说明根因并给出修法",
         "code": "import threading\n\ngate = threading.Semaphore(1)\n\n\ndef download(name, fail=False):\n    if fail:\n        raise RuntimeError(\"download failed: \" + name)\n    gate.release()\n    return \"ok:\" + name\n\n\ntry:\n    download(\"a\", fail=True)\nexcept RuntimeError as exc:\n    print(\"first call raised:\", str(exc))\nprint(\"permits left:\", sum(1 for _ in range(3) if gate.acquire(blocking=False)))\nprint(\"second call:\", download(\"b\"))\n",
         "rootCause": "download 只在成功路径上调用 gate.release()，失败时 raise 直接跳过了释放：初值为 1 的信号量被永久占掉一个许可，之后所有调用都在 acquire(timeout=0.2) 上超时。根因是 acquire 与 release 没有配对（release 没有放进 finally）。",
-        "fix": "用 with gate:（或 try/finally 里 release）保证任何路径都归还许可；修复后 first call raised 之后 permits left 是 1、second call 返回 ok:b。",
-        "fixed": "import threading\n\ngate = threading.Semaphore(1)\n\n\ndef download(name, fail=False):\n    try:\n        if fail:\n            raise RuntimeError(\"download failed: \" + name)\n        return \"ok:\" + name\n    finally:\n        gate.release()\n\n\ntry:\n    download(\"a\", fail=True)\nexcept RuntimeError as exc:\n    print(\"first call raised:\", str(exc))\nprint(\"permits left:\", sum(1 for _ in range(3) if gate.acquire(blocking=False)))\nprint(\"recovered:\", download(\"b\") == \"ok:b\")\n",
-        "expect_fixed": [
-          "recovered: True"
-        ]
+        "fix": "用 with gate:（或 try/finally 里 release）保证任何路径都归还许可；修复后 first call raised 之后 permits left 是 1、second call 返回 ok:b。"
       },
-      "analyze": "信号量表达的是资源配额。判断它有没有生效，看的是“持有期间在做什么”——如果持有区间里没有受保护的工作，配额就只是形式。",
       "code_task": {
         "prompt": "实现 class LimitedPool：构造时给定 limit，run(tasks, timeout) 并发执行任务但保证同时运行数不超过 limit，返回 {\"results\": [...], \"peak\": n, \"order_ok\": bool}（results 与输入顺序一致）。用 threading.Semaphore 实现，用 unittest 断言 peak <= limit、结果与串行一致、任务抛异常时仍释放配额。",
         "acceptance": [
@@ -1263,10 +1101,6 @@
         {
           "taskId": "6505",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6301",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1292,13 +1126,8 @@
         "prompt": "下面代码的 Barrier 阶段本来应该三方汇合，但每次都报 BrokenBarrierError，找出问题、说明根因并给出修法",
         "code": "import threading\n\nbarrier = threading.Barrier(3)\npassed = []\n\n\ndef stage():\n    barrier.wait(timeout=0.2)\n    passed.append(1)\n\n\nthreads = [threading.Thread(target=stage) for _ in range(2)]\nfor thread in threads:\n    thread.start()\nfor thread in threads:\n    thread.join(timeout=2.0)\nprint(\"passed:\", len(passed))\nprint(\"broken:\", barrier.broken)\n",
         "rootCause": "Barrier(3) 需要三个线程到达同一个集合点，但只启动了 2 个：两个线程各等到 0.2 秒超时，抛 BrokenBarrierError 后线程结束，passed 为空、barrier.broken 为 True。根因是 parties 数与实际参与者数量不一致。",
-        "fix": "把 parties 改成实际参与线程数（这里改成 2），或者补上第三个参与者；修复后两个线程都通过集合点，passed 为 2、broken 为 False。",
-        "fixed": "import threading\n\nbarrier = threading.Barrier(2)\npassed = []\n\n\ndef stage():\n    barrier.wait(timeout=0.5)\n    passed.append(1)\n\n\nthreads = [threading.Thread(target=stage) for _ in range(2)]\nfor thread in threads:\n    thread.start()\nfor thread in threads:\n    thread.join(timeout=2.0)\nprint(\"passed:\", len(passed))\nprint(\"broken:\", barrier.broken)\n",
-        "expect_fixed": [
-          "passed: 2"
-        ]
+        "fix": "把 parties 改成实际参与线程数（这里改成 2），或者补上第三个参与者；修复后两个线程都通过集合点，passed 为 2、broken 为 False。"
       },
-      "analyze": "Barrier 的正确性完全取决于“参与者数量真实”。用它做并行实验时，要么让 parties 等于线程数，要么让所有参与方都在 with/try 里处理破损，否则一个缺席就整批失败。",
       "code_task": {
         "prompt": "实现 run_rounds(worker, workers=3, rounds=3)：用 Barrier(workers) 让所有 worker 每轮同时开始，每轮各写一个值到自己的槽位，全部完成后返回 {\"rounds\": [[...], ...], \"peak\": workers, \"broken\": bool}。用 unittest 覆盖正常多轮执行、parties 不匹配时能捕获 BrokenBarrierError 并汇报 broken=True。",
         "acceptance": [
@@ -1307,7 +1136,7 @@
           "参与线程数少于 parties 时测试能捕获 BrokenBarrierError 并把 broken 置 True，不会挂死",
           "所有 wait/join 都带 timeout，测试结束后没有存活线程"
         ],
-        "reference": "import threading\nimport unittest\n\n\ndef run_rounds(worker, workers=3, rounds=3, timeout=1.0):\n    barrier = threading.Barrier(workers)\n    slots = [None] * workers\n    collected = []\n    lock = threading.Lock()\n    broken = []\n\n    def run(slot):\n        for round_index in range(rounds):\n            try:\n                barrier.wait(timeout=timeout)\n            except threading.BrokenBarrierError:\n                with lock:\n                    broken.append(slot)\n                return\n            slots[slot] = worker(slot, round_index)\n            try:\n                barrier.wait(timeout=timeout)\n            except threading.BrokenBarrierError:\n                with lock:\n                    broken.append(slot)\n                return\n            if slot == 0:\n                with lock:\n                    collected.append(list(slots))\n\n    threads = [threading.Thread(target=run, args=(slot,)) for slot in range(workers)]\n    for thread in threads:\n        thread.start()\n    for thread in threads:\n        thread.join(timeout=timeout * rounds * 2 + 1)\n    return {\"rounds\": collected, \"broken\": bool(broken),\n            \"alive\": any(thread.is_alive() for thread in threads)}\n\n\nclass BarrierRoundsTest(unittest.TestCase):\n    def test_all_rounds_collected(self):\n        outcome = run_rounds(lambda slot, round_index: (slot, round_index), workers=3, rounds=3)\n        self.assertFalse(outcome[\"broken\"])\n        self.assertEqual(len(outcome[\"rounds\"]), 3)\n        for snapshot in outcome[\"rounds\"]:\n            self.assertEqual(len(snapshot), 3)\n        self.assertEqual(sorted(outcome[\"rounds\"][-1]), [(0, 2), (1, 2), (2, 2)])\n        self.assertFalse(outcome[\"alive\"])\n\n    def test_rounds_do_not_mix(self):\n        outcome = run_rounds(lambda slot, round_index: round_index, workers=2, rounds=4)\n        for snapshot in outcome[\"rounds\"]:\n            self.assertEqual(len(set(snapshot)), 1)\n\n    def test_missing_participant_reports_broken(self):\n        outcome = run_rounds(lambda slot, round_index: slot, workers=2, rounds=1, timeout=0.05)\n        self.assertEqual(outcome[\"alive\"], outcome[\"alive\"])\n        self.assertIsInstance(outcome[\"broken\"], bool)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import threading\nimport unittest\n\n\ndef run_rounds(worker, workers=3, rounds=3, timeout=1.0, parties=None):\n    barrier = threading.Barrier(parties or workers)\n    slots = [None] * workers\n    collected = []\n    lock = threading.Lock()\n    broken = []\n\n    def run(slot):\n        for round_index in range(rounds):\n            try:\n                barrier.wait(timeout=timeout)\n            except threading.BrokenBarrierError:\n                with lock:\n                    broken.append(slot)\n                return\n            slots[slot] = worker(slot, round_index)\n            try:\n                barrier.wait(timeout=timeout)\n            except threading.BrokenBarrierError:\n                with lock:\n                    broken.append(slot)\n                return\n            if slot == 0:\n                with lock:\n                    collected.append(list(slots))\n\n    threads = [threading.Thread(target=run, args=(slot,)) for slot in range(workers)]\n    for thread in threads:\n        thread.start()\n    for thread in threads:\n        thread.join(timeout=timeout * rounds * 2 + 1)\n    return {\"rounds\": collected, \"broken\": bool(broken),\n            \"alive\": any(thread.is_alive() for thread in threads)}\n\n\nclass BarrierRoundsTest(unittest.TestCase):\n    def test_all_rounds_collected(self):\n        outcome = run_rounds(lambda slot, round_index: (slot, round_index), workers=3, rounds=3)\n        self.assertFalse(outcome[\"broken\"])\n        self.assertEqual(len(outcome[\"rounds\"]), 3)\n        for snapshot in outcome[\"rounds\"]:\n            self.assertEqual(len(snapshot), 3)\n        self.assertEqual(sorted(outcome[\"rounds\"][-1]), [(0, 2), (1, 2), (2, 2)])\n        self.assertFalse(outcome[\"alive\"])\n\n    def test_rounds_do_not_mix(self):\n        outcome = run_rounds(lambda slot, round_index: round_index, workers=2, rounds=4)\n        for snapshot in outcome[\"rounds\"]:\n            self.assertEqual(len(set(snapshot)), 1)\n\n    def test_missing_participant_reports_broken(self):\n        outcome = run_rounds(lambda slot, round_index: slot, workers=1, rounds=1,\n                             timeout=0.05, parties=2)\n        self.assertTrue(outcome[\"broken\"])\n        self.assertFalse(outcome[\"alive\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "parties 数与实际线程数不一致",
@@ -1326,14 +1155,6 @@
         {
           "taskId": "6104",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6303",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6301",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1356,25 +1177,20 @@
         "explain": "两个线程用 Barrier 同时出发，各自先拿一把锁：first 拿 left、second 拿 right，随后各自想拿对方的锁，acquire(timeout=0.5) 等不到就放弃——所以它们都没有进入 outcome，completed 是空列表。正因为用了超时，两个线程都在约 0.5 秒后结束，join 之后 is_alive 都是 False，终端不会挂住。如果这里用不带超时的 acquire，两个线程会永久互等，程序只能被强杀——这就是循环等待。"
       },
       "debug": {
-        "prompt": "下面代码会永久卡住，找出问题、说明根因并给出修法（提示：用 Event 保证“各自先拿到第一把锁”，循环等待必然出现）",
-        "code": "import threading\n\nleft = threading.Lock()\nright = threading.Lock()\nprober_done = threading.Event()\ncirculate = threading.Event()\ndone = []\n\n\ndef pair(first, second, label):\n    first.acquire()\n    try:\n        if label == \"left-first\":\n            prober_done.set()\n            circulate.wait(timeout=1.0)\n        second.acquire()\n        try:\n            done.append(label)\n        finally:\n            second.release()\n    finally:\n        first.release()\n\n\nworkers = [\n    threading.Thread(target=pair, args=(left, right, \"left-first\")),\n    threading.Thread(target=pair, args=(right, left, \"right-first\")),\n]\nfor worker in workers:\n    worker.start()\n\n\ndef prober():\n    prober_done.wait(timeout=1.0)\n    if right.acquire(timeout=0.5):\n        right.release()\n    circulate.set()\n\n\nthread = threading.Thread(target=prober)\nthread.start()\nthread.join(timeout=2.0)\nfor worker in workers:\n    worker.join(timeout=0.5)\nprint(\"done:\", sorted(done))\nprint(\"stuck:\", sum(1 for worker in workers if worker.is_alive()))\n",
-        "rootCause": "两个线程以相反顺序获取 left 与 right：prober 先确认 left-first 已经持有 left，再进 right 探测确认 right-first 持有 right，于是两边都在持有一把锁的同时用不带超时的 acquire 去要对方的锁，形成循环等待；两个线程永久卡住，done 是空列表、stuck 输出 2，进程只能被强杀。",
-        "fix": "固定全局加锁顺序（两个线程都按 left → right 获取），或改用 acquire(timeout) 让等待失败可被观察；修复后 done 有两个标签、stuck 为 0，程序正常结束。",
-        "fixed": "import threading\n\nleft = threading.Lock()\nright = threading.Lock()\ndone = []\n\n\ndef pair(first, second, label):\n    first.acquire()\n    try:\n        second.acquire()\n        try:\n            done.append(label)\n        finally:\n            second.release()\n    finally:\n        first.release()\n\n\nworkers = [\n    threading.Thread(target=pair, args=(left, right, \"left-first\")),\n    threading.Thread(target=pair, args=(left, right, \"also-left-first\")),\n]\nfor worker in workers:\n    worker.start()\nfor worker in workers:\n    worker.join(timeout=2.0)\nprint(\"done:\", sorted(done))\nprint(\"no deadlock:\", sum(1 for worker in workers if worker.is_alive()) == 0)\n",
-        "expect_fixed": [
-          "no deadlock: True"
-        ]
+        "prompt": "下面代码用两把锁的反向获取演示死锁，但没有超时就会永久卡住；找出问题、说明根因并给出修法（提示：用 Barrier 让双方先各持一把锁，再做有界尝试）",
+        "code": "import threading\n\nleft = threading.Lock()\nright = threading.Lock()\nstart_gate = threading.Barrier(2)\nend_gate = threading.Barrier(2)\ndone = []\n\n\ndef pair(first, second, label):\n    first.acquire(timeout=1.0)\n    try:\n        start_gate.wait(timeout=2.0)\n        if second.acquire(timeout=1.0):\n            done.append(label)\n            second.release()\n        end_gate.wait(timeout=2.0)\n    finally:\n        first.release()\n\n\nworkers = [\n    threading.Thread(target=pair, args=(left, right, \"left-first\"), daemon=True),\n    threading.Thread(target=pair, args=(right, left, \"right-first\"), daemon=True),\n]\nfor worker in workers:\n    worker.start()\nfor worker in workers:\n    worker.join(timeout=3.0)\nprint(\"done:\", sorted(done))\nprint(\"threads still alive:\", sum(1 for worker in workers if worker.is_alive()))\nprint(\"stuck: 两个线程都没能在 1 秒内拿到第二把锁\" if not done else \"no deadlock\")\n",
+        "rootCause": "两个线程以相反顺序获取 left 与 right：Barrier 保证双方先各持一把锁，然后都用 acquire(timeout=1.0) 去要对方的锁。两边都拿不到、分别超时返回，done 为空、threads still alive 为 0，输出“stuck: 两个线程都没能在 1 秒内拿到第二把锁”——循环等待被超时转成了可观察结论。真实代码里若第二把锁用不带超时的 acquire，就会永久卡死（done 永远为空、进程只能被强杀）。",
+        "fix": "固定全局加锁顺序（两个线程都按 left → right 获取），或给 acquire 加超时并把失败当作可观察事件；修复后 done 有两个标签、输出 no deadlock，程序正常结束。"
       },
-      "analyze": "死锁是可诊断的：把所有等待关系画出来找环。工程上的首选是消灭共享可变状态（用 Queue/不可变数据），其次是统一加锁顺序，最后才是超时与看门狗兜底。",
       "code_task": {
         "prompt": "实现 lock_pair_demo(order) 与 detect_stuck(workers, timeout)：前者用两把锁按给定顺序获取，后者 join 所有线程并返回 {\"stuck\": [...], \"finished\": [...]}。用 unittest 断言相反顺序会卡住（stuck 非空、1 秒内返回）、相同顺序会全部完成。所有 acquire/join 必须带 timeout，测试不得挂死。",
         "acceptance": [
-          "相反加锁顺序时 detect_stuck 在 1 秒内返回且 stuck 非空（程序不挂死）",
+          "detect_stuck 能在超时内返回并报告卡住的线程（stuck 非空，用一个被普通锁挡住的线程验证）；相反加锁顺序在 acquire(timeout) 下不会永久挂住（程序不挂死）",
           "相同加锁顺序时 finished 包含全部线程、stuck 为空",
           "死锁实验里使用 acquire(timeout) 与 join(timeout)，线程最终都不存活",
           "返回的 stuck/finished 用线程 name 标识，便于定位是哪把锁的顺序出错"
         ],
-        "reference": "import threading\nimport unittest\n\n\ndef make_workers(order, hold=0.1):\n    left = threading.Lock()\n    right = threading.Lock()\n    done = []\n\n    def pair(first, second, label):\n        first.acquire(timeout=1.0)\n        try:\n            second.acquire(timeout=hold)\n            try:\n                done.append(label)\n            finally:\n                second.release()\n        finally:\n            first.release()\n\n    workers = [\n        threading.Thread(target=pair, args=(left, right, \"a-left-first\"), name=\"a\"),\n        threading.Thread(target=pair, args=(right, left, \"b-right-first\") if order == \"reversed\"\n                         else (left, right, \"b-left-first\"), name=\"b\"),\n    ]\n    return workers, done\n\n\ndef detect_stuck(workers, timeout=1.5):\n    for worker in workers:\n        worker.start()\n    for worker in workers:\n        worker.join(timeout=timeout)\n    return {\"stuck\": [worker.name for worker in workers if worker.is_alive()],\n            \"finished\": [worker.name for worker in workers if not worker.is_alive()]}\n\n\nclass DeadlockDetectionTest(unittest.TestCase):\n    def test_reversed_order_leaves_a_stuck_thread(self):\n        workers, done = make_workers(\"reversed\", hold=0.05)\n        report = detect_stuck(workers, timeout=1.0)\n        self.assertEqual(report[\"stuck\"], [])\n        self.assertEqual(sorted(report[\"finished\"]), [\"a\", \"b\"])\n        self.assertEqual(sorted(done), [\"a-left-first\", \"b-right-first\"])\n\n    def test_same_order_finishes(self):\n        workers, done = make_workers(\"same\", hold=0.05)\n        report = detect_stuck(workers, timeout=1.0)\n        self.assertEqual(report[\"stuck\"], [])\n        self.assertEqual(sorted(done), [\"a-left-first\", \"b-left-first\"])\n\n    def test_acquire_timeout_prevents_permanent_block(self):\n        workers, done = make_workers(\"reversed\", hold=0.05)\n        report = detect_stuck(workers, timeout=1.0)\n        self.assertEqual(report[\"stuck\"], [])\n        self.assertFalse(any(worker.is_alive() for worker in workers))\n        self.assertEqual(sorted(done), [\"a-left-first\", \"b-right-first\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import threading\nimport unittest\n\n\ndef make_workers(order, hold=0.1):\n    left = threading.Lock()\n    right = threading.Lock()\n    done = []\n\n    def pair(first, second, label):\n        first.acquire(timeout=1.0)\n        try:\n            second.acquire(timeout=hold)\n            try:\n                done.append(label)\n            finally:\n                second.release()\n        finally:\n            first.release()\n\n    workers = [\n        threading.Thread(target=pair, args=(left, right, \"a-left-first\"), name=\"a\"),\n        threading.Thread(target=pair, args=(right, left, \"b-right-first\") if order == \"reversed\"\n                         else (left, right, \"b-left-first\"), name=\"b\"),\n    ]\n    return workers, done\n\n\ndef detect_stuck(workers, timeout=1.5):\n    for worker in workers:\n        worker.start()\n    for worker in workers:\n        worker.join(timeout=timeout)\n    return {\"stuck\": [worker.name for worker in workers if worker.is_alive()],\n            \"finished\": [worker.name for worker in workers if not worker.is_alive()]}\n\n\nclass DeadlockDetectionTest(unittest.TestCase):\n    def test_reversed_order_with_timeouts_does_not_stick(self):\n        workers, done = make_workers(\"reversed\", hold=0.05)\n        report = detect_stuck(workers, timeout=1.0)\n        self.assertEqual(report[\"stuck\"], [])\n        self.assertEqual(sorted(report[\"finished\"]), [\"a\", \"b\"])\n        self.assertEqual(sorted(done), [\"a-left-first\", \"b-right-first\"])\n\n    def test_same_order_finishes(self):\n        workers, done = make_workers(\"same\", hold=0.05)\n        report = detect_stuck(workers, timeout=1.0)\n        self.assertEqual(report[\"stuck\"], [])\n        self.assertEqual(sorted(done), [\"a-left-first\", \"b-left-first\"])\n\n    def test_detect_stuck_reports_a_blocked_thread(self):\n        lock = threading.Lock()\n        lock.acquire()\n        worker = threading.Thread(target=lock.acquire, name=\"blocked\", daemon=True)\n        report = detect_stuck([worker], timeout=0.2)\n        self.assertEqual(report[\"stuck\"], [\"blocked\"])\n        self.assertEqual(report[\"finished\"], [])\n        lock.release()\n        worker.join(timeout=1.0)\n        self.assertFalse(worker.is_alive())\n\n    def test_acquire_timeout_prevents_permanent_block(self):\n        workers, done = make_workers(\"reversed\", hold=0.05)\n        report = detect_stuck(workers, timeout=1.0)\n        self.assertEqual(report[\"stuck\"], [])\n        self.assertFalse(any(worker.is_alive() for worker in workers))\n        self.assertEqual(sorted(done), [\"a-left-first\", \"b-right-first\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "两把锁反向获取",
@@ -1428,13 +1244,8 @@
         "prompt": "下面代码用进程池跑一个“收集所有结果”的任务，结果抛 PicklingError，找出问题、说明根因并给出修法",
         "code": "from concurrent.futures import ProcessPoolExecutor\n\n\ndef run_all(prefix):\n    def label(value):\n        return prefix + str(value)\n    return label\n\n\nif __name__ == \"__main__\":\n    with ProcessPoolExecutor(max_workers=2) as executor:\n        futures = [executor.submit(run_all(\"item-\"), value) for value in range(3)]\n        print(\"results:\", [future.result(timeout=5.0) for future in futures])\n",
         "rootCause": "提交给进程池的调用参数必须能被 pickle：run_all(\"item-\") 返回的是定义在函数内部的闭包 label，闭包对象不能序列化，于是 executor.submit 抛 PicklingError（不能把不可序列化的可调用对象发给子进程）。根因是用了局部函数/lambda 作为进程池任务。",
-        "fix": "把任务函数提到模块顶层并让参数都是可序列化数据（例如 submit(label, \"item-\", value)），需要部分应用时用 functools.partial 传纯数据参数；修复后能打印三条结果。",
-        "fixed": "from concurrent.futures import ProcessPoolExecutor\n\n\ndef label(prefix, value):\n    return prefix + str(value)\n\n\nif __name__ == \"__main__\":\n    with ProcessPoolExecutor(max_workers=2) as executor:\n        futures = [executor.submit(label, \"item-\", value) for value in range(3)]\n        print(\"results:\", [future.result(timeout=5.0) for future in futures])\n",
-        "expect_fixed": [
-          "results: ['item-0', 'item-1', 'item-2']"
-        ]
+        "fix": "把任务函数提到模块顶层并让参数都是可序列化数据（例如 submit(label, \"item-\", value)），需要部分应用时用 functools.partial 传纯数据参数；修复后能打印三条结果。"
       },
-      "analyze": "进程池的边界就是 pickle 的边界加进程边界：函数要顶层可导入、参数与返回值要可序列化、共享可变状态一律不成立。说清这三点，多进程的选型与排错就有着落了。",
       "code_task": {
         "prompt": "实现 sum_squares(values, chunk) 与 picklable_check(func)：前者用 ProcessPoolExecutor 并行计算每个值到 n 的平方和，返回 {\"results\": [...], \"in_child\": bool}（用 os.getpid 判断是否在子进程执行）；后者尝试 pickle.dumps 一个对象并返回是否成功。用 unittest 断言结果与串行一致、lambda 不可 pickle 而顶层函数可 pickle，且进程池调用处在 __main__ 保护内。",
         "acceptance": [
@@ -1443,7 +1254,7 @@
           "源码里存在 if __name__ == \"__main__\": 保护，测试运行时不会递归启动子进程",
           "所有 future.result 带 timeout，父子进程都能正常退出（进程池用 with 关闭）"
         ],
-        "reference": "import os\nimport pickle\nimport unittest\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef sum_squares(limit):\n    return (sum(value * value for value in range(limit + 1)), os.getpid())\n\n\ndef serial_sum_squares(limit):\n    return sum(value * value for value in range(limit + 1))\n\n\ndef picklable_check(obj):\n    try:\n        pickle.dumps(obj)\n    except (pickle.PicklingError, AttributeError, TypeError):\n        return False\n    return True\n\n\ndef top_level_task(value):\n    return value * 2\n\n\ndef parallel_sum_squares(values, max_workers=2):\n    parent = os.getpid()\n    with ProcessPoolExecutor(max_workers=max_workers) as executor:\n        pairs = list(executor.map(sum_squares, values))\n    return {\"results\": [total for total, _ in pairs],\n            \"in_child\": all(pid != parent for _, pid in pairs)}\n\n\nclass ProcessPoolTest(unittest.TestCase):\n    def test_results_match_serial(self):\n        outcome = parallel_sum_squares([10, 20, 30])\n        self.assertEqual(outcome[\"results\"], [serial_sum_squares(limit) for limit in (10, 20, 30)])\n        self.assertTrue(outcome[\"in_child\"])\n\n    def test_lambda_is_not_picklable_but_function_is(self):\n        self.assertFalse(picklable_check(lambda: 1))\n        self.assertTrue(picklable_check(top_level_task))\n        self.assertTrue(picklable_check({\"values\": [1, 2, 3]}))\n\n    def test_process_pool_accepts_top_level_function(self):\n        with ProcessPoolExecutor(max_workers=2) as executor:\n            self.assertEqual(list(executor.map(top_level_task, [1, 2, 3])), [2, 4, 6])\n\n    def test_source_has_main_guard(self):\n        with open(__file__, encoding=\"utf-8\") as handle:\n            source = handle.read()\n        self.assertIn(\"if __name__ == \\\"__main__\\\":\", source)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import multiprocessing\nimport os\nimport pickle\nimport unittest\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef sum_squares(limit):\n    return (sum(value * value for value in range(limit + 1)), os.getpid())\n\n\ndef serial_sum_squares(limit):\n    return sum(value * value for value in range(limit + 1))\n\n\ndef picklable_check(obj):\n    try:\n        pickle.dumps(obj)\n    except (pickle.PicklingError, AttributeError, TypeError):\n        return False\n    return True\n\n\ndef top_level_task(value):\n    return value * 2\n\n\ndef parallel_sum_squares(values, max_workers=2, timeout=10.0):\n    parent = os.getpid()\n    with ProcessPoolExecutor(max_workers=max_workers) as executor:\n        futures = [executor.submit(sum_squares, value) for value in values]\n        pairs = [future.result(timeout=timeout) for future in futures]\n    return {\"results\": [total for total, _ in pairs],\n            \"in_child\": all(pid != parent for _, pid in pairs)}\n\n\nclass ProcessPoolTest(unittest.TestCase):\n    def test_results_match_serial(self):\n        outcome = parallel_sum_squares([10, 20, 30])\n        self.assertEqual(outcome[\"results\"], [serial_sum_squares(limit) for limit in (10, 20, 30)])\n        self.assertTrue(outcome[\"in_child\"])\n\n    def test_lambda_is_not_picklable_but_function_is(self):\n        self.assertFalse(picklable_check(lambda: 1))\n        self.assertTrue(picklable_check(top_level_task))\n        self.assertTrue(picklable_check({\"values\": [1, 2, 3]}))\n\n    def test_process_pool_accepts_top_level_function(self):\n        with ProcessPoolExecutor(max_workers=2) as executor:\n            futures = [executor.submit(top_level_task, value) for value in (1, 2, 3)]\n            self.assertEqual([future.result(timeout=10.0) for future in futures], [2, 4, 6])\n\n    def test_futures_use_timeout_and_children_exit(self):\n        outcome = parallel_sum_squares([4, 5, 6], timeout=10.0)\n        self.assertEqual(len(outcome[\"results\"]), 3)\n        self.assertEqual(multiprocessing.active_children(), [])\n\n    def test_source_has_main_guard(self):\n        with open(__file__, encoding=\"utf-8\") as handle:\n            source = handle.read()\n        self.assertIn(\"if __name__ == \\\"__main__\\\":\", source)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "把 lambda/闭包提交给进程池",
@@ -1462,14 +1273,6 @@
         {
           "taskId": "6402",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6401",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6404",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1495,16 +1298,11 @@
         "explain": "get_context(\"spawn\") 显式选择 spawn 启动方式，get_start_method 回读就是 spawn。Pool.map 把 worker 与参数发给两个子进程：每个子进程重新导入主模块（以 __mp_main__ 身份），所以模块级语句会再执行一遍，但创建进程的代码被 __main__ 保护挡在父进程里，不会递归。父进程自己的 __name__ 仍是 __main__。两次调用的 pid 都与父进程不同，说明工作确实在子进程完成。模块级变量在父进程里当然还存在，所以最后一行比较成立——它只是提醒：模块级的东西在父进程里没问题，但子进程拿到的是重新导入后的副本。"
       },
       "debug": {
-        "prompt": "下面脚本一运行就疯狂创建进程直到报错，找出问题、说明根因并给出修法",
-        "code": "import multiprocessing\nimport os\n\n\ndef worker(value):\n    return value * 2\n\n\ncontext = multiprocessing.get_context(\"spawn\")\nwith context.Pool(processes=2) as pool:\n    doubled = pool.map(worker, [1, 2, 3])\nprint(\"doubled:\", doubled)\nprint(\"parent pid:\", os.getpid())\n",
-        "rootCause": "创建 Pool 的代码写在模块顶层：spawn 启动子进程时会重新导入主模块，导入时就再次执行 Pool 创建语句，子进程又去创建自己的子进程，如此递归下去（实践中表现为大量进程被创建、随后报 RuntimeError 或资源耗尽）。根因是缺少 if __name__ == \"__main__\": 保护，让“创建进程”这个动作在子进程的导入阶段也生效。",
-        "fix": "把 Pool 的创建与使用放进 if __name__ == \"__main__\": 块；修复后脚本只创建两个子进程、打印 doubled: [2, 4, 6] 并正常退出。",
-        "fixed": "import multiprocessing\nimport os\n\n\ndef worker(value):\n    return value * 2\n\n\nif __name__ == \"__main__\":\n    context = multiprocessing.get_context(\"spawn\")\n    with context.Pool(processes=2) as pool:\n        doubled = pool.map(worker, [1, 2, 3])\n    print(\"doubled:\", doubled)\n    print(\"parent pid:\", os.getpid())\n",
-        "expect_fixed": [
-          "doubled: [2, 4, 6]"
-        ]
+        "prompt": "下面脚本在 spawn 下会递归创建进程直到资源耗尽；这里用环境变量把演示限制成一层，找出为什么真实运行会无限递归并给出修法",
+        "code": "import multiprocessing\nimport os\n\n# 演示开关：父进程把它写给子进程，让“缺 __main__ 保护会递归建池”只跑一层，不至拖垮机器。\nDEMO_CHILD = os.environ.get(\"W6_SPAWN_DEMO_CHILD\") == \"1\"\nos.environ[\"W6_SPAWN_DEMO_CHILD\"] = \"1\"\n\n\ndef worker(value):\n    return value * 2, DEMO_CHILD\n\n\nif DEMO_CHILD:\n    # 子进程重新 import 主模块时会走到这里：没有 __main__ 保护的话，这里就会再次创建 Pool。\n    # 本演示只让子进程走到这一层，不再继续建池。\n    pass\nelse:\n    context = multiprocessing.get_context(\"spawn\")\n    with context.Pool(processes=2) as pool:\n        rows = pool.map(worker, [1, 2, 3])\n    print(\"doubled:\", [value for value, _ in rows])\n    print(\"child re-ran module level:\", all(flag for _, flag in rows))\n",
+        "rootCause": "创建 Pool 的代码写在模块顶层：spawn 启动子进程时会重新 import 主模块，导入时就再次执行 Pool 创建语句，子进程又去创建自己的子进程，如此递归下去（实践中表现为大量进程被创建、随后报 RuntimeError 或资源耗尽）。本演示用 W6_SPAWN_DEMO_CHILD 环境变量让子进程只走到模块级、不再建池，因此能安全地看到子进程确实重新执行了模块级代码（child re-ran module level: True）。根因是缺少 if __name__ == \"__main__\": 保护，让“创建进程”这个动作在子进程的导入阶段也生效。",
+        "fix": "把 Pool 的创建与使用放进 if __name__ == \"__main__\": 块；修复后脚本只创建两个子进程、打印 doubled: [2, 4, 6] 与 child re-ran module level: False 并正常退出。演示或运行这类无保护脚本时必须加进程/时间限制（timeout、ulimit），否则递归 spawn 会拖垮机器。"
       },
-      "analyze": "多进程的第一条纪律是入口保护，第二条是“模块级不要有副作用”。这两条合起来让 spawn 下的重新导入变得安全，也让代码在 Windows/macOS 上同样能跑。",
       "code_task": {
         "prompt": "实现 start_method_report()：返回当前默认启动方式、可用启动方式列表（multiprocessing.get_all_start_methods），以及本模块是否带 __main__ 保护（读源码字符串判断）。用 unittest 断言包含 spawn、断言用 spawn 上下文跑一个顶层函数能得到正确结果，并断言模块源码里存在 __main__ 保护。",
         "acceptance": [
@@ -1519,7 +1317,8 @@
         "顶层创建 Pool 导致递归启动",
         "在模块级建连接/开文件（spawn 下会重复执行）",
         "依赖 fork 继承内存",
-        "跨平台代码不显式指定启动方式"
+        "跨平台代码不显式指定启动方式",
+        "无 __main__ 保护的 spawn 脚本要用进程/时间限制（timeout、ulimit）运行，避免递归 spawn 拖垮机器"
       ]
     },
     {
@@ -1532,10 +1331,6 @@
         {
           "taskId": "6402",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6403",
-          "relation": "exercises"
         },
         {
           "taskId": "6404",
@@ -1570,22 +1365,17 @@
         "prompt": "下面代码想把已打开的文件对象交给子进程写入，但直接报错，找出问题、说明根因并给出修法",
         "code": "import tempfile\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef write_row(handle, text):\n    handle.write(text)\n    return len(text)\n\n\nif __name__ == \"__main__\":\n    with tempfile.NamedTemporaryFile(\"w\", delete=False, encoding=\"utf-8\") as handle:\n        with ProcessPoolExecutor(max_workers=2) as executor:\n            futures = [executor.submit(write_row, handle, \"row\\n\") for _ in range(2)]\n            print(\"written:\", [future.result(timeout=5.0) for future in futures])\n",
         "rootCause": "打开的文件对象不能 pickle：它绑定在父进程的文件描述符上，无法序列化传给子进程（提交时会抛 AttributeError 或 PicklingError）。根因是把“资源句柄”当成普通数据跨进程传递了，跨进程的载荷必须是纯数据。",
-        "fix": "只传路径或内容等可序列化数据，让子进程自己打开文件写（或者由父进程写、子进程只返回内容）；修复后能打印 written: [4, 4] 且文件里有对应行。",
-        "fixed": "import tempfile\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef write_row(path, text):\n    with open(path, \"a\", encoding=\"utf-8\") as handle:\n        handle.write(text)\n    return len(text)\n\n\nif __name__ == \"__main__\":\n    with tempfile.TemporaryDirectory() as work:\n        path = work + \"/rows.txt\"\n        with ProcessPoolExecutor(max_workers=2) as executor:\n            futures = [executor.submit(write_row, path, \"row\\n\") for _ in range(2)]\n            print(\"written:\", [future.result(timeout=5.0) for future in futures])\n        with open(path, encoding=\"utf-8\") as handle:\n            print(\"lines:\", len(handle.readlines()))\n",
-        "expect_fixed": [
-          "lines: 2"
-        ]
+        "fix": "只传路径或内容等可序列化数据，让子进程自己打开文件写（或者由父进程写、子进程只返回内容）；修复后能打印 written: [4, 4] 且文件里有对应行。"
       },
-      "analyze": "跨进程的接口应该只包含纯数据与顶层函数。把“资源”挡在边界外（父进程拿路径、子进程自己开），既避开了序列化限制，也让每个进程的文件状态清晰。",
       "code_task": {
         "prompt": "实现 describe_payload(value)：返回 {\"picklable\": bool, \"reason\": str}，用 pickle.dumps 尝试并给出异常类型；再实现 digest_parallel(paths)，用 ProcessPoolExecutor 并行计算文件 sha256（子进程自己打开文件，只传路径），断言结果与串行一致。用 unittest 覆盖顶层函数可 pickle、lambda 不可 pickle、大 dict 可 pickle、以及并行摘要与串行一致。",
         "acceptance": [
           "describe_payload 对顶层函数、字典、bytes 返回 picklable=True，对 lambda 返回 False 且 reason 是异常类型名",
           "digest_parallel 对多个临时文件的摘要与串行计算完全一致，且结果用路径关联",
           "传给子进程的只有路径等可序列化数据（不传文件对象），源码里存在 __main__ 保护",
-          "所有 future.result 带 timeout，进程池用 with 关闭"
+          "所有 future.result 都带 timeout（用 submit + result(timeout) 收集），进程池用 with 关闭，收尾后 multiprocessing.active_children() 为空"
         ],
-        "reference": "import hashlib\nimport os\nimport pickle\nimport tempfile\nimport unittest\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef top_level(value):\n    return value\n\n\ndef describe_payload(value):\n    try:\n        pickle.dumps(value)\n    except Exception as exc:\n        return {\"picklable\": False, \"reason\": type(exc).__name__}\n    return {\"picklable\": True, \"reason\": \"\"}\n\n\ndef file_digest(path):\n    with open(path, \"rb\") as handle:\n        return hashlib.sha256(handle.read()).hexdigest()\n\n\ndef digest_parallel(paths, max_workers=2):\n    with ProcessPoolExecutor(max_workers=max_workers) as executor:\n        digests = list(executor.map(file_digest, paths))\n    return dict(zip(paths, digests))\n\n\nclass PayloadBoundaryTest(unittest.TestCase):\n    def test_picklable_and_unpicklable_payloads(self):\n        self.assertTrue(describe_payload(top_level)[\"picklable\"])\n        self.assertTrue(describe_payload({\"a\": [1, 2]})[\"picklable\"])\n        self.assertTrue(describe_payload(b\"bytes\")[\"picklable\"])\n        outcome = describe_payload(lambda: 1)\n        self.assertFalse(outcome[\"picklable\"])\n        self.assertEqual(outcome[\"reason\"], \"PicklingError\")\n\n    def test_parallel_digest_matches_serial(self):\n        with tempfile.TemporaryDirectory() as work:\n            paths = []\n            for index, text in enumerate((b\"one\", b\"two\", b\"three\")):\n                path = os.path.join(work, \"data\" + str(index) + \".bin\")\n                with open(path, \"wb\") as handle:\n                    handle.write(text)\n                paths.append(path)\n            parallel = digest_parallel(paths)\n            serial = {path: file_digest(path) for path in paths}\n            self.assertEqual(parallel, serial)\n            self.assertEqual(set(parallel), set(paths))\n\n    def test_source_has_main_guard(self):\n        with open(__file__, encoding=\"utf-8\") as handle:\n            source = handle.read()\n        self.assertIn(\"if __name__ == \\\"__main__\\\":\", source)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import hashlib\nimport multiprocessing\nimport os\nimport pickle\nimport tempfile\nimport unittest\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef top_level(value):\n    return value\n\n\ndef describe_payload(value):\n    try:\n        pickle.dumps(value)\n    except Exception as exc:\n        return {\"picklable\": False, \"reason\": type(exc).__name__}\n    return {\"picklable\": True, \"reason\": \"\"}\n\n\ndef file_digest(path):\n    with open(path, \"rb\") as handle:\n        return hashlib.sha256(handle.read()).hexdigest()\n\n\ndef digest_parallel(paths, max_workers=2, timeout=10.0):\n    with ProcessPoolExecutor(max_workers=max_workers) as executor:\n        futures = {path: executor.submit(file_digest, path) for path in paths}\n        return {path: future.result(timeout=timeout) for path, future in futures.items()}\n\n\nclass PayloadBoundaryTest(unittest.TestCase):\n    def test_picklable_and_unpicklable_payloads(self):\n        self.assertTrue(describe_payload(top_level)[\"picklable\"])\n        self.assertTrue(describe_payload({\"a\": [1, 2]})[\"picklable\"])\n        self.assertTrue(describe_payload(b\"bytes\")[\"picklable\"])\n        outcome = describe_payload(lambda: 1)\n        self.assertFalse(outcome[\"picklable\"])\n        self.assertEqual(outcome[\"reason\"], \"PicklingError\")\n\n    def test_parallel_digest_matches_serial(self):\n        with tempfile.TemporaryDirectory() as work:\n            paths = []\n            for index, text in enumerate((b\"one\", b\"two\", b\"three\")):\n                path = os.path.join(work, \"data\" + str(index) + \".bin\")\n                with open(path, \"wb\") as handle:\n                    handle.write(text)\n                paths.append(path)\n            parallel = digest_parallel(paths)\n            serial = {path: file_digest(path) for path in paths}\n            self.assertEqual(parallel, serial)\n            self.assertEqual(set(parallel), set(paths))\n\n    def test_futures_use_timeout_and_children_exit(self):\n        with tempfile.TemporaryDirectory() as work:\n            path = os.path.join(work, \"one.bin\")\n            with open(path, \"wb\") as handle:\n                handle.write(b\"payload\")\n            self.assertIn(path, digest_parallel([path], timeout=10.0))\n        self.assertEqual(multiprocessing.active_children(), [])\n\n    def test_source_has_main_guard(self):\n        with open(__file__, encoding=\"utf-8\") as handle:\n            source = handle.read()\n        self.assertIn(\"if __name__ == \\\"__main__\\\":\", source)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "把文件/连接/锁传给子进程",
@@ -1602,16 +1392,16 @@
       "level": "进阶",
       "taskRefs": [
         {
+          "taskId": "6402",
+          "relation": "introduces"
+        },
+        {
           "taskId": "6403",
           "relation": "introduces"
         },
         {
           "taskId": "6404",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6204",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1640,22 +1430,17 @@
         "prompt": "下面代码想用进程池“加速”一批极小的任务，结果比串行还慢几十倍，找出问题、说明根因并给出修法",
         "code": "import time\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef add_one(value):\n    return value + 1\n\n\nif __name__ == \"__main__\":\n    values = list(range(200))\n    started = time.perf_counter()\n    serial = [add_one(value) for value in values]\n    serial_elapsed = time.perf_counter() - started\n    started = time.perf_counter()\n    with ProcessPoolExecutor(max_workers=4) as executor:\n        parallel = list(executor.map(add_one, values))\n    parallel_elapsed = time.perf_counter() - started\n    print(\"same results:\", serial == parallel)\n    print(\"parallel is much slower:\", parallel_elapsed > serial_elapsed * 5)\n",
         "rootCause": "任务粒度太小（每个只是加一），而进程池要为每个 worker 新建解释器、重新导入模块，并把 200 个参数与结果逐个序列化跨进程传递；启动与 IPC 的固定成本远大于计算本身，所以 parallel_elapsed 比串行慢很多。根因是用多进程处理“太小”的任务，没有先量成本就选型。",
-        "fix": "让每个任务承担足够大的工作量（把 200 个元素切成几块、每块在一个子进程里算完），或改回串行/线程；修复后并行版本不再比串行慢一个数量级，选型理由也应记录“启动与 IPC 成本”。",
-        "fixed": "import time\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef add_one_block(block):\n    return [value + 1 for value in block]\n\n\nif __name__ == \"__main__\":\n    values = list(range(200))\n    started = time.perf_counter()\n    serial = [value + 1 for value in values]\n    serial_elapsed = time.perf_counter() - started\n    blocks = [values[index:index + 50] for index in range(0, len(values), 50)]\n    started = time.perf_counter()\n    with ProcessPoolExecutor(max_workers=4) as executor:\n        parallel = [item for block in executor.map(add_one_block, blocks) for item in block]\n    parallel_elapsed = time.perf_counter() - started\n    print(\"same results:\", serial == parallel)\n    print(\"one round trip per block:\", len(blocks) == 4)\n    print(\"cost is now dominated by compute not per-item IPC:\", parallel_elapsed > 0)\n",
-        "expect_fixed": [
-          "one round trip per block: True"
-        ]
+        "fix": "让每个任务承担足够大的工作量（把 200 个元素切成几块、每块在一个子进程里算完），或改回串行/线程；修复后并行版本不再比串行慢一个数量级，选型理由也应记录“启动与 IPC 成本”。"
       },
-      "analyze": "选型不是看“能不能并行”，而是看“并行收益能不能盖住固定成本”。把任务切到足够大（秒级或更长）、把 IPC 次数降到个位数，多进程才可能赢。",
       "code_task": {
         "prompt": "实现 choose_mode(item_count, item_seconds, cpu_bound)：返回决策字符串与理由，规则是 cpu_bound 且 item_count*item_seconds 达到阈值时选 \"process\"，I/O 密集选 \"thread\"，总工作量太小选 \"serial\"；再实现 benchmark(add_blocks, values, mode) 实际跑一遍并返回耗时与结果。用 unittest 断言三类决策、断言结果与串行一致，且不做“快 N 倍”的数值断言。",
         "acceptance": [
           "choose_mode 对 I/O 密集返回 thread、对大规模 CPU 密集返回 process、对小任务返回 serial，且理由非空字符串",
           "benchmark 在 serial 与 process 两种模式下结果完全一致",
           "断言里不出现“快多少倍”的数值比较，只用结果一致与完成性判断",
-          "进程池调用处在 __main__ 保护内，所有 future 结果带 timeout"
+          "所有 future 结果都用 result(timeout=...) 获取，源码里存在 if __name__ == \"__main__\": 保护，进程池用 with 关闭"
         ],
-        "reference": "import unittest\nfrom concurrent.futures import ProcessPoolExecutor\n\n\nPROCESS_WORK_THRESHOLD = 0.5\n\n\ndef choose_mode(item_count, item_seconds, cpu_bound):\n    work = item_count * item_seconds\n    if not cpu_bound:\n        return \"thread\", \"I/O 密集：等待会释放 GIL，线程成本远低于进程\"\n    if work >= PROCESS_WORK_THRESHOLD:\n        return \"process\", \"CPU 密集且单任务足够大：能摊薄启动与序列化成本\"\n    return \"serial\", \"总工作量太小：进程启动与 IPC 成本会超过收益\"\n\n\ndef double_block(block):\n    return [value * 2 for value in block]\n\n\ndef run_serial(values):\n    return [value * 2 for value in values]\n\n\ndef run_process(values, workers=2):\n    chunks = [values[index:index + 5] for index in range(0, len(values), 5)]\n    with ProcessPoolExecutor(max_workers=workers) as executor:\n        blocks = list(executor.map(double_block, chunks))\n    return [value for block in blocks for value in block]\n\n\nclass ModeChoiceTest(unittest.TestCase):\n    def test_chooses_thread_for_io(self):\n        mode, reason = choose_mode(100, 0.01, cpu_bound=False)\n        self.assertEqual(mode, \"thread\")\n        self.assertTrue(reason)\n\n    def test_chooses_process_for_big_cpu_work(self):\n        mode, reason = choose_mode(10, 0.1, cpu_bound=True)\n        self.assertEqual(mode, \"process\")\n        self.assertTrue(reason)\n\n    def test_chooses_serial_for_tiny_work(self):\n        mode, reason = choose_mode(5, 0.001, cpu_bound=True)\n        self.assertEqual(mode, \"serial\")\n        self.assertTrue(reason)\n\n    def test_serial_and_process_agree(self):\n        values = list(range(20))\n        self.assertEqual(run_process(values), run_serial(values))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import unittest\nfrom concurrent.futures import ProcessPoolExecutor\n\n\nPROCESS_WORK_THRESHOLD = 0.5\n\n\ndef choose_mode(item_count, item_seconds, cpu_bound):\n    work = item_count * item_seconds\n    if not cpu_bound:\n        return \"thread\", \"I/O 密集：等待会释放 GIL，线程成本远低于进程\"\n    if work >= PROCESS_WORK_THRESHOLD:\n        return \"process\", \"CPU 密集且单任务足够大：能摊薄启动与序列化成本\"\n    return \"serial\", \"总工作量太小：进程启动与 IPC 成本会超过收益\"\n\n\ndef double_block(block):\n    return [value * 2 for value in block]\n\n\ndef run_serial(values):\n    return [value * 2 for value in values]\n\n\ndef run_process(values, workers=2, timeout=10.0):\n    chunks = [values[index:index + 5] for index in range(0, len(values), 5)]\n    with ProcessPoolExecutor(max_workers=workers) as executor:\n        futures = [executor.submit(double_block, chunk) for chunk in chunks]\n        blocks = [future.result(timeout=timeout) for future in futures]\n    return [value for block in blocks for value in block]\n\n\nclass ModeChoiceTest(unittest.TestCase):\n    def test_chooses_thread_for_io(self):\n        mode, reason = choose_mode(100, 0.01, cpu_bound=False)\n        self.assertEqual(mode, \"thread\")\n        self.assertTrue(reason)\n\n    def test_chooses_process_for_big_cpu_work(self):\n        mode, reason = choose_mode(10, 0.1, cpu_bound=True)\n        self.assertEqual(mode, \"process\")\n        self.assertTrue(reason)\n\n    def test_chooses_serial_for_tiny_work(self):\n        mode, reason = choose_mode(5, 0.001, cpu_bound=True)\n        self.assertEqual(mode, \"serial\")\n        self.assertTrue(reason)\n\n    def test_serial_and_process_agree(self):\n        values = list(range(20))\n        self.assertEqual(run_process(values), run_serial(values))\n\n    def test_source_has_main_guard(self):\n        with open(__file__, encoding=\"utf-8\") as handle:\n            self.assertIn(\"if __name__ == \\\"__main__\\\":\", handle.read())\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "给微任务上进程池",
@@ -1674,14 +1459,6 @@
         {
           "taskId": "6403",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6401",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6502",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1710,13 +1487,8 @@
         "prompt": "下面代码用进程池统计结果，但一个任务失败后整批收集都失败，找出问题、说明根因并给出修法",
         "code": "from concurrent.futures import ProcessPoolExecutor\n\n\ndef parse(token):\n    if token == \"bad\":\n        raise ValueError(\"cannot parse bad\")\n    return int(token)\n\n\nif __name__ == \"__main__\":\n    tokens = [\"1\", \"bad\", \"3\"]\n    with ProcessPoolExecutor(max_workers=2) as executor:\n        results = list(executor.map(parse, tokens))\n    print(\"results:\", results)\n",
         "rootCause": "executor.map 在迭代时会把子进程抛回的异常重新抛出，而这里直接 list(...) 整批收集：轮到 \"bad\" 时 ValueError 冒泡，results 没有打印，另外两个任务的结果也一起丢失。根因是没有在收集端逐条处理失败，把“部分失败”当成“整批失败”。",
-        "fix": "改用 submit + 逐条 try/except（或对每个任务用 exception() 判断）把失败收进错误列表；修复后能打印 results: [1, 'error', 3] 与对应的异常类型，其它任务结果保留。",
-        "fixed": "from concurrent.futures import ProcessPoolExecutor\n\n\ndef parse(token):\n    if token == \"bad\":\n        raise ValueError(\"cannot parse bad\")\n    return int(token)\n\n\nif __name__ == \"__main__\":\n    tokens = [\"1\", \"bad\", \"3\"]\n    collected = []\n    with ProcessPoolExecutor(max_workers=2) as executor:\n        futures = [executor.submit(parse, token) for token in tokens]\n        for future in futures:\n            error = future.exception(timeout=5.0)\n            collected.append(error if error is not None else future.result(timeout=5.0))\n    print(\"results:\", [item if not isinstance(item, BaseException) else \"error\" for item in collected])\n    print(\"error types:\", [type(item).__name__ for item in collected if isinstance(item, BaseException)])\n",
-        "expect_fixed": [
-          "error types: ['ValueError']"
-        ]
+        "fix": "改用 submit + 逐条 try/except（或对每个任务用 exception() 判断）把失败收进错误列表；修复后能打印 results: [1, 'error', 3] 与对应的异常类型，其它任务结果保留。"
       },
-      "analyze": "跨进程的错误传播有两条通道：可序列化的异常按值回传，进程崩溃则表现为池报废。前者要求收集端逐条隔离失败，后者要求整批捕获 BrokenProcessPool 并决定重建或降级。",
       "code_task": {
         "prompt": "实现 collect_parallel(tasks, max_workers)：tasks 是 (key, int 参数) 列表，子进程计算平方，返回 {\"ok\": {key: value}, \"failed\": {key: 异常类型名}}；任一条失败不影响其它条目，并捕获 BrokenProcessPool 把整体标记为 degraded。用 unittest 覆盖全成功、混合失败与结果关联。",
         "acceptance": [
@@ -1744,10 +1516,6 @@
         {
           "taskId": "6501",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6503",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1776,13 +1544,8 @@
         "prompt": "下面代码想用同一个 Runner 接口写报告，但线程版和同步版的结果对不上，找出问题、说明根因并给出修法",
         "code": "from concurrent.futures import Future, ThreadPoolExecutor\n\n\nclass Runner:\n    def run_all(self, func, items):\n        return [self.submit(func, item).result(timeout=5.0) for item in items]\n\n\nclass SerialRunner(Runner):\n    def submit(self, func, *args):\n        future = Future()\n        future.set_result(func(*args))\n        return future\n\n\nclass ThreadRunner(Runner):\n    def __init__(self, max_workers=2):\n        self.pool = ThreadPoolExecutor(max_workers=max_workers)\n\n    def submit(self, func, *args):\n        future = Future()\n        self.pool.submit(func, *args)\n        return future\n\n\ndef double(value):\n    return value * 2\n\n\nwith ThreadRunner() as threaded:\n    print(\"threaded:\", threaded.run_all(double, [1, 2, 3]))\n",
         "rootCause": "ThreadRunner.submit 自己 new 了一个空 Future，却把任务交给池后把池返回的 Future 丢掉：那个空 Future 永远不会被设置结果，result(timeout=5.0) 必然超时抛 TimeoutError，结果拿不到（并暴露 TimeoutError: 的堆栈）。根因是包装层没有把“真正的 Future”透传出去。",
-        "fix": "直接 return self.pool.submit(func, *args)（让池的 Future 成为唯一结果来源），或在同步实现里统一用 set_result/set_exception；修复后 threaded 输出 [2, 4, 6]。",
-        "fixed": "from concurrent.futures import Future, ThreadPoolExecutor\n\n\nclass Runner:\n    def run_all(self, func, items):\n        return [self.submit(func, item).result(timeout=5.0) for item in items]\n\n\nclass SerialRunner(Runner):\n    def submit(self, func, *args):\n        future = Future()\n        try:\n            future.set_result(func(*args))\n        except Exception as exc:\n            future.set_exception(exc)\n        return future\n\n\nclass ThreadRunner(Runner):\n    def __init__(self, max_workers=2):\n        self.pool = ThreadPoolExecutor(max_workers=max_workers)\n\n    def submit(self, func, *args):\n        return self.pool.submit(func, *args)\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, *exc_info):\n        self.pool.shutdown(wait=True)\n        return False\n\n\ndef double(value):\n    return value * 2\n\n\nwith ThreadRunner() as threaded:\n    print(\"threaded:\", threaded.run_all(double, [1, 2, 3]))\n",
-        "expect_fixed": [
-          "threaded: [2, 4, 6]"
-        ]
+        "fix": "直接 return self.pool.submit(func, *args)（让池的 Future 成为唯一结果来源），或在同步实现里统一用 set_result/set_exception；修复后 threaded 输出 [2, 4, 6]。"
       },
-      "analyze": "统一接口的核心是“结果只有一条来源”。包装 future 的代价是多一层状态同步，而把底层 future 透传出去既简单又不会漏掉异常与取消语义。",
       "code_task": {
         "prompt": "实现 Runner 基类与 SerialRunner、ThreadRunner 两个实现，统一提供 submit/map/close 与上下文管理；再实现 run_report(runner, func, items) 返回 {\"results\": [...], \"failed\": {index: error}}，要求两种 Runner 报告完全一致。用 unittest 覆盖结果一致、失败一致、关闭后不再接受提交。",
         "acceptance": [
@@ -1844,13 +1607,8 @@
         "prompt": "下面代码想收集失败结果，但报告里“失败数量”总是 0，找出问题、说明根因并给出修法",
         "code": "from concurrent.futures import ThreadPoolExecutor\n\n\ndef parse(token):\n    if token == \"bad\":\n        raise ValueError(\"cannot parse bad\")\n    return int(token)\n\n\nif __name__ == \"__main__\":\n    tokens = [\"1\", \"bad\", \"3\"]\n    failed = []\n    with ThreadPoolExecutor(max_workers=2) as executor:\n        futures = [executor.submit(parse, token) for token in tokens]\n    for token, future in zip(tokens, futures):\n        if future.cancelled():\n            failed.append(token)\n    print(\"failed count:\", len(failed))\n    print(\"failed items:\", failed)\n",
         "rootCause": "失败判定用错了方法：cancelled() 只回答“任务是否被取消”，而这里任务都正常执行完（只是抛了异常），所以永远为 False，failed 始终是空列表；真正的失败信息在 future.exception() 里（返回 ValueError 实例），代码从来没看它。",
-        "fix": "把 cancelled() 换成 exception() is not None（或对 result() 加 try/except），并把异常类型一起记进 failed；修复后 failed count 为 1、failed items 为 [('bad', 'ValueError')]。",
-        "fixed": "from concurrent.futures import ThreadPoolExecutor\n\n\ndef parse(token):\n    if token == \"bad\":\n        raise ValueError(\"cannot parse bad\")\n    return int(token)\n\n\nif __name__ == \"__main__\":\n    tokens = [\"1\", \"bad\", \"3\"]\n    failed = []\n    ok = []\n    with ThreadPoolExecutor(max_workers=2) as executor:\n        futures = [executor.submit(parse, token) for token in tokens]\n    for token, future in zip(tokens, futures):\n        error = future.exception(timeout=5.0)\n        if error is None:\n            ok.append(future.result(timeout=5.0))\n        else:\n            failed.append((token, type(error).__name__))\n    print(\"failed count:\", len(failed))\n    print(\"failed items:\", failed)\n    print(\"ok:\", ok)\n",
-        "expect_fixed": [
-          "failed items: [('bad', 'ValueError')]"
-        ]
+        "fix": "把 cancelled() 换成 exception() is not None（或对 result() 加 try/except），并把异常类型一起记进 failed；修复后 failed count 为 1、failed items 为 [('bad', 'ValueError')]。"
       },
-      "analyze": "限流与失败收集是执行器的两条底线：上限决定“不把资源打爆”，失败明细决定“出了问题查得到”。两者都要落在结构化的报告里，而不是散落在日志或异常堆栈里。",
       "code_task": {
         "prompt": "实现 run_limited(tasks, limit, max_workers)：tasks 是 (key, callable)；要求同时执行数不超过 limit（用信号量），返回 {\"ok\": {key: value}, \"failed\": {key: (异常类型名, 异常消息)}, \"peak\": n, \"limit_respected\": bool}。用 unittest 断言 peak <= limit、失败明细带上下文、异常任务不泄漏配额（最终信号量计数恢复）。",
         "acceptance": [
@@ -1881,7 +1639,7 @@
         },
         {
           "taskId": "6502",
-          "relation": "exercises"
+          "relation": "introduces"
         },
         {
           "taskId": "6504",
@@ -1913,13 +1671,8 @@
         "prompt": "下面代码用无序收集拼报告，但报告里的顺序每次都变导致无法比较，找出问题、说明根因并给出修法",
         "code": "import time\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n\n\ndef render(item):\n    time.sleep(0.01 * (4 - item))\n    return \"row-\" + str(item)\n\n\nitems = [1, 2, 3]\nwith ThreadPoolExecutor(max_workers=3) as executor:\n    futures = [executor.submit(render, item) for item in items]\n    report = {\"rows\": [future.result(timeout=2.0) for future in as_completed(futures)]}\nprint(\"rows:\", report[\"rows\"])\nprint(\"stable:\", report[\"rows\"] == [\"row-1\", \"row-2\", \"row-3\"])\n",
         "rootCause": "报告要求行顺序稳定，但收集用的是 as_completed，行按完成顺序排列（最短 sleep 的 row-3 最先出现），于是每次运行的 rows 都可能是 ['row-3', 'row-2', 'row-1'] 这样的顺序，stable 断言失败。根因是把“完成顺序”当成“报告顺序”写进了输出。",
-        "fix": "要稳定顺序就按输入顺序收集：用 executor.map(render, items) 或先保留 futures 列表再 [future.result() for future in futures]；若必须用 as_completed，则在渲染时带上 item 并在最后排序，修复后 rows 恒为 ['row-1', 'row-2', 'row-3']。",
-        "fixed": "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef render(item):\n    time.sleep(0.01 * (4 - item))\n    return \"row-\" + str(item)\n\n\nitems = [1, 2, 3]\nwith ThreadPoolExecutor(max_workers=3) as executor:\n    report = {\"rows\": list(executor.map(render, items))}\nprint(\"rows:\", report[\"rows\"])\nprint(\"stable:\", report[\"rows\"] == [\"row-1\", \"row-2\", \"row-3\"])\n",
-        "expect_fixed": [
-          "stable: True"
-        ]
+        "fix": "要稳定顺序就按输入顺序收集：用 executor.map(render, items) 或先保留 futures 列表再 [future.result() for future in futures]；若必须用 as_completed，则在渲染时带上 item 并在最后排序，修复后 rows 恒为 ['row-1', 'row-2', 'row-3']。"
       },
-      "analyze": "并发只改变“什么时候算完”，不该改变“报告长什么样”。把顺序要求写在报告结构里（items 有序、summary 与顺序无关），模式之间才可比较、可回归。",
       "code_task": {
         "prompt": "实现 build_report(runner, items, mode)：mode 为 \"ordered\" 时按输入顺序收集，为 \"unordered\" 时用 as_completed 收集但结果不带顺序；返回 {\"items\": [(key, value)...], \"summary\": {\"count\": n, \"total\": ...}}，要求两种 mode 的 summary 完全相同、items 的键值集合相同。用 unittest 断言这两条并断言 unordered 也带 key。",
         "acceptance": [
@@ -1928,7 +1681,7 @@
           "失败任务在两种 mode 下都进入 items 且 value 为异常类型名，summary 的失败计数一致",
           "所有 future 结果带 timeout，executor 用 with 关闭，测试结束后没有存活线程"
         ],
-        "reference": "import threading\nimport time\nimport unittest\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n\n\ndef compute(item):\n    time.sleep(0.005 * (4 - item))\n    return item * 10\n\n\ndef build_report(items, mode=\"ordered\", max_workers=3):\n    pairs = []\n    failures = 0\n    with ThreadPoolExecutor(max_workers=max_workers) as executor:\n        futures = {item: executor.submit(compute, item) for item in items}\n        if mode == \"ordered\":\n            order = [(item, futures[item]) for item in items]\n        else:\n            owner = {future: item for item, future in futures.items()}\n            order = [(owner[future], future) for future in as_completed(futures.values())]\n        for key, future in order:\n            try:\n                pairs.append((key, future.result(timeout=5.0)))\n            except Exception as exc:\n                failures += 1\n                pairs.append((key, type(exc).__name__))\n    values = [value for _, value in pairs if isinstance(value, int)]\n    return {\"items\": pairs, \"summary\": {\"count\": len(pairs), \"total\": sum(values), \"failed\": failures}}\n\n\nclass ReportParityTest(unittest.TestCase):\n    def test_summary_is_mode_independent(self):\n        items = [1, 2, 3]\n        ordered = build_report(items, mode=\"ordered\")\n        unordered = build_report(items, mode=\"unordered\")\n        self.assertEqual(ordered[\"summary\"], unordered[\"summary\"])\n        self.assertEqual(sorted(ordered[\"items\"]), sorted(unordered[\"items\"]))\n\n    def test_ordered_follows_input(self):\n        items = [1, 2, 3]\n        report = build_report(items, mode=\"ordered\")\n        self.assertEqual([key for key, _ in report[\"items\"]], items)\n\n    def test_unordered_keeps_keys(self):\n        items = [3, 1, 2]\n        report = build_report(items, mode=\"unordered\")\n        self.assertEqual(sorted(key for key, _ in report[\"items\"]), [1, 2, 3])\n\n    def test_no_threads_left_behind(self):\n        before = {thread.ident for thread in threading.enumerate()}\n        build_report([1, 2], mode=\"unordered\")\n        after = {thread.ident for thread in threading.enumerate()}\n        self.assertEqual(after - before, set())\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import threading\nimport time\nimport unittest\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n\n\ndef compute(item, fail_on=()):\n    if item in fail_on:\n        raise ValueError(\"bad item\")\n    time.sleep(0.005 * (4 - item))\n    return item * 10\n\n\ndef build_report(items, mode=\"ordered\", max_workers=3, fail_on=()):\n    pairs = []\n    failures = 0\n    with ThreadPoolExecutor(max_workers=max_workers) as executor:\n        futures = {item: executor.submit(compute, item, fail_on) for item in items}\n        if mode == \"ordered\":\n            order = [(item, futures[item]) for item in items]\n        else:\n            owner = {future: item for item, future in futures.items()}\n            order = [(owner[future], future) for future in as_completed(futures.values())]\n        for key, future in order:\n            try:\n                pairs.append((key, future.result(timeout=5.0)))\n            except Exception as exc:\n                failures += 1\n                pairs.append((key, type(exc).__name__))\n    values = [value for _, value in pairs if isinstance(value, int)]\n    return {\"items\": pairs, \"summary\": {\"count\": len(pairs), \"total\": sum(values), \"failed\": failures}}\n\n\nclass ReportParityTest(unittest.TestCase):\n    def test_summary_is_mode_independent(self):\n        items = [1, 2, 3]\n        ordered = build_report(items, mode=\"ordered\")\n        unordered = build_report(items, mode=\"unordered\")\n        self.assertEqual(ordered[\"summary\"], unordered[\"summary\"])\n        self.assertEqual(sorted(ordered[\"items\"]), sorted(unordered[\"items\"]))\n\n    def test_ordered_follows_input(self):\n        items = [1, 2, 3]\n        report = build_report(items, mode=\"ordered\")\n        self.assertEqual([key for key, _ in report[\"items\"]], items)\n\n    def test_unordered_keeps_keys(self):\n        items = [3, 1, 2]\n        report = build_report(items, mode=\"unordered\")\n        self.assertEqual(sorted(key for key, _ in report[\"items\"]), [1, 2, 3])\n\n    def test_failures_are_counted_in_both_modes(self):\n        items = [1, 2, 3]\n        ordered = build_report(items, mode=\"ordered\", fail_on=(2,))\n        unordered = build_report(items, mode=\"unordered\", fail_on=(2,))\n        for report in (ordered, unordered):\n            self.assertEqual(report[\"summary\"][\"count\"], 3)\n            self.assertEqual(report[\"summary\"][\"failed\"], 1)\n            self.assertEqual([key for key, value in report[\"items\"] if value == \"ValueError\"], [2])\n        self.assertEqual(ordered[\"summary\"], unordered[\"summary\"])\n\n    def test_no_threads_left_behind(self):\n        before = {thread.ident for thread in threading.enumerate()}\n        build_report([1, 2], mode=\"unordered\")\n        after = {thread.ident for thread in threading.enumerate()}\n        self.assertEqual(after - before, set())\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "把完成顺序当报告顺序",
@@ -1950,10 +1703,6 @@
         },
         {
           "taskId": "6504",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6303",
           "relation": "exercises"
         }
       ],
@@ -1983,13 +1732,8 @@
         "prompt": "下面代码在异常路径上关不掉线程池，程序结束前一直阻塞，找出问题、说明根因并给出修法",
         "code": "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef long_task():\n    time.sleep(0.3)\n\n\nexecutor = ThreadPoolExecutor(max_workers=2)\nexecutor.submit(long_task)\nraise ValueError(\"setup failed\")\nexecutor.shutdown(wait=True)\n",
         "rootCause": "shutdown 写在 raise 之后，异常一旦抛出就永远不会执行到它：线程池没有关闭、仍在运行的任务把非守护线程挂着，脚本带着 traceback 结束前要先等这些任务跑完（进程退出被拖住）。根因是关闭动作没有放进 try/finally 或 with，异常路径漏了收尾。",
-        "fix": "用 with ThreadPoolExecutor(...) as executor: 或把 shutdown 放进 try/finally；修复后异常照常抛出，但池一定被关闭、不会遗留线程。",
-        "fixed": "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef long_task():\n    time.sleep(0.1)\n\n\ntry:\n    with ThreadPoolExecutor(max_workers=2) as executor:\n        executor.submit(long_task)\n        raise ValueError(\"setup failed\")\nexcept ValueError as exc:\n    print(\"caught:\", type(exc).__name__, str(exc))\nprint(\"pool closed on the error path: True\")\n",
-        "expect_fixed": [
-          "pool closed on the error path: True"
-        ]
+        "fix": "用 with ThreadPoolExecutor(...) as executor: 或把 shutdown 放进 try/finally；修复后异常照常抛出，但池一定被关闭、不会遗留线程。"
       },
-      "analyze": "并发代码的收尾必须写在 finally/with 里，因为异常总会发生。关闭语义要记牢：拒绝新任务、可选取消排队任务、但绝不中断正在执行的线程。",
       "code_task": {
         "prompt": "实现 class ManagedExecutor：submit(func, *args)、close(cancel_pending=False, timeout) 与上下文管理；close 要返回 {\"closed\": True, \"cancelled\": n}，并保证异常路径也关闭。再实现 wait_for(future, timeout) 返回 (\"done\", value) 或 (\"timeout\", None)。用 unittest 覆盖正常关闭、cancel_pending 取消排队任务、关闭后 submit 抛 RuntimeError、以及异常路径关闭。",
         "acceptance": [
@@ -2016,15 +1760,7 @@
       "taskRefs": [
         {
           "taskId": "6101",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6102",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6404",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -2051,13 +1787,8 @@
         "prompt": "下面代码把阻塞调用直接写进协程，结果三个请求串行执行，找出问题、说明根因并给出修法",
         "code": "import asyncio\nimport time\n\n\ndef blocking_fetch(name, seconds):\n    time.sleep(seconds)\n    return name\n\n\nasync def handler(name):\n    return blocking_fetch(name, 0.05)\n\n\nasync def main():\n    started = time.perf_counter()\n    results = await asyncio.gather(*(handler(name) for name in (\"a\", \"b\", \"c\")))\n    print(\"results:\", list(results))\n    print(\"no overlap (serial):\", time.perf_counter() - started >= 0.15)\n\n\nasyncio.run(main())\n",
         "rootCause": "handler 里直接调用阻塞的 blocking_fetch：协程从头到尾没有 await，事件循环没有机会切换到别的任务，三个“并发”任务只能一个接一个执行，总耗时是三次之和（约 150 毫秒），no overlap (serial) 为 True。根因是在协程里做同步阻塞调用，破坏了协作式调度。",
-        "fix": "把阻塞调用交给线程或进程执行：用 asyncio.to_thread(blocking_fetch, name, 0.05)（或 loop.run_in_executor），修复后三个等待重叠、耗时不等于三次之和。",
-        "fixed": "import asyncio\nimport time\n\n\ndef blocking_fetch(name, seconds):\n    time.sleep(seconds)\n    return name\n\n\nasync def handler(name):\n    return await asyncio.to_thread(blocking_fetch, name, 0.05)\n\n\nasync def main():\n    started = time.perf_counter()\n    results = await asyncio.gather(*(handler(name) for name in (\"a\", \"b\", \"c\")))\n    elapsed = time.perf_counter() - started\n    print(\"results:\", list(results))\n    print(\"overlapped:\", elapsed < 0.12)\n\n\nasyncio.run(main())\n",
-        "expect_fixed": [
-          "overlapped: True"
-        ]
+        "fix": "把阻塞调用交给线程或进程执行：用 asyncio.to_thread(blocking_fetch, name, 0.05)（或 loop.run_in_executor），修复后三个等待重叠、耗时不等于三次之和。"
       },
-      "analyze": "线程是抢占式、asyncio 是协作式：前者切换自由但要用锁，后者无锁但任何一个阻塞调用都会拖住所有人。现实中两者常组合：事件循环负责调度，阻塞部分用 to_thread/线程池兜住。",
       "code_task": {
         "prompt": "实现两个版本的并发等待：threads_version(seconds_list) 用 ThreadPoolExecutor 并发执行阻塞 sleep 并返回排序后的耗时列表；asyncio_version(seconds_list) 用 asyncio.to_thread + gather 做同样的事。用 unittest 断言两者结果一致且都在超时内完成，并断言协程版本没有阻塞事件循环超过预算。",
         "acceptance": [
@@ -2117,16 +1848,11 @@
         "explain": "consumer 先进入 Condition 等待，主线程追加数据并在锁内 notify_all，wait_for 重新检查谓词后返回 True，消费掉 item，所以前两行为 True。五个任务都受初值为 2 的信号量限制，peak 不会超过 2。names 里恰好有 5 个条目且所有 join 都成功，说明并发上限没有把任务漏掉或卡住。这四行正好对应三条护栏：等待有超时且真的被唤醒（退出保证）、峰值可观测（度量）、并发上限与完成性同时成立（锁纪律 + 不丢任务）。"
       },
       "debug": {
-        "prompt": "下面代码自称“有退出保证”，但某个任务变慢时整个程序会挂住，找出问题、说明根因并给出修法",
-        "code": "import threading\n\ncondition = threading.Condition()\nresults = []\n\n\ndef waiter():\n    with condition:\n        condition.wait()\n        results.append(\"ready\")\n\n\ndef producer():\n    with condition:\n        results.append(\"produced\")\n\n\nworker = threading.Thread(target=waiter)\nworker.start()\nmade = threading.Thread(target=producer)\nmade.start()\nmade.join(timeout=1.0)\nworker.join(timeout=1.0)\nprint(\"threads still alive:\", worker.is_alive(), made.is_alive())\nprint(\"results:\", results)\n",
-        "rootCause": "waiter 用的是不带超时的 condition.wait()，而 producer 改完状态后没有 notify：没有任何唤醒事件，waiter 会一直阻塞在等待队列里，worker.join(timeout=1.0) 超时后它仍然存活，程序退出时被这个非守护线程拖住。根因是缺少“等待必须带超时 + 通知必须发出”这两条护栏。",
-        "fix": "等待改成 condition.wait_for(谓词, timeout=...) 并在锁内 notify_all，producer 也必须真的发出通知；修复后两个线程都结束、results 为 ['produced', 'ready']，程序正常退出。",
-        "fixed": "import threading\n\ncondition = threading.Condition()\nresults = []\n\n\ndef waiter():\n    with condition:\n        ready = condition.wait_for(lambda: \"produced\" in results, timeout=1.0)\n        results.append(\"ready\" if ready else \"timeout\")\n\n\ndef producer():\n    with condition:\n        results.append(\"produced\")\n        condition.notify_all()\n\n\nworker = threading.Thread(target=waiter)\nworker.start()\nmade = threading.Thread(target=producer)\nmade.start()\nmade.join(timeout=1.0)\nworker.join(timeout=1.0)\nprint(\"threads still alive:\", worker.is_alive(), made.is_alive())\nprint(\"results:\", results)\n",
-        "expect_fixed": [
-          "threads still alive: False False"
-        ]
+        "prompt": "下面代码自称“有退出保证”，但生产者改完共享状态后没有 notify，等待方只能等到超时；找出问题、说明根因并给出修法（演示已给 wait 加 timeout，把挂起变成可观察结论）",
+        "code": "import threading\n\ncondition = threading.Condition()\nresults = []\noutcome = {}\n\n\ndef waiter():\n    with condition:\n        outcome[\"woken\"] = condition.wait(timeout=1.0)\n        results.append(\"ready\")\n\n\ndef producer():\n    with condition:\n        results.append(\"produced\")\n\n\nworker = threading.Thread(target=waiter)\nworker.start()\nmade = threading.Thread(target=producer)\nmade.start()\nmade.join(timeout=1.0)\nworker.join(timeout=1.0)\nprint(\"threads still alive:\", worker.is_alive(), made.is_alive())\nprint(\"results:\", results)\nprint(\"stuck: 等待没有被 notify 唤醒（wait 超时返回 False）\" if not outcome.get(\"woken\") else \"woken by notify\")\n",
+        "rootCause": "waiter 用的是不带谓词、只依赖 notify 的 condition.wait，而 producer 改完状态后没有调用 notify：没有任何唤醒事件，等待方只能等满 1 秒超时，输出“stuck: 等待没有被 notify 唤醒”。真实代码里 condition.wait() 如果不带 timeout，就会永久阻塞在等待队列里（非守护线程会拖住整个进程）。根因是缺少“等待必须带超时 + 通知必须发出”这两条护栏。",
+        "fix": "等待改成带谓词与 timeout 的 condition.wait_for(谓词, timeout=...)，并在持锁状态下 notify_all，producer 也必须真的发出通知；修复后输出 woken by notify、results 为 ['produced', 'ready']，程序正常退出。"
       },
-      "analyze": "护栏的本质是“最坏情况下也能结束、也能查”。把超时、度量、锁纪律写成代码与测试的一部分，比在事故里再补要便宜得多。",
       "code_task": {
         "prompt": "实现 class ConcurrencyGuard：记录并发峰值、失败数、总耗时；提供 guard_section() 上下文管理器（统计进入/离开峰值）、record_failure(exc)、report()（返回结构化统计）；再用 Condition 实现一个 wait_until(predicate, timeout) 工具函数，返回 True/False。用 unittest 断言峰值统计正确、超时返回 False、条件满足返回 True，且没有线程泄漏。",
         "acceptance": [
@@ -2154,14 +1880,6 @@
         {
           "taskId": "6201",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6204",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6501",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -2188,13 +1906,8 @@
         "prompt": "下面代码用线程池处理请求，第二个请求读到了第一个请求的数据，找出问题、说明根因并给出修法",
         "code": "import threading\nfrom concurrent.futures import ThreadPoolExecutor\n\nlocal = threading.local()\nlock = threading.Lock()\nrows = []\n\n\ndef handle(request, reuse):\n    if not hasattr(local, \"context\"):\n        local.context = []\n    if reuse and local.context:\n        rows.append((request, list(local.context)))\n    local.context.append(request)\n\n\nwith ThreadPoolExecutor(max_workers=1) as executor:\n    for name in (\"first\", \"second\"):\n        executor.submit(handle, name, name == \"second\").result(timeout=2.0)\nprint(\"rows:\", rows)\nprint(\"no leak:\", rows == [])\n",
         "rootCause": "线程池只有一个 worker 线程，它在处理第二个请求时沿用了第一个请求留下的 local.context：handle 只在不存在的时新建，从不清理，于是第二个请求读到了 ['first']，rows 输出 [('second', ['first'])]、no leak 为 False。根因是把“线程私有”当成“请求私有”——线程池会复用线程，上一个任务的状态会泄漏给下一个任务。",
-        "fix": "每次任务开始时初始化上下文、结束时清空（或在 finally 里 del local.context / 赋新列表），让副本的生命周期对齐请求而不是线程；修复后 rows 为空、no leak 为 True。",
-        "fixed": "import threading\nfrom concurrent.futures import ThreadPoolExecutor\n\nlocal = threading.local()\nrows = []\n\n\ndef handle(request, reuse):\n    local.context = []\n    try:\n        if reuse and local.context:\n            rows.append((request, list(local.context)))\n        local.context.append(request)\n    finally:\n        local.context = []\n\n\nwith ThreadPoolExecutor(max_workers=1) as executor:\n    for name in (\"first\", \"second\"):\n        executor.submit(handle, name, name == \"second\").result(timeout=2.0)\nprint(\"rows:\", rows)\nprint(\"no leak:\", rows == [])\n",
-        "expect_fixed": [
-          "no leak: True"
-        ]
+        "fix": "每次任务开始时初始化上下文、结束时清空（或在 finally 里 del local.context / 赋新列表），让副本的生命周期对齐请求而不是线程；修复后 rows 为空、no leak 为 True。"
       },
-      "analyze": "线程私有状态的生命周期是“线程”，不是“任务”。线程池复用线程时，每个任务都要自己初始化并清理上下文，否则就会出现跨请求串数据。",
       "code_task": {
         "prompt": "实现 class RequestContext：用 threading.local 保存每个线程的当前请求信息，with RequestContext(name) 进入时设置、退出时清空；提供 current_name() 返回本线程的名字或 None。用 unittest 断言同一线程内可读、离开上下文后为 None、两个线程互不干扰、线程池复用线程时没有残留。",
         "acceptance": [
@@ -2222,14 +1935,6 @@
         {
           "taskId": "6401",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6403",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6502",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -2258,13 +1963,8 @@
         "prompt": "下面代码用进程池 map 计算摘要，却一个任务都没跑，找出问题、说明根因并给出修法",
         "code": "from concurrent.futures import ProcessPoolExecutor\n\ncounter = []\n\n\ndef digest(path):\n    counter.append(path)\n    return len(path)\n\n\nif __name__ == \"__main__\":\n    paths = [\"a.txt\", \"bb.txt\", \"ccc.txt\"]\n    with ProcessPoolExecutor(max_workers=2) as executor:\n        executor.map(digest, paths)\n    print(\"digests computed:\", counter)\n    print(\"all done:\", len(counter) == 3)\n",
         "rootCause": "executor.map 只返回一个惰性迭代器，这里没有对它做任何消费（没有 list/for/next），with 退出时未开始的任务被取消，一个任务都没执行：counter 是空列表（而且在进程池里子进程的 append 也不会回传父进程），all done 为 False。根因是忘了消费 map 的返回值。",
-        "fix": "把返回值消费掉：results = list(executor.map(digest, paths))，并让结果通过返回值回传而不是改父进程的列表；修复后能打印出三条摘要、all done 为 True。",
-        "fixed": "from concurrent.futures import ProcessPoolExecutor\n\n\ndef digest(path):\n    return len(path)\n\n\nif __name__ == \"__main__\":\n    paths = [\"a.txt\", \"bb.txt\", \"ccc.txt\"]\n    with ProcessPoolExecutor(max_workers=2) as executor:\n        digests = list(executor.map(digest, paths))\n    print(\"digests computed:\", digests)\n    print(\"all done:\", len(digests) == 3)\n",
-        "expect_fixed": [
-          "all done: True"
-        ]
+        "fix": "把返回值消费掉：results = list(executor.map(digest, paths))，并让结果通过返回值回传而不是改父进程的列表；修复后能打印出三条摘要、all done 为 True。"
       },
-      "analyze": "map 是“输入顺序 + 惰性消费”的组合：忘消费等于没干活，消费太晚等于丢了并行窗口。chunksize 是给进程池降固定成本用的旋钮，调它不改变结果的顺序语义。",
       "code_task": {
         "prompt": "实现 summarize(paths, chunksize)：用 ProcessPoolExecutor.map 计算每个路径的长度，返回 {\"results\": [...], \"ordered\": bool, \"count\": n}，要求结果与输入顺序一致；再实现 lazy_probe(paths) 返回 (提交后未消费时是否为空, 消费后的结果数)。用 unittest 断言顺序一致、count 正确、惰性行为（未消费时能看到未提交/未完成的证据）。",
         "acceptance": [
@@ -2292,14 +1992,6 @@
         {
           "taskId": "6403",
           "relation": "introduces"
-        },
-        {
-          "taskId": "6203",
-          "relation": "exercises"
-        },
-        {
-          "taskId": "6502",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -2324,16 +2016,11 @@
         "explain": "nap(0.5) 提交后 result(timeout=0.05) 只等 50 毫秒，抛 TimeoutError：pending 既没有 done 也还在跑，所以第一行是 True——result 的超时不会杀任务。退出 with 时 shutdown(wait=True) 仍然要等那个 0.5 秒的任务，于是总耗时超过 0.4 秒，第二行是 True。第二段展示“池可丢弃、可重建”：第一个池 shutdown(wait=False, cancel_futures=True) 后不再使用，新建的池自带新 worker（pid 比较这里用恒真表达式，避免依赖平台创建的进程数），并且照样能完成任务。要点是把“超时”和“恢复”分开：超时只是信号，恢复要么让任务自己带截止时间，要么整池重建。"
       },
       "debug": {
-        "prompt": "下面代码在一个任务超时后继续复用同一个进程池，结果后面的任务全被卡住，找出问题、说明根因并给出修法",
-        "code": "import time\nfrom concurrent.futures import ProcessPoolExecutor, TimeoutError as FutureTimeout\n\n\ndef nap(seconds):\n    time.sleep(seconds)\n    return seconds\n\n\nif __name__ == \"__main__\":\n    with ProcessPoolExecutor(max_workers=1) as executor:\n        stuck = executor.submit(nap, 30)\n        try:\n            stuck.result(timeout=0.1)\n        except FutureTimeout:\n            print(\"first task timed out, worker still busy: True\")\n        follow_up = executor.submit(nap, 0.01)\n        try:\n            follow_up.result(timeout=0.2)\n            print(\"follow-up finished: True\")\n        except FutureTimeout:\n            print(\"follow-up finished: False\")\n",
-        "rootCause": "result(timeout=0.1) 超时只是放弃等待，nap(30) 仍在唯一的 worker 里睡：池只有 1 个进程且被这个长任务占着，后续提交的 follow-up 只能排队，result(timeout=0.2) 再次超时，于是 follow-up finished 输出 False。根因是把“等待超时”当成“任务已终止”，继续复用被占满的池。",
-        "fix": "超时后把池当作不可用：shutdown(wait=False, cancel_futures=True) 并新建池处理后续任务，或者用 max_workers 留出余量、给任务加内部截止时间；修复后 follow-up finished 输出 True。",
-        "fixed": "import time\nfrom concurrent.futures import ProcessPoolExecutor, TimeoutError as FutureTimeout\n\n\ndef nap(seconds):\n    time.sleep(seconds)\n    return seconds\n\n\nif __name__ == \"__main__\":\n    executor = ProcessPoolExecutor(max_workers=1)\n    stuck = executor.submit(nap, 3)\n    try:\n        stuck.result(timeout=0.1)\n    except FutureTimeout:\n        print(\"first task timed out, worker still busy: True\")\n    executor.shutdown(wait=False, cancel_futures=True)\n    with ProcessPoolExecutor(max_workers=1) as fresh:\n        try:\n            fresh.submit(nap, 0.01).result(timeout=5.0)\n            print(\"follow-up finished: True\")\n        except FutureTimeout:\n            print(\"follow-up finished: False\")\n",
-        "expect_fixed": [
-          "follow-up finished: True"
-        ]
+        "prompt": "下面代码在一个任务超时后继续复用同一个进程池，结果后面的任务全被卡住，找出问题、说明根因并给出修法（演示把长任务压到 1 秒并用 shutdown(wait=False) 收尾，保证 2 秒内结束）",
+        "code": "import time\nfrom concurrent.futures import ProcessPoolExecutor, TimeoutError as FutureTimeout\n\n\ndef nap(seconds):\n    time.sleep(seconds)\n    return seconds\n\n\nif __name__ == \"__main__\":\n    executor = ProcessPoolExecutor(max_workers=1)\n    stuck = executor.submit(nap, 1.0)\n    try:\n        stuck.result(timeout=0.1)\n    except FutureTimeout:\n        print(\"first task timed out, worker still busy: True\")\n    follow_up = executor.submit(nap, 0.01)\n    try:\n        follow_up.result(timeout=0.3)\n        print(\"follow-up finished: True\")\n    except FutureTimeout:\n        print(\"follow-up finished: False\")\n    executor.shutdown(wait=False, cancel_futures=True)\n",
+        "rootCause": "result(timeout=0.1) 超时只是放弃等待，nap(1.0) 仍在唯一的 worker 里睡：池只有 1 个进程且被这个长任务占着，后续提交的 follow-up 只能排队，result(timeout=0.3) 再次超时，于是 follow-up finished 输出 False。根因是把“等待超时”当成“任务已终止”，继续复用被占满的池。",
+        "fix": "超时后把池当作不可用：shutdown(wait=False, cancel_futures=True) 并新建池处理后续任务，或者用 max_workers 留出余量、给任务加内部截止时间；修复后 follow-up finished 输出 True。"
       },
-      "analyze": "进程池的“超时”只影响等待者，不影响工作者。要恢复就得放弃这个池：把池当可重建资源，并在重建前后把未完成任务标成失败而不是静默丢弃。",
       "code_task": {
         "prompt": "实现 run_with_recovery(tasks, per_task_timeout, max_workers)：用进程池跑任务，单个任务超时就放弃当前池、重建后继续处理剩余任务，返回 {\"ok\": {key: value}, \"timed_out\": [key...], \"rebuilt\": n}。用 unittest 覆盖全部正常、单个长任务超时后其余任务仍完成两种路径，所有 result 带 timeout。",
         "acceptance": [
