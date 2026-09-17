@@ -399,7 +399,7 @@
           "[0, 'hi']",
           "2 cell"
         ],
-        "explain": "greet 引用了外层的 count 与 prefix，这两个名字既不在 greet 的参数里也不在它的局部赋值里，所以是自由变量，按字母序登记在 co_freevars 里，得到 ('count', 'prefix')；name 是参数、seen 是局部变量，都在 co_varnames 里，得到 ('name', 'seen')。make_greeter 自己的 co_varnames 是 ['greet', 'prefix']：函数名 greet 作为局部定义留在里面，外层局部名字 count 被提升为细胞而不在其中，参数 prefix 在，所以过滤 count 得到空列表（这是 CPython 3.14 的实际输出，别按“外层局部变量一定出现在 co_varnames 里”去猜）。greet('ann') 读到的 count 仍是 0。__closure__ 是两个细胞，顺序与 co_freevars 一致，cell_contents 分别是 0 和 'hi'，列表推导把它们放回 co_freevars 的顺序。两个细胞的类型都是 cell。"
+        "explain": "greet 引用了外层的 count 与 prefix，这两个名字既不在 greet 的参数里也不在它的局部赋值里，所以是自由变量，按字母序登记在 co_freevars 里，得到 ('count', 'prefix')；name 是参数、seen 是局部变量，都在 co_varnames 里，得到 ('name', 'seen')。make_greeter 自己的 co_varnames 是 ['greet', 'prefix']：函数名 greet 作为局部定义留在里面，参数 prefix 在，而外层局部名字 count 被提升为细胞、不在这份列表里，第三行 sorted(make_greeter.__code__.co_varnames) 打印的就是 ['greet', 'prefix']（这是 CPython 3.14 的实际输出，别按“外层局部变量一定出现在 co_varnames 里”去猜）。greet('ann') 读到的 count 仍是 0。__closure__ 是两个细胞，顺序与 co_freevars 一致，cell_contents 分别是 0 和 'hi'，列表推导把它们放回 co_freevars 的顺序。两个细胞的类型都是 cell。"
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
@@ -1040,7 +1040,7 @@
         },
         {
           "taskId": "3403",
-          "relation": "introduces"
+          "relation": "exercises"
         },
         {
           "taskId": "3504",
@@ -1085,7 +1085,7 @@
           "trace 中只出现一次 'value'，说明被包装函数只执行一次、装饰器没有重复调用它",
           "交换装饰器顺序后进入顺序变为 ['进入 bottom', '进入 top']，离开顺序变为 ['离开 top', '离开 bottom']"
         ],
-        "reference": "import unittest\n\ntrace = []\n\n\ndef note(label):\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            trace.append(\"进入 \" + label)\n            result = func(*args, **kwargs)\n            trace.append(\"离开 \" + label)\n            return result\n\n        return wrapper\n\n    return decorator\n\n\ntop = note(\"top\")\nbottom = note(\"bottom\")\n\n\n@top\n@bottom\ndef value():\n    trace.append(\"value\")\n    return \"done\"\n\n\n@bottom\n@top\ndef swapped():\n    trace.append(\"value\")\n    return \"done\"\n\n\nclass OrderTest(unittest.TestCase):\n    def test_bottom_decorates_first(self):\n        self.assertEqual(value.__name__, \"wrapper\")\n\n    def test_enter_order_top_to_bottom(self):\n        trace.clear()\n        value()\n        self.assertEqual(trace[0], \"进入 top\")\n        self.assertEqual(trace[1], \"进入 bottom\")\n\n    def test_exit_order_bottom_to_top(self):\n        trace.clear()\n        value()\n        self.assertEqual(trace[-1], \"离开 top\")\n        self.assertEqual(trace[-2], \"离开 bottom\")\n\n    def test_return_value_passes_through(self):\n        self.assertEqual(value(), \"done\")\n\n    def test_swapping_changes_order(self):\n        trace.clear()\n        swapped()\n        self.assertEqual(trace[0], \"进入 bottom\")\n        self.assertEqual(trace[-1], \"离开 bottom\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import unittest\n\ntrace = []\n\n\ndef note(label):\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            trace.append(\"进入 \" + label)\n            result = func(*args, **kwargs)\n            trace.append(\"离开 \" + label)\n            return result\n\n        return wrapper\n\n    return decorator\n\n\ntop = note(\"top\")\nbottom = note(\"bottom\")\n\n\n@top\n@bottom\ndef value():\n    trace.append(\"value\")\n    return \"done\"\n\n\n@bottom\n@top\ndef swapped():\n    trace.append(\"value\")\n    return \"done\"\n\n\nclass OrderTest(unittest.TestCase):\n    def test_bottom_decorates_first(self):\n        self.assertEqual(value.__name__, \"wrapper\")\n\n    def test_enter_order_top_to_bottom(self):\n        trace.clear()\n        value()\n        self.assertEqual(trace[0], \"进入 top\")\n        self.assertEqual(trace[1], \"进入 bottom\")\n        self.assertEqual(trace.count(\"value\"), 1)\n\n    def test_exit_order_bottom_to_top(self):\n        trace.clear()\n        value()\n        self.assertEqual(trace[-1], \"离开 top\")\n        self.assertEqual(trace[-2], \"离开 bottom\")\n\n    def test_return_value_passes_through(self):\n        self.assertEqual(value(), \"done\")\n\n    def test_swapping_changes_order(self):\n        trace.clear()\n        swapped()\n        self.assertEqual(trace[0], \"进入 bottom\")\n        self.assertEqual(trace[-1], \"离开 bottom\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "以为 @ 写在上面就先被应用，把应用顺序与执行顺序弄反",
@@ -1281,7 +1281,7 @@
         },
         {
           "taskId": "3503",
-          "relation": "introduces"
+          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1400,11 +1400,11 @@
         },
         {
           "taskId": "3403",
-          "relation": "introduces"
+          "relation": "exercises"
         },
         {
           "taskId": "3503",
-          "relation": "introduces"
+          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1526,7 +1526,7 @@
       "taskRefs": [
         {
           "taskId": "3403",
-          "relation": "introduces"
+          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1586,7 +1586,7 @@
       "taskRefs": [
         {
           "taskId": "3404",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -1767,7 +1767,7 @@
         },
         {
           "taskId": "3503",
-          "relation": "introduces"
+          "relation": "exercises"
         }
       ],
       "concept": {
