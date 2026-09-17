@@ -21,13 +21,13 @@
         }
       ],
       "concept": {
-        "prompt": "iter() 与 next() 分别调用对象的哪个方法？手写一个迭代器类最少要实现什么？",
+        "prompt": "为什么在实例上补一个 __next__ 不起作用？__iter__ 与 __next__ 分写在两处时最容易踩哪些实现陷阱？",
         "answer": [
-          "iter(obj) 调用 type(obj).__iter__()，返回的对象必须自己能响应 next()；缺了这个方法 for/list 会直接报 TypeError: not iterable",
-          "next(it) 调用 type(it).__next__()：有元素就返回下一个，没有元素必须抛 StopIteration，这是协议里唯一的结束信号",
-          "for 循环就是反复 next() 并把 StopIteration 当正常收尾，这个异常在循环这一层被吞掉，不会漏给调用方",
-          "迭代器本身也要能 iter()：迭代器的 __iter__ 返回 self，于是同一个对象既能被 for 遍历，也能被 list() 消费",
-          "协议只看行为不看类型：collections.abc.Iterator 检查 __iter__ 与 __next__ 两个方法，缺一个就不算迭代器"
+          "iter(obj) 与 next(obj) 找的是 type(obj) 上的 __iter__/__next__，特殊方法不走实例属性：给实例写 obj.__next__ = lambda: 1 之后 next(obj) 依旧抛 TypeError: 'A' object is not an iterator",
+          "__iter__ 的返回值必须自己带 __next__；返回列表之类只是可迭代对象，for/iter 会立刻抛 TypeError: iter() returned non-iterator of type 'list'",
+          "把 __iter__ 写在容器上、__next__ 写在另一个类上是常见拆法，但状态只能有一份：容器返回谁，位置就记在谁身上，两处各存一半必然对不上",
+          "只实现 __next__ 的类 next(obj) 能跑，for/list 却要先 iter(obj) 并抛 TypeError: not iterable；协议要求 __iter__ 与 __next__ 同时在同一个对象上",
+          "collections.abc.Iterator 是结构检查：两个方法缺一不可，实现齐全就算迭代器，不需要继承任何基类；反之继承它却不实现方法也不会自动获得行为"
         ]
       },
       "predict": {
@@ -85,13 +85,13 @@
         }
       ],
       "concept": {
-        "prompt": "什么时候 iter(x) 返回 x 自己？同一个对象能遍历两遍和只能遍历一遍，根因分别在哪里？",
+        "prompt": "怎么一眼判定一个对象是不是迭代器？iter(x) is x 为真（或为假）分别排除了什么？",
         "answer": [
-          "可重复迭代对象（容器）把 __iter__ 写成每次 return 一个全新的迭代器，位置存在那个新对象或生成器帧里，所以每次 for 都从头开始",
-          "迭代器的 __iter__ 写成 return self：位置存在自己身上，遍历一次就走到尽头，这就是一次性的根因",
-          "iter(x) is x 为 True 说明 x 是迭代器；为 False 通常说明 x 是可重复的容器（list、dict、自定义范围对象）",
-          "list/dict/str 只可迭代不可 next：它们有 __iter__ 但没有 __next__，next([1, 2]) 直接抛 TypeError",
-          "把位置放在容器上的“假容器”会伪装成可迭代对象，但第二次遍历为空；判断可重复最直接的办法是 list(x) == list(x)"
+          "最直接的判定是身份比较：iter(x) is x 为真说明 x 自己就是迭代器；再看 iter(x) is iter(x)——为 False 说明每次都要到新迭代器，位置不在 x 身上",
+          "身份判定只回答“谁保存位置”，不保证复用安全：容器若每次返回同一个共享迭代器，iter(x) is iter(x) 会是 True，list(x) == list(x) 却是先全后空，两个循环互相偷元素",
+          "可重复迭代对象的 __iter__ 必须交出全新的迭代器，位置存在那个新对象或生成器帧里；迭代器的 __iter__ 返回 self，位置就在自己身上，所以只能走一遍",
+          "list/dict/str 可迭代但不可 next：它们有 __iter__ 没有 __next__，next([1, 2]) 抛 TypeError，iter([1, 2]) is [1, 2] 为 False",
+          "判定要三条一起看：iter(x) is x、iter(x) is iter(x)、list(x) == list(x)；只有行为一致才能断定“可重复”，单看 is 比较会被共享迭代器的假容器骗过"
         ]
       },
       "predict": {
@@ -172,7 +172,7 @@
       "debug": {
         "prompt": "下面这个求和函数想遍历完所有数字，找出问题、说明根因并给出修法",
         "code": "def total(numbers):\n    it = iter(numbers)\n    result = 0\n    while True:\n        result += next(it)\n    return result\n\n\nprint(total([1, 2, 3]))",
-        "rootCause": "while True 没有任何出口，唯一的终止方式就是迭代器抛 StopIteration，而代码没有捕获它：异常直接从 next(it) 冒到函数外，result 停在 3，return result 永远执行不到。手动 next 的循环必须把 StopIteration 当成正常的结束条件处理。",
+        "rootCause": "while True 没有任何出口，唯一的终止方式就是迭代器抛 StopIteration，而代码没有捕获它：三次累加后 result 已经到 6（1 + 2 + 3），第四次 next(it) 把 StopIteration 直接冒到函数外，return result 永远执行不到。手动 next 的循环必须把 StopIteration 当成正常的结束条件处理。",
         "fix": "用 for 循环（它自己捕获 StopIteration）：result = 0; for value in numbers: result += value; return result。要保留手动 next 就写 try/except StopIteration: break，或用哨兵 next(it, sentinel) 判断。改完后 total([1, 2, 3]) 返回 6。"
       },
       "code_task": {
@@ -207,7 +207,7 @@
         },
         {
           "taskId": "4104",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -616,13 +616,13 @@
         }
       ],
       "concept": {
-        "prompt": "生成器表达式在创建时到底算了什么？它和生成器函数的求值时机差在哪？",
+        "prompt": "同样是逐元素转换，生成器表达式和列表推导式在“异常什么时候抛”“峰值内存”上差在哪？生成器函数又差在哪里？",
         "answer": [
-          "生成器表达式创建时立刻求值最外层可迭代对象（例如 (x for x in load()) 里的 load() 当场调用），但表达式本身与过滤条件要等 next 才逐个求值",
-          "生成器函数调用时只求值实参表达式，函数体一行都不执行；两者的“第一次真正干活”都在第一次 next",
-          "生成器表达式自带独立作用域，循环变量不泄漏；生成器函数里的变量就是普通局部变量",
-          "表达式写不下多条语句、try 块或提前 return，需要多步逻辑时用生成器函数；表达式适合一行转换加过滤",
-          "生成器函数有 __name__ 与清晰的回溯帧，表达式是匿名对象，出错时回溯指向定义它的那一行"
+          "列表推导式立刻把每个元素算完并装进新列表：表达式里的异常在构造那一行就抛，峰值内存与元素个数成正比",
+          "生成器表达式只先确定最外层可迭代对象（(x for x in load()) 里的 load() 当场调用），元素计算、过滤条件与异常都推迟到每次 next 才发生",
+          "于是同一段转换写成两种形式，异常时机不同：推导式在创建处失败，生成器表达式要消费到那个元素才失败，出错位置也随之移动",
+          "生成器函数调用时只求值实参表达式，函数体一行都不执行；它和生成器表达式的“第一次真正干活”都在第一次 next，但函数能写多条语句、try 与提前 return，表达式只有一行",
+          "内存视角：推导式驻留全部结果，生成器表达式与生成器函数都只驻留当前元素；需要重复遍历时两者都得重新构造，缓存生成器对象不会得到第二遍数据"
         ]
       },
       "predict": {
@@ -860,7 +860,7 @@
       "taskRefs": [
         {
           "taskId": "4301",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -1216,7 +1216,7 @@
         "用 next/list/for 驱动协程对象，抛 'coroutine' object is not an iterator",
         "创建了协程对象却忘记 await，收到 coroutine was never awaited 警告且逻辑没执行",
         "用同步 for 遍历 async generator，抛 'async_generator' object is not iterable",
-        "以为 yield from 可以委托协程（那会得到协程对象本身，需要 await 的是它的结果）"
+        "以为 yield from 可以委托协程：普通生成器里 yield from coro 抛 TypeError: cannot 'yield from' a coroutine object in a non-coroutine generator，async def 里写 yield from 直接 SyntaxError，协程只能用 await 驱动"
       ]
     },
     {
@@ -1274,7 +1274,7 @@
       "pitfalls": [
         "把已经耗尽的生成器或 map/filter 对象再次传给 chain，第二次得到空流",
         "以为 chain 会先读遍所有输入，把 chain 当成\"没有惰性的列表拼接\"",
-        "把 chain([[1, 2], [3]]) 写成 chain([[1, 2], [3]]) 却忘了加 * 展开，串出来是两个列表而不是元素",
+        "忘了给 chain 加 * 展开：chain(*[[1, 2], [3]]) 串出 1、2、3，而 chain([[1, 2], [3]]) 产出的是两个列表 [1, 2] 与 [3]",
         "需要展平一层时手写双层 for 与 append，而不是用 chain.from_iterable"
       ]
     },
@@ -1722,7 +1722,7 @@
       "taskRefs": [
         {
           "taskId": "4404",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -1908,7 +1908,7 @@
         },
         {
           "taskId": "4501",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -1916,7 +1916,7 @@
         "answer": [
           "推进生成器的是调用方：只有下一次 next() 到来时，生成器才从上次 yield 处继续，构造下一个 FileRecord、再跑一遍谓词；调用方 break 或取够 N 条后不再 next，生成器就停在 yield 那一行挂起",
           "因此“省掉的工作”可以用副作用计数器量出来：在 make_record 与谓词里各加一个计数器，取前 3 条时它们各自只增加 3，而不是目录里的总条数",
-          "两种提前停止写法：for record in stream: ... break 精确只处理 N 条（生成器停在 yield 处，不再被推进）；itertools.islice(stream, N) 也停在刚取满的那一刻，本例中两者计数完全一致，但当谓词被包在外层生成器表达式里（islice((f(x) for x in src if pred(x)), N)）时，islice 会多要一个元素来判断流是否结束，计数可能变成 N+1——断言要按“远小于总量”写，不要死等某个具体数",
+          "两种提前停止写法：for record in stream: ... break 精确只处理 N 条（生成器停在 yield 处，不再被推进）；itertools.islice(stream, N) 也在取满第 N 个结果时立即停手，不会为了确认“流是否结束”再多拉一个，本例中两者计数完全一致（都是 13）。真正会让计数偏大的不是 islice，而是上游的过滤：islice((f(x) for x in src if pred(x)), N) 为凑够 N 个命中结果，必须多读若干被谓词跳过的源元素，构造与判断计数自然大于 N；生产者与消费者速度不同也会造成同样的差。因此断言要按“远小于总量”写，不要死等某个具体数",
           "生成器停在挂起状态时并没有被销毁：局部变量、打开的目录句柄仍然活着，真正释放靠 gen.close() 在 yield 处抛 GeneratorExit，或引用计数归零时解释器代为调用 close（CPython 下立即发生）",
           "清理逻辑要写在生成器的 try/finally 里：close() 在 yield 处抛 GeneratorExit，finally 一定执行，可以在里面关闭文件、记账；finally 里不能吞掉 GeneratorExit 再 yield，否则抛 RuntimeError: generator ignored GeneratorExit"
         ]
@@ -1951,8 +1951,8 @@
       "pitfalls": [
         "用 list(stream)[:count] 来实现“取前 N 条”，list() 先把整个流抽干，构造与判断次数等于总量",
         "以为生成器会自己知道调用方不再需要而主动停手，忘了推进生成器的只有 next()，挂起的生成器会一直占着资源直到 close 或回收",
-        "在生成器的 finally 里再 yield 或 return 一个值，close() 时抛 RuntimeError: generator ignored GeneratorExit",
-        "用 islice 后断言计数正好等于 N，忽略 islice 会多消费一个元素来确认流是否结束，断言过紧导致误判",
+        "把 finally 里的 yield 与 return 混为一谈：只有 yield 会让 close() 抛 RuntimeError: generator ignored GeneratorExit，finally 里 return 是被接受的、close() 正常返回不报错",
+        "用 islice 后断言计数正好等于 N，忽略上游过滤会跳过源元素（生产与消费速度不同也一样），计数本来就可能大于 N，断言应写成“远小于总量”",
         "对已经 close 或耗尽的迭代器继续 next，或在 close 之后还指望 finally 再跑一次清理"
       ]
     },
