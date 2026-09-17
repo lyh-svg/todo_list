@@ -1,0 +1,908 @@
+{
+  "schemaVersion": 1,
+  "week": 8,
+  "level": "进阶",
+  "points": [
+    {
+      "code": "py.synth.01",
+      "title": "实现保留元数据的调用计数装饰器",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.deco.wrapper-forwarding`、`py.functools.wraps` 与 `py.closure.nonlocal`：计数装饰器为什么必须把 `*args, **kwargs` 原样转发、并用 `nonlocal` 维护计数，而不能把计数直接挂在被包装函数上？",
+        "answer": [
+          "wrapper 必须 `return func(*args, **kwargs)`，否则调用者拿到的是隐式 None，被包装函数的返回值被丢掉；转发参数与转发返回值是同一件事的两半",
+          "计数状态用闭包变量加 `nonlocal`，每个被装饰函数各自持有一个独立计数器；写成模块级全局会让多个被装饰函数共享同一份计数",
+          "不加 `functools.wraps`，wrapper 的 `__name__`、`__doc__`、`__module__` 都会变成 wrapper 自己的，日志定位、pytest 用例名和按名字查找都会出错",
+          "`functools.wraps` 只复制元数据并把原函数放进 `__wrapped__`，它不复制调用语义，也不参与计数状态，计数仍需自己维护"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明每次调用计数为什么逐次递增",
+        "code": "from functools import wraps\n\n\ndef counted(func):\n    calls = 0\n\n    @wraps(func)\n    def wrapper(*args, **kwargs):\n        nonlocal calls\n        calls += 1\n        result = func(*args, **kwargs)\n        print(func.__name__, \"call\", calls, \"->\", result)\n        return result\n\n    return wrapper\n\n\n@counted\ndef add(left, right=1):\n    return left + right\n\n\nprint(add(1))\nprint(add(2, right=5))\nprint(add.__name__, add.__wrapped__(1))\n",
+        "expected": [
+          "add call 1 -> 2",
+          "2",
+          "add call 2 -> 7",
+          "7",
+          "add 2"
+        ],
+        "explain": "两次调用共用同一个闭包变量 calls，nonlocal 让 wrapper 能就地改它，所以计数从 1 涨到 2；wraps 把 `__name__` 保留成 add，并把原函数放进 `__wrapped__`，绕过 wrapper 直接调用 1+1 得到 2。wrapper 里 `return result` 让 2 与 7 回到调用者，所以打印顺序是先日志行、再返回值。"
+      },
+      "debug": {
+        "prompt": "下面的装饰器想让调用方拿到原函数返回值，但每次调用都返回 None，找出根因并给出修法",
+        "code": "from functools import wraps\n\n\ndef tag(func):\n    @wraps(func)\n    def wrapper(*args, **kwargs):\n        print(\"calling\", func.__name__)\n        func(*args, **kwargs)\n\n    return wrapper\n\n\n@tag\ndef double(value):\n    return value * 2\n\n\nprint(\"result:\", double(4))\n",
+        "rootCause": "wrapper 里调用了 `func(*args, **kwargs)` 却没有把它 `return` 出去，wrapper 函数体最后是隐式 None，于是 double(4) 虽然是 8 也没有回到调用者，输出 calling double 之后 result: None。参数转发本身是对的（4 确实传进了 double），被吞掉的是返回值。",
+        "fix": "把 wrapper 里那一行改成 `return func(*args, **kwargs)`，让被包装函数的返回值原样交回；修复后先打印 calling double，再打印 result: 8。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.deco.wrapper-forwarding`、`py.functools.wraps` 与 `py.closure.nonlocal` 实现 `count_calls(func)`：保留原函数的 `__name__` 与 `__doc__`，支持位置参数和关键字参数，调用次数可通过 `wrapper.calls` 读取，返回值原样交回。用 unittest 断言这四点。",
+        "acceptance": [
+          "包装后 `__name__` 与 `__doc__` 等于原函数",
+          "位置参数与关键字参数都原样转发，返回值等于原函数结果",
+          "`wrapper.calls` 从 0 开始逐次加一，两个被装饰函数各持独立计数",
+          "包装后的函数仍可通过 `__wrapped__` 访问原实现"
+        ],
+        "reference": "import unittest\nfrom functools import wraps\n\n\ndef count_calls(func):\n    @wraps(func)\n    def wrapper(*args, **kwargs):\n        wrapper.calls += 1\n        return func(*args, **kwargs)\n\n    wrapper.calls = 0\n    return wrapper\n\n\n@count_calls\ndef add(left, right=1):\n    \"\"\"add two numbers\"\"\"\n    return left + right\n\n\n@count_calls\ndef negate(value):\n    return -value\n\n\nclass CountCallsTest(unittest.TestCase):\n    def test_metadata_is_preserved(self):\n        self.assertEqual(add.__name__, \"add\")\n        self.assertEqual(add.__doc__, \"add two numbers\")\n\n    def test_arguments_and_result_are_forwarded(self):\n        self.assertEqual(add(2, right=3), 5)\n        self.assertEqual(add(2), 3)\n\n    def test_calls_are_counted_per_function(self):\n        add.calls = 0\n        negate.calls = 0\n        add(1)\n        add(1)\n        negate(1)\n        self.assertEqual(add.calls, 2)\n        self.assertEqual(negate.calls, 1)\n\n    def test_wrapped_exposes_original(self):\n        self.assertEqual(add.__wrapped__(2, 3), 5)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "wrapper 忘记 return，返回值变成 None",
+        "计数写成模块级全局，多个被装饰函数互相污染",
+        "wrapper 不接收 *args/**kwargs，被包装函数一加参数就 TypeError",
+        "以为 functools.wraps 会连调用语义一起复制"
+      ]
+    },
+    {
+      "code": "py.synth.02",
+      "title": "实现只按需消费的惰性前缀流水线",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.iter.protocol`、`py.gen.partial-consumption`、`py.itertools.islice` 与 `py.lazy.early-stop`：为什么生成器加 islice 能在拿到前 n 项后立刻停止上游，而列表推导加切片做不到？边界在哪里？",
+        "answer": [
+          "`for value in source` 依赖 `py.iter.protocol`：惰性 for 每次只向来源要一项，不需要一次性物化全部数据，来源是生成器还是容器都能工作",
+          "生成器函数遇到 yield 就暂停在挂起点，消费者不再 next，后面的循环体与副作用都不会执行，这是提前停止的机制来源",
+          "`itertools.islice(source, n)` 取满 n 项后不再调用 next，上游停在挂起点；返回的是迭代器，需要用 list() 物化才能真正触发拉取",
+          "列表推导 `[x for x in source if ...][:n]` 会先把整个来源跑完再切片，截断发生在数据算完之后，内存与副作用都已付出，early-stop 已经丢失",
+          "边界：islice 只截断数量，不做过滤；要筛出满足条件的 n 项必须把过滤写成生成器表达式再交给 islice，此时上游拉取次数由“第 n 个合格项出现的位置”决定，不是固定的 n"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并解释 consumed 为什么恰好停在 3",
+        "code": "from itertools import islice\n\n\ndef naturals(log):\n    value = 1\n    while True:\n        log.append(value)\n        yield value\n        value += 1\n\n\nlog = []\nfirst_three = list(islice(naturals(log), 3))\nprint(\"first:\", first_three)\nprint(\"consumed:\", log)\n",
+        "expected": [
+          "first: [1, 2, 3]",
+          "consumed: [1, 2, 3]"
+        ],
+        "explain": "list(islice(..., 3)) 只会调用三次 next；第三次 next 让生成器执行到第二个 yield 之后的 `value += 1` 再次循环、append(3)、yield 3，然后 islice 立刻停止，不再请求第四项，所以 log 停在 [1, 2, 3]。naturals 是无限生成器，却没有被跑完，这正是惰性前缀的价值。"
+      },
+      "debug": {
+        "prompt": "下面想从日志流里只取前两个偶数，结果扫描把整段数据都跑完了，找出根因并给出修法",
+        "code": "def scan(log):\n    for value in range(1, 11):\n        log.append(value)\n        yield value\n\n\nlog = []\npicked = [value for value in scan(log) if value % 2 == 0][:2]\nprint(\"picked:\", picked)\nprint(\"scanned:\", log)\n",
+        "rootCause": "`[value for value in scan(log) ...]` 是列表推导：它先把 scan 生成的 1 到 10 全部拉完、额外算出一个完整列表，最后才对那个列表做 `[:2]`。截断发生在计算之后，所以 picked 虽然是 [2, 4]，scanned 却已经是 [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]，上游的提前停止完全失效。",
+        "fix": "把过滤写成生成器表达式，再用 itertools.islice 限制数量：`list(islice((value for value in scan(log) if value % 2 == 0), 2))`。修复后 picked 仍是 [2, 4]，而 scanned 变成 [1, 2, 3, 4]——拉到第二个偶数就停。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.iter.protocol`、`py.gen.partial-consumption` 与 `py.itertools.islice` 实现 `take_even(source, n)`：从任意可迭代对象里惰性筛出偶数、最多取 n 个并返回列表，并用一个包裹生成器记录上游真正被 next 过几次。用 unittest 断言返回值与拉取次数。",
+        "acceptance": [
+          "`take_even(source, n)` 返回来源里前 n 个偶数",
+          "上游被 next 的次数等于“取到第 n 个偶数所需的最小数量”",
+          "n 为 0 时不拉取任何元素，返回空列表",
+          "结果是普通列表，可重复读取，不需要把整个来源物化"
+        ],
+        "reference": "import unittest\nfrom itertools import islice\n\n\ndef counting(source, log):\n    for value in source:\n        log.append(value)\n        yield value\n\n\ndef take_even(source, n):\n    evens = (value for value in source if value % 2 == 0)\n    return list(islice(evens, n))\n\n\nclass TakeEvenTest(unittest.TestCase):\n    def test_returns_first_n_even_values(self):\n        self.assertEqual(take_even(range(20), 3), [0, 2, 4])\n\n    def test_pulls_only_until_the_nth_even(self):\n        log = []\n        self.assertEqual(take_even(counting(range(20), log), 3), [0, 2, 4])\n        self.assertEqual(log, [0, 1, 2, 3, 4])\n\n    def test_zero_takes_nothing(self):\n        log = []\n        self.assertEqual(take_even(counting(range(20), log), 0), [])\n        self.assertEqual(log, [])\n\n    def test_result_is_a_reusable_list(self):\n        result = take_even(range(20), 2)\n        self.assertEqual(result, [0, 2])\n        self.assertEqual(len(result), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "先列表推导再切片，提前停止失效",
+        "以为 islice 会先物化再截断",
+        "忘记 list() 包一层，拿到的是迭代器不是结果",
+        "把过滤和截断顺序写反，先截断后过滤"
+      ]
+    },
+    {
+      "code": "py.synth.03",
+      "title": "实现给多个类复用的校验字段描述符",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.desc.validated`、`py.desc.data-vs-nondata`、`py.desc.set-name` 与 `py.class.attrs`：校验描述符为什么必须同时实现 `__get__` 和 `__set__`，只实现 `__get__` 会怎样？`__set_name__` 又解决了什么问题？",
+        "answer": [
+          "只实现 `__get__` 的是非数据描述符，实例 `__dict__` 里的同名项优先级更高；第一次 `instance.attr = value` 会把值直接写进实例字典，之后所有读取都绕过描述符，校验形同虚设",
+          "同时实现 `__set__`（或 `__delete__`）就成为数据描述符，优先级高于实例字典，每次读写都经过描述符，校验无法被绕过",
+          "没有 `__set_name__` 时描述符不知道自己的属性名，`__set__` 只能把值存到一个写死的键，同一个描述符类用在两个属性上就会互相覆盖",
+          "`__set_name__(owner, name)` 在类创建时由 type 自动调用，把属性名交给描述符实例，于是可以用 `instance.__dict__[self.name]` 按属性名隔离存储",
+          "按属性存值仍需实例有 `__dict__`；`__slots__` 类要改用 WeakKeyDictionary 或给描述符配 slot；`__get__` 在 `instance is None` 时要返回描述符本身，类访问才有意义"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并解释 order.amount = 0 为什么抛错",
+        "code": "class Positive:\n    def __set_name__(self, owner, name):\n        self.name = name\n\n    def __get__(self, instance, owner=None):\n        if instance is None:\n            return self\n        return instance.__dict__[self.name]\n\n    def __set__(self, instance, value):\n        if value <= 0:\n            raise ValueError(f\"{self.name} must be positive\")\n        instance.__dict__[self.name] = value\n\n\nclass Order:\n    amount = Positive()\n\n\nclass Refund:\n    amount = Positive()\n\n\norder = Order()\norder.amount = 5\nrefund = Refund()\nrefund.amount = 3\nprint(\"order:\", order.amount, \"refund:\", refund.amount)\nprint(\"names:\", Order.amount.name, Refund.amount.name)\ntry:\n    order.amount = 0\nexcept ValueError as error:\n    print(\"error:\", error)\n",
+        "expected": [
+          "order: 5 refund: 3",
+          "names: amount amount",
+          "error: amount must be positive"
+        ],
+        "explain": "`Positive` 同时有 `__get__` 和 `__set__`，是数据描述符，赋值与读取都经过它；`__set_name__` 分别在 Order 与 Refund 创建时把名字 amount 交给两个独立的描述符实例，所以 `Order.amount.name`（instance 为 None 时返回描述符本身）能读到名字。`order.amount = 0` 触发 `__set__` 的边界判断，抛出带属性名的 ValueError。"
+      },
+      "debug": {
+        "prompt": "描述符只实现了 `__get__`，第一次赋值之后校验就永远失效，找出根因并给出修法",
+        "code": "class Positive:\n    def __set_name__(self, owner, name):\n        self.name = name\n\n    def __get__(self, instance, owner=None):\n        if instance is None:\n            return self\n        return instance.__dict__.get(self.name)\n\n\nclass Order:\n    amount = Positive()\n\n\norder = Order()\norder.amount = 5\norder.amount = -3\nprint(\"amount:\", order.amount)\n",
+        "rootCause": "`Positive` 只有 `__get__`，是非数据描述符，实例字典优先于它。`order.amount = 5` 没有对应的 `__set__`，Python 直接把 5 写进 `order.__dict__`；之后读写都命中实例字典，`Positive` 再也不会被调用，所以 -3 未经任何校验就写进去，输出 amount: -3，不会抛错。",
+        "fix": "给 `Positive` 补上 `__set__`（校验 `value > 0` 后写 `instance.__dict__[self.name]`），让它变成数据描述符；修复后 order.amount = -3 会抛 ValueError: amount must be positive，先前的 order.amount = 5 仍能正常读到 5。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.desc.validated`、`py.desc.data-vs-nondata` 与 `py.desc.set-name` 实现 `NonEmptyStr` 校验描述符：拒绝空串与非字符串，用 `__set_name__` 支持同一描述符类复用到多个类的多个属性，类上访问返回描述符本身。用 unittest 断言这些行为。",
+        "acceptance": [
+          "合法字符串赋值后读取得到原值",
+          "赋空串抛 ValueError，赋非 str 抛 TypeError",
+          "同一描述符类用在两个类的三个属性名上互不串值",
+          "通过类访问属性返回描述符实例本身，且实例属性名各自正确"
+        ],
+        "reference": "import unittest\n\n\nclass NonEmptyStr:\n    def __set_name__(self, owner, name):\n        self.name = name\n\n    def __get__(self, instance, owner=None):\n        if instance is None:\n            return self\n        return instance.__dict__[self.name]\n\n    def __set__(self, instance, value):\n        if not isinstance(value, str):\n            raise TypeError(f\"{self.name} must be str\")\n        if not value:\n            raise ValueError(f\"{self.name} must not be empty\")\n        instance.__dict__[self.name] = value\n\n\nclass User:\n    name = NonEmptyStr()\n    city = NonEmptyStr()\n\n\nclass Team:\n    name = NonEmptyStr()\n\n\nclass NonEmptyStrTest(unittest.TestCase):\n    def test_valid_value_round_trips(self):\n        user = User()\n        user.name = \"amy\"\n        self.assertEqual(user.name, \"amy\")\n\n    def test_empty_and_non_string_are_rejected(self):\n        user = User()\n        with self.assertRaises(ValueError):\n            user.name = \"\"\n        with self.assertRaises(TypeError):\n            user.name = 7\n\n    def test_three_attributes_do_not_mix(self):\n        user = User()\n        user.name = \"amy\"\n        user.city = \"paris\"\n        team = Team()\n        team.name = \"core\"\n        self.assertEqual((user.name, user.city, team.name), (\"amy\", \"paris\", \"core\"))\n        self.assertEqual((User.name.name, User.city.name, Team.name.name),\n                         (\"name\", \"city\", \"name\"))\n\n    def test_class_access_returns_descriptor(self):\n        self.assertIsInstance(User.name, NonEmptyStr)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "只写 __get__，赋值被实例字典劫持",
+        "描述符没有 __set_name__，多个属性共用写死的存储键",
+        "__get__ 不处理 instance is None，类访问直接 AttributeError",
+        "在 __slots__ 类上用 instance.__dict__ 存值"
+      ]
+    },
+    {
+      "code": "py.synth.04",
+      "title": "实现可哈希的校验型冻结数据对象",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.dataclass.basics`、`py.typing.dataclass-fields`、`py.eq.hash` 与 `py.value.immutable`：为什么默认 `eq=True` 的 dataclass 不能进 set，而 `frozen=True` 就可以？校验逻辑应该放在哪里，`compare=False` 的字段又有什么影响？",
+        "answer": [
+          "默认 `@dataclass` 会依据字段生成 `__eq__`，同时把 `__hash__` 置为 None（因为定义了 `__eq__` 的类默认不可哈希），实例放进 set 或做 dict 键会抛 `TypeError: unhashable type`",
+          "`frozen=True` 在生成 `__eq__` 的同时按字段生成 `__hash__`（字段全部可哈希时），并让属性赋值抛 FrozenInstanceError，值对象才具备“相等即可互换”的语义",
+          "字段校验放在 `__post_init__`：生成的 `__init__` 在所有字段赋值完成后调用它，越界/类型错误能在对象构造时抛出；frozen 下要修字段只能用 `object.__setattr__`",
+          "`field(compare=False)` 的字段不参与 `__eq__` 与 `__hash__`，适合放备注、缓存等派生数据，让相等只看业务主键字段",
+          "`py.typing.dataclass-fields` 关心字段声明与类型：有默认值的字段不能排在无默认值字段之前，可变默认值必须用 `field(default_factory=...)`，否则类创建时直接抛 ValueError"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明 set 去重依据的是哪几个字段",
+        "code": "from dataclasses import dataclass, field\n\n\n@dataclass(frozen=True)\nclass Money:\n    amount: int\n    currency: str = \"CNY\"\n    note: str = field(default=\"\", compare=False)\n\n\nfirst = Money(10, \"CNY\", \"from a\")\nsecond = Money(10, \"CNY\", \"from b\")\nthird = Money(10, \"USD\", \"from a\")\nprint(\"first == second:\", first == second)\nprint(\"deduped:\", len({first, second, third}))\ntry:\n    first.amount = 99\nexcept Exception as error:\n    print(\"error:\", type(error).__name__)\n",
+        "expected": [
+          "first == second: True",
+          "deduped: 2",
+          "error: FrozenInstanceError"
+        ],
+        "explain": "note 声明了 `compare=False`，不参与 `__eq__` 与 `__hash__`，所以 note 不同的 first 与 second 相等、在 set 里合并；currency 参与比较，third 与它们不等，因此 set 里留下 2 个。frozen=True 让赋值走生成的 `__setattr__`，抛 FrozenInstanceError。"
+      },
+      "debug": {
+        "prompt": "dataclass 想用列表做字段默认值，类一创建就崩，找出根因并给出修法",
+        "code": "from dataclasses import dataclass\n\n\n@dataclass\nclass Cart:\n    items: list = []\n\n\ncart = Cart()\ncart.items.append(\"apple\")\nprint(\"items:\", cart.items)\n",
+        "rootCause": "`@dataclass` 在类创建时处理字段声明，发现默认值是可变的 list，直接抛 `ValueError: mutable default <class 'list'> for field items is not allowed: use default_factory`。原因是默认值只求值一次、会被所有实例共享，和可变默认参数是同一类陷阱；异常发生在类的定义处，此时还没有任何实例。",
+        "fix": "把默认值改成 `field(default_factory=list)`，让每个实例各自新建列表；修复后类能正常创建，cart.items.append(\"apple\") 只影响这个实例，输出 items: ['apple']。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.dataclass.basics`、`py.typing.dataclass-fields` 与 `py.eq.hash` 实现冻结 dataclass `Point`：x、y 为 int 且在 `__post_init__` 里校验 0<=x<=100；用 `field(compare=False)` 加一个不参与相等与哈希的 label。用 unittest 断言相等、去重、不可变与校验行为。",
+        "acceptance": [
+          "坐标相同的两个 Point 相等，label 不同不影响相等",
+          "label 不同的相同坐标对象在 set 里只留一个",
+          "frozen 下给字段赋值抛 FrozenInstanceError",
+          "非 int 抛 TypeError，越界坐标抛 ValueError"
+        ],
+        "reference": "import unittest\nfrom dataclasses import FrozenInstanceError, dataclass, field\n\n\n@dataclass(frozen=True)\nclass Point:\n    x: int\n    y: int\n    label: str = field(default=\"\", compare=False)\n\n    def __post_init__(self):\n        for name in (\"x\", \"y\"):\n            value = getattr(self, name)\n            if not isinstance(value, int):\n                raise TypeError(f\"{name} must be int\")\n            if not 0 <= value <= 100:\n                raise ValueError(f\"{name} out of range\")\n\n\nclass PointTest(unittest.TestCase):\n    def test_equal_coordinates_ignore_label(self):\n        self.assertEqual(Point(1, 2, \"a\"), Point(1, 2, \"b\"))\n\n    def test_set_dedupes_by_coordinates(self):\n        points = {Point(1, 2, \"a\"), Point(1, 2, \"b\"), Point(3, 4)}\n        self.assertEqual(len(points), 2)\n\n    def test_frozen_blocks_assignment(self):\n        point = Point(1, 2)\n        with self.assertRaises(FrozenInstanceError):\n            point.x = 5\n\n    def test_invalid_coordinates_are_rejected(self):\n        with self.assertRaises(TypeError):\n            Point(\"1\", 2)\n        with self.assertRaises(ValueError):\n            Point(1, 200)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "dataclass 用可变对象做默认值",
+        "以为 eq=True 自动可哈希",
+        "compare=False 写成 repr=False，结果仍参与相等",
+        "校验写在 __init__ 外却没有 __post_init__ 挂钩"
+      ]
+    },
+    {
+      "code": "py.synth.05",
+      "title": "实现结构匹配协议驱动的单分派分派表",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.typing.protocol`、`py.functools.singledispatch`、`py.class.mro` 与 `py.attr.lookup`：为什么给 singledispatch 注册一个 Protocol 不会命中实现了该协议的对象？这两套机制应该怎样组合？",
+        "answer": [
+          "`singledispatch` 按实参类型的 MRO 做名义查找：内部沿 `type(arg).__mro__` 找注册项，结构化实现不会出现在 MRO 里，注册的 Protocol 实现永远查不到",
+          "`runtime_checkable` 只让 `isinstance(obj, Proto)` 变成结构检查（看有没有成员），singledispatch 不做 isinstance 遍历，所以两者不会自动衔接",
+          "正确组合是分工：singledispatch 按具体类型命中注册实现，默认实现里用 `isinstance(value, Proto)` 做结构回退，兼顾精确分派与鸭子类型",
+          "MRO 顺序决定命中优先级：同时注册基类与子类时子类优先；bool 是 int 的子类，只注册 int 时 True 会命中 int，想区分必须显式注册 bool",
+          "`py.attr.lookup`（实例字典→数据描述符→类 MRO）解决的是属性查找，singledispatch 解决的是按类型选函数，两套规则独立，不要混为一谈"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明 bool 与 float 分别命中了哪个实现",
+        "code": "from functools import singledispatch\n\n\n@singledispatch\ndef label(value):\n    return \"object\"\n\n\n@label.register\ndef _(value: int):\n    return \"int\"\n\n\n@label.register\ndef _(value: bool):\n    return \"bool\"\n\n\n@label.register\ndef _(value: float):\n    return \"float\"\n\n\nprint(label(3))\nprint(label(True))\nprint(label(3.0))\nprint(label(\"3\"))\nprint(\"bool same as int:\", label.dispatch(bool) is label.dispatch(int))\n",
+        "expected": [
+          "int",
+          "bool",
+          "float",
+          "object",
+          "bool same as int: False"
+        ],
+        "explain": "3 命中 int；True 虽然是 int 的实例，但 bool 也被显式注册，MRO 上 bool 比 int 更近，所以命中 bool；3.0 命中 float；字符串没有注册项，落到默认实现 object。`label.dispatch(bool)` 与 `label.dispatch(int)` 返回两个不同的函数对象，说明精确注册生效。"
+      },
+      "debug": {
+        "prompt": "想用 Protocol 描述“有 name 属性”的对象并让 singledispatch 自动分派，但调用总是落到默认实现，找出根因并给出修法",
+        "code": "from functools import singledispatch\nfrom typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\nclass Named(Protocol):\n    name: str\n\n\n@singledispatch\ndef describe(value):\n    raise TypeError(\"unsupported value\")\n\n\n@describe.register\ndef _(value: Named):\n    return \"named:\" + value.name\n\n\nclass User:\n    def __init__(self, name):\n        self.name = name\n\n\nprint(\"isinstance:\", isinstance(User(\"amy\"), Named))\nprint(describe(User(\"amy\")))\n",
+        "rootCause": "singledispatch 沿 `type(User).__mro__` 找实现，User 的 MRO 是 (User, object)，Named 只是结构化协议、不是 User 的基类，所以注册在 Named 上的实现永远命中不了，调用落到默认实现抛 TypeError: unsupported value。`runtime_checkable` 只影响 isinstance（因此第一行打印 True），对分派查找毫无作用。",
+        "fix": "在默认实现里做结构回退：`if isinstance(value, Named): return \"named:\" + value.name`，再抛 TypeError；或者给 User 显式注册/让它继承 Named。修复后第一行仍是 isinstance: True，第二行变成 named:amy。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.typing.protocol`、`py.functools.singledispatch` 与 `py.class.mro` 实现 `render`：用 singledispatch 为 list 与 dict 注册实现，默认实现里用 runtime_checkable 协议 `HasName` 对带 name 属性的对象做结构回退，其余返回 object。用 unittest 断言四个分支。",
+        "acceptance": [
+          "list 与 dict 分别命中各自的注册实现",
+          "未注册的普通对象落到默认实现的 object 分支",
+          "实现 HasName 协议的自定义对象走结构回退分支",
+          "`render.dispatch(list)` 与 `render.dispatch(dict)` 是两个不同的实现"
+        ],
+        "reference": "import unittest\nfrom functools import singledispatch\nfrom typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\nclass HasName(Protocol):\n    name: str\n\n\n@singledispatch\ndef render(value):\n    if isinstance(value, HasName):\n        return \"named:\" + value.name\n    return \"object\"\n\n\n@render.register\ndef _(value: list):\n    return \"list:\" + str(len(value))\n\n\n@render.register\ndef _(value: dict):\n    return \"dict:\" + str(len(value))\n\n\nclass User:\n    def __init__(self, name):\n        self.name = name\n\n\nclass RenderTest(unittest.TestCase):\n    def test_list_and_dict_have_their_own_impls(self):\n        self.assertEqual(render([1, 2]), \"list:2\")\n        self.assertEqual(render({\"a\": 1}), \"dict:1\")\n\n    def test_plain_object_falls_back(self):\n        self.assertEqual(render(3), \"object\")\n\n    def test_protocol_object_uses_structural_branch(self):\n        self.assertEqual(render(User(\"amy\")), \"named:amy\")\n\n    def test_dispatch_table_has_distinct_impls(self):\n        self.assertIsNot(render.dispatch(list), render.dispatch(dict))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为 runtime_checkable Protocol 能参与 singledispatch 查找",
+        "忘记 singledispatch 按 MRO 而非结构匹配",
+        "只注册基类，子类无法定制分支",
+        "把属性查找规则当成类型分派规则"
+      ]
+    },
+    {
+      "code": "py.synth.06",
+      "title": "实现有界队列的生产停机排空",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.queue.bounded-producer-consumer`、`py.queue.sentinel-shutdown` 与 `py.thread.lifecycle`：有界队列 + 哨兵停机时，为什么不能先 join 生产者？提前放入哨兵又会怎样？",
+        "answer": [
+          "有界队列在满时 `put` 会阻塞；主线程若先 `join` 生产者而消费者已退出或没在消费，生产者可能永远卡在 `put` 或卡在 `queue.join()`，形成死锁",
+          "正确收尾顺序是：生产者按顺序把数据与哨兵放完，消费者持续 get 直到哨兵，消费者退出后再 join 所有线程，最后 `queue.join()` 才保证全部任务处理完",
+          "哨兵要在真实数据之后入队；提前放哨兵会被消费者当作结束信号，排在它后面的数据永远不处理；多生产者时为每个生产者各放一个哨兵，或统一在全部生产者结束后放一个",
+          "消费者每处理完一项必须调用 `task_done()`，否则 `queue.join()` 的未完成计数永远不归零；忘记哨兵分支的 task_done 同样会让生产者卡在 join",
+          "所有阻塞等待都要带 timeout（`get`/`put`/`join`/`Thread.join`），否则一出错线程就无法回收；daemon 线程不能替代正确的停机协议，它只是让进程能强退"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明哨兵为什么只放一个而不是每个元素都放",
+        "code": "import queue\n\n\nwork = queue.Queue(maxsize=4)\nproduced = []\nfor value in (1, 2, 3):\n    work.put(value)\n    produced.append(value)\nwork.put(None)\n\nseen = []\nwhile True:\n    item = work.get(timeout=1.0)\n    try:\n        if item is None:\n            break\n        seen.append(item)\n    finally:\n        work.task_done()\n\nwork.join()\nprint(\"produced:\", produced)\nprint(\"seen:\", seen)\nprint(\"empty:\", work.empty())\n",
+        "expected": [
+          "produced: [1, 2, 3]",
+          "seen: [1, 2, 3]",
+          "empty: True"
+        ],
+        "explain": "数据 1、2、3 之后只放一个 None，消费者读到 None 就 break，之后的 get 不会再被调用。如果每个元素后面都跟一个哨兵，消费者会在第一个哨兵处退出，后面真正的数据全部丢失。每次 get 都在 finally 里 task_done，未完成计数归零，`work.join()` 才能返回；maxsize=4 恰好容纳四个 put，所以没有阻塞。"
+      },
+      "debug": {
+        "prompt": "下面用有界队列加哨兵停机，但生产者线程一直不结束，找出根因并给出修法",
+        "code": "import queue\nimport threading\n\n\nwork = queue.Queue(maxsize=1)\nresults = []\n\n\ndef producer():\n    for value in (1, 2, 3):\n        work.put(value, timeout=1.0)\n    work.put(None, timeout=1.0)\n    work.join()\n\n\ndef consumer():\n    while True:\n        item = work.get(timeout=1.0)\n        if item is None:\n            return\n        results.append(item * 10)\n        work.task_done()\n\n\nproducer_thread = threading.Thread(target=producer, daemon=True)\nconsumer_thread = threading.Thread(target=consumer, daemon=True)\nproducer_thread.start()\nconsumer_thread.start()\nproducer_thread.join(timeout=1.0)\nprint(\"producer alive:\", producer_thread.is_alive())\nprint(\"results:\", sorted(results))\nconsumer_thread.join(timeout=1.0)\nprint(\"consumer alive:\", consumer_thread.is_alive())\n",
+        "rootCause": "消费者读到哨兵 None 时直接 `return`，没有为这一项调用 `task_done()`。queue 的内部未完成任务计数从数据项开始累积，最后停在 1，生产者线程里的 `work.join()` 永远等不到计数归零，所以 producer_thread.is_alive() 是 True，生产者被卡在 join 上；数据本身都已处理完（results 是 [10, 20, 30]），问题出在停机协议漏了一次 task_done。",
+        "fix": "在消费者的哨兵分支里也调用 `work.task_done()`（可放进 finally），让未完成计数归零；修复后 producer alive: False，results 仍是 [10, 20, 30]，consumer alive: False。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.queue.bounded-producer-consumer`、`py.queue.sentinel-shutdown` 与 `py.thread.lifecycle` 实现 `run_pipeline(values, limit)`：用 maxsize=limit 的 Queue、一个生产者线程与一个消费者线程，以 None 哨兵停机，消费者对每项调用 task_done，按“生产完、消费完、再 join”的顺序收尾，返回 (结果列表, 生产者, 消费者, queue)。所有阻塞等待都带 timeout。用 unittest 断言结果与线程状态。",
+        "acceptance": [
+          "`run_pipeline([1, 2, 3], 2)` 返回 [10, 20, 30]",
+          "返回时生产者与消费者线程都已结束（is_alive 为 False）",
+          "返回时队列为空且 `unfinished_tasks` 为 0",
+          "有界队列的 maxsize 等于传入的 limit，join/get/put 都带 timeout"
+        ],
+        "reference": "import queue\nimport threading\nimport unittest\n\n\ndef run_pipeline(values, limit):\n    work = queue.Queue(maxsize=limit)\n    results = []\n\n    def producer():\n        for value in values:\n            work.put(value, timeout=2.0)\n        work.put(None, timeout=2.0)\n\n    def consumer():\n        while True:\n            item = work.get(timeout=2.0)\n            try:\n                if item is None:\n                    return\n                results.append(item * 10)\n            finally:\n                work.task_done()\n\n    producer_thread = threading.Thread(target=producer)\n    consumer_thread = threading.Thread(target=consumer)\n    producer_thread.start()\n    consumer_thread.start()\n    producer_thread.join(timeout=2.0)\n    consumer_thread.join(timeout=2.0)\n    work.join()\n    return results, producer_thread, consumer_thread, work\n\n\nclass PipelineTest(unittest.TestCase):\n    def test_returns_processed_values(self):\n        results, _, _, _ = run_pipeline([1, 2, 3], 2)\n        self.assertEqual(results, [10, 20, 30])\n\n    def test_threads_are_stopped(self):\n        _, producer, consumer, _ = run_pipeline([1, 2, 3], 2)\n        self.assertFalse(producer.is_alive())\n        self.assertFalse(consumer.is_alive())\n\n    def test_queue_is_drained(self):\n        _, _, _, work = run_pipeline([1, 2, 3], 2)\n        self.assertTrue(work.empty())\n        self.assertEqual(work.unfinished_tasks, 0)\n\n    def test_bounded_and_timeouts(self):\n        _, _, _, work = run_pipeline([1, 2, 3], 1)\n        self.assertEqual(work.maxsize, 1)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "哨兵分支忘记 task_done，queue.join 永不返回",
+        "先 join 生产者再排空队列",
+        "哨兵提前入队导致后续数据丢失",
+        "阻塞调用不带 timeout，出错后线程无法回收"
+      ]
+    },
+    {
+      "code": "py.synth.07",
+      "title": "实现在线程池内可观测的并发上限",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.thread.pool-executor`、`py.exec.concurrency-limit` 与 `py.thread.local-state`：为什么在 max_workers=1 的池里，任务再向同一个池 submit 子任务并同步等待结果会永久卡住？线程本地状态在其中扮演什么角色？",
+        "answer": [
+          "ThreadPoolExecutor 的 worker 数固定为 max_workers；正在执行任务的线程本身占着名额，不会被回收去跑新提交的任务",
+          "任务内部 submit 子任务再 `result()` 同步等待时，如果所有 worker 都在等子任务，就没有空闲 worker 能执行它们，形成池内饥饿死锁；max_workers=1 时必然发生",
+          "`future.result(timeout=...)` 只让等待方超时，不会释放已占用的 worker，真正修法是取消嵌套提交、把工作扁平化，或让池多留一个空闲 worker",
+          "`threading.local()` 给每个 worker 线程独立的属性空间，`initial_value` 由每个线程首次访问时各自构造；同一个 worker 复用跑多个任务时，这些属性会跨任务保留",
+          "因此 thread-local 保证的是“每线程一份”，不是“每任务一份”：线程池会复用线程，把任务级状态放 thread-local 会串味，共享全局状态则仍需加锁"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明为什么 max_workers 改成 2 之后结果不再可预测",
+        "code": "import threading\nfrom concurrent.futures import ThreadPoolExecutor\n\nstate = threading.local()\n\n\ndef accumulate(value):\n    if not hasattr(state, \"total\"):\n        state.total = 0\n    state.total += value\n    return state.total\n\n\nwith ThreadPoolExecutor(max_workers=1) as pool:\n    print(\"mapped:\", list(pool.map(accumulate, [1, 2, 3, 4])))\n    print(\"after:\", pool.submit(accumulate, 10).result(timeout=5))\n",
+        "expected": [
+          "mapped: [1, 3, 6, 10]",
+          "after: 20"
+        ],
+        "explain": "max_workers=1 时四个 map 任务和最后一个 submit 都由同一个 worker 线程执行，`state.total` 在这个线程的本地空间里从 0 累加到 10，再接着加 10 得 20。换成 max_workers=2 后任务落在线程 A 还是 B 由调度决定，每次的初始 total 不同，输出就不再确定——这正是 thread-local 只保证每线程一份的体现。"
+      },
+      "debug": {
+        "prompt": "下面的池内任务等待自己提交的子任务，主线程只能等到超时，找出根因并给出修法",
+        "code": "from concurrent.futures import ThreadPoolExecutor, TimeoutError\n\n\ndef outer(pool):\n    inner = pool.submit(lambda: 1)\n    return inner.result(timeout=1.0)\n\n\npool = ThreadPoolExecutor(max_workers=1)\ntry:\n    future = pool.submit(outer, pool)\n    print(\"result:\", future.result(timeout=0.5))\nexcept TimeoutError:\n    print(\"timeout: the only worker is waiting on itself\")\nfinally:\n    pool.shutdown(wait=False, cancel_futures=True)\n",
+        "rootCause": "池里唯一的 worker 正在执行 outer，而 outer 提交 inner 后阻塞在 inner.result() 上；inner 必须由同一个 worker 执行，但那个 worker 正忙着等它，永远空不出来，于是 main 的 `future.result(timeout=0.5)` 抛 concurrent.futures.TimeoutError，打印 timeout: the only worker is waiting on itself。嵌套提交并没有让任务并行，只是把唯一的工作线程借给了等待。",
+        "fix": "不要在池内任务里再向同一个池同步提交并等待：把子任务在提交外层之前算好或直接扁平化，例如改成 `pool.submit(compute_outer)` 且 compute_outer 内部不再用池；确实需要嵌套时给内层单独开池或把 max_workers 调到大于嵌套层数。修复后 future.result(timeout=1.0) 立刻返回 1。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.thread.pool-executor`、`py.exec.concurrency-limit` 与 `py.thread.local-state` 实现 `split_blocks(values, workers)` 与 `parallel_sum(values, workers)`：用 ThreadPoolExecutor 提交分块求和，每个 worker 用 threading.local 记录自己处理过的分块序号，返回 (总分, 每块结果) 其中每块结果是 (块内和, 线程名, 该线程第几次调用)。所有 future 等待带 timeout。用 unittest 断言。",
+        "acceptance": [
+          "split_blocks 用步长切分，块数等于 workers，块大小差不超过 1",
+          "parallel_sum 返回的总分等于所有输入之和",
+          "同一线程的 thread-local 调用序号从 1 开始连续递增，不跳号",
+          "每块结果都带线程名，且结果顺序与分块顺序一致"
+        ],
+        "reference": "import threading\nimport unittest\nfrom concurrent.futures import ThreadPoolExecutor\n\nSTATE = threading.local()\n\n\ndef split_blocks(values, workers):\n    return [values[index::workers] for index in range(workers)]\n\n\ndef block_sum(block):\n    if not hasattr(STATE, \"calls\"):\n        STATE.calls = 0\n    STATE.calls += 1\n    return sum(block), threading.current_thread().name, STATE.calls\n\n\ndef parallel_sum(values, workers):\n    blocks = split_blocks(list(values), workers)\n    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=\"sum\") as pool:\n        futures = [pool.submit(block_sum, block) for block in blocks]\n        results = [future.result(timeout=5.0) for future in futures]\n    return sum(item[0] for item in results), results\n\n\nclass ParallelSumTest(unittest.TestCase):\n    def test_split_blocks_is_balanced(self):\n        blocks = split_blocks(list(range(10)), 3)\n        self.assertEqual(len(blocks), 3)\n        sizes = sorted(len(block) for block in blocks)\n        self.assertLessEqual(sizes[-1] - sizes[0], 1)\n\n    def test_total_matches_sum(self):\n        total, _ = parallel_sum(range(1, 11), 3)\n        self.assertEqual(total, 55)\n\n    def test_thread_local_calls_increase_without_gaps(self):\n        _, results = parallel_sum(range(1, 11), 3)\n        seen = {}\n        for _, name, calls in results:\n            self.assertEqual(calls, seen.get(name, 0) + 1)\n            seen[name] = calls\n\n    def test_results_carry_thread_names_in_block_order(self):\n        _, results = parallel_sum(range(1, 11), 2)\n        self.assertEqual(len(results), 2)\n        self.assertTrue(all(name for _, name, _ in results))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在池内任务里再提交同池任务并同步等待",
+        "把 result(timeout) 的超时当成任务被取消",
+        "把任务级状态放进 thread-local，线程复用时串味",
+        "线程池大小小于嵌套等待层数造成饥饿"
+      ]
+    },
+    {
+      "code": "py.synth.08",
+      "title": "实现在并发上限内运行的带超时任务",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.async.semaphore`、`py.async.timeout-layer` 与 `py.async.gather`：为什么 `async with semaphore` 必须放在被调度的任务内部，而不是在创建任务之前？超时应该包住哪一层？",
+        "answer": [
+          "获取信号量是 await 点：放在任务内部，超限的任务会挂起并让出事件循环，其他任务继续推进，才真正形成“最多 limit 个在跑”",
+          "如果在 create_task 之前按顺序 await 获取，创建阶段就被逐个卡住，任务还没开始并发就先串行化了，limit 变成摆设",
+          "`asyncio.wait_for(awaitable, timeout)` 取消的是它包住的那段 await；要限制“等信号量 + 实际工作”的总时长，就把整个 `async with semaphore` 块包进去",
+          "`gather(return_exceptions=True)` 把异常（含 TimeoutError）当结果收集，其他任务不受影响；默认的 return_exceptions=False 会在第一个异常处抛，其余任务不会被取消而变成孤儿",
+          "取消以 CancelledError 注入被等待的协程，临界区里的 finally / async with 清理必须能承受取消；吞掉 CancelledError 会破坏结构化并发"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明日志顺序为什么是成对出现的",
+        "code": "import asyncio\n\n\nasync def worker(name, gate, log):\n    async with gate:\n        log.append(name + \"-start\")\n        await asyncio.sleep(0)\n        log.append(name + \"-end\")\n\n\nasync def main():\n    gate = asyncio.Semaphore(1)\n    log = []\n    await asyncio.gather(*(worker(name, gate, log) for name in (\"A\", \"B\", \"C\")))\n    print(\"log:\", log)\n\n\nasyncio.run(main())\n",
+        "expected": [
+          "log: ['A-start', 'A-end', 'B-start', 'B-end', 'C-start', 'C-end']"
+        ],
+        "explain": "信号量容量是 1，三个任务在同一时刻只有一个能进入临界区：A 记 start 后 sleep(0) 让出，B、C 都在 acquire 处挂起；A 恢复记 end 释放信号量，B 才被唤醒，依此类推。start 与 end 因此严格成对出现，顺序由信号量而非调度随机性决定。"
+      },
+      "debug": {
+        "prompt": "下面的限流写成了先记开始、后进临界区，并发上限形同虚设，找出根因并给出修法",
+        "code": "import asyncio\n\n\nasync def worker(name, gate, log):\n    log.append(name + \"-start\")\n    async with gate:\n        await asyncio.sleep(0)\n    log.append(name + \"-end\")\n\n\nasync def main():\n    gate = asyncio.Semaphore(1)\n    log = []\n    await asyncio.gather(*(worker(name, gate, log) for name in (\"A\", \"B\", \"C\")))\n    print(\"log:\", log)\n\n\nasyncio.run(main())\n",
+        "rootCause": "start 记录写在 acquire 之前，信号量只包住了 `await asyncio.sleep(0)`，三个任务都先执行到 start，日志变成 A-start、B-start、C-start 之后才开始出现 end，临界区里几乎没有工作量，限流等于没做。限流要保护的是“开始工作”这个动作本身，而不是其中的一小段。",
+        "fix": "把 `log.append(name + \"-start\")` 移进 `async with gate` 内部，让登记与工作都受信号量约束；修复后日志恢复成 A-start、A-end、B-start、B-end、C-start、C-end。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.async.semaphore`、`py.async.timeout-layer` 与 `py.async.gather` 实现 `run_bounded(factories, limit, timeout)`：用 Semaphore(limit) 限制同时运行数，wait_for 给每个协程加超时，gather(return_exceptions=True) 收集结果，返回 (结果列表, 观测到的峰值并发)。用同步 unittest 加 asyncio.run 断言。",
+        "acceptance": [
+          "成功时结果按输入顺序返回，元素就是各协程的返回值",
+          "观测到的峰值并发不超过 limit，且确实到达过 limit",
+          "超时的协程在结果里是 TimeoutError，同批其他协程仍然完成",
+          "一个协程抛普通异常不会中断整批，异常作为结果被收集"
+        ],
+        "reference": "import asyncio\nimport unittest\n\n\nasync def run_bounded(factories, limit, timeout):\n    gate = asyncio.Semaphore(limit)\n    running = 0\n    peak = 0\n\n    async def guarded(factory):\n        nonlocal running, peak\n        async with gate:\n            running += 1\n            peak = max(peak, running)\n            try:\n                return await asyncio.wait_for(factory(), timeout=timeout)\n            finally:\n                running -= 1\n\n    results = await asyncio.gather(*(guarded(f) for f in factories), return_exceptions=True)\n    return list(results), peak\n\n\nasync def ok(value):\n    await asyncio.sleep(0)\n    return value\n\n\nclass RunBoundedTest(unittest.TestCase):\n    def test_results_keep_input_order(self):\n        factories = [lambda n=n: ok(n) for n in (1, 2, 3)]\n        results, _ = asyncio.run(run_bounded(factories, 2, 1.0))\n        self.assertEqual(results, [1, 2, 3])\n\n    def test_peak_concurrency_hits_the_limit(self):\n        factories = [lambda n=n: ok(n) for n in range(6)]\n        _, peak = asyncio.run(run_bounded(factories, 2, 1.0))\n        self.assertEqual(peak, 2)\n\n    def test_timeout_is_collected_not_raised(self):\n        async def slow():\n            await asyncio.sleep(5)\n            return \"late\"\n\n        results, _ = asyncio.run(run_bounded([lambda: ok(1), slow], 1, 0.05))\n        self.assertEqual(results[0], 1)\n        self.assertIsInstance(results[1], TimeoutError)\n\n    def test_one_failure_does_not_stop_the_batch(self):\n        async def boom():\n            raise ValueError(\"boom\")\n\n        results, _ = asyncio.run(run_bounded([boom, lambda: ok(2)], 1, 1.0))\n        self.assertIsInstance(results[0], ValueError)\n        self.assertEqual(results[1], 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在创建任务前 await 获取信号量，退化成串行",
+        "把日志或耗时工作放在临界区之外",
+        "用 gather 默认参数导致一个异常中断整批",
+        "wait_for 只包住部分工作，总时长仍不受控"
+      ]
+    },
+    {
+      "code": "py.synth.09",
+      "title": "实现任务组失败后的清理聚合",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.async.taskgroup`、`py.async.exception-group` 与 `py.async.sibling-cancellation`：任务组里一个任务抛错后兄弟任务经历什么？清理代码应该怎么写才不会被取消跳过？",
+        "answer": [
+          "TaskGroup 在任一子任务抛出非取消异常后立即取消其余兄弟任务，并等它们真正结束后，把所有非取消异常打包成 ExceptionGroup 一起抛出",
+          "被取消的兄弟任务在下一个 await 点收到 CancelledError；如果它 catch 后吞掉继续跑，任务组会一直等它，取消语义被破坏",
+          "清理要放在 finally 或 `async with` 的退出路径里；finally 中的 await 可能立刻再次被取消，需要保证完成的清理用 `asyncio.shield` 包住",
+          "CancelledError 不会进入 ExceptionGroup；用 `except* ValueError` 这类按类型分流可以只处理业务错误，避免把取消当错误吞掉",
+          "取消是协作的：同步的 CPU 密集代码不会被打断，任务组只能等它跑完，停机时间会被拉长"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明 ExceptionGroup 里为什么只有一条 ValueError",
+        "code": "import asyncio\n\n\nasync def boom():\n    await asyncio.sleep(0)\n    raise ValueError(\"bad\")\n\n\nasync def peer(log):\n    log.append(\"peer-start\")\n    try:\n        await asyncio.sleep(10)\n    finally:\n        log.append(\"peer-cleanup\")\n\n\nasync def main():\n    log = []\n    try:\n        async with asyncio.TaskGroup() as group:\n            group.create_task(boom())\n            group.create_task(peer(log))\n    except* ValueError as group_error:\n        messages = sorted(str(item) for item in group_error.exceptions)\n        print(\"caught:\", messages)\n    print(\"log:\", log)\n\n\nasyncio.run(main())\n",
+        "expected": [
+          "caught: ['bad']",
+          "log: ['peer-start', 'peer-cleanup']"
+        ],
+        "explain": "boom 在 sleep(0) 后抛 ValueError，TaskGroup 随即取消 peer；peer 的 CancelledError 在 sleep(10) 处注入，触发 finally 记下 peer-cleanup；任务组等 peer 收尾后才抛出 ExceptionGroup，里面只有 ValueError(\"bad\")，取消本身不会作为错误被聚合。"
+      },
+      "debug": {
+        "prompt": "下面用 gather 收集结果后直接求和，程序抛 TypeError，找出根因并给出修法",
+        "code": "import asyncio\n\n\nasync def fetch(value):\n    if value == 2:\n        raise ValueError(\"bad value\")\n    return value\n\n\nasync def main():\n    results = await asyncio.gather(*(fetch(n) for n in (1, 2, 3)), return_exceptions=True)\n    print(\"total:\", sum(results))\n\n\nasyncio.run(main())\n",
+        "rootCause": "return_exceptions=True 让 gather 把 ValueError 当普通结果放进列表，results 变成 [1, ValueError(\"bad value\"), 3]；sum 试图把 int 与 ValueError 相加，抛 TypeError: unsupported operand type(s) for +: 'int' and 'ValueError'。异常没有被抛出，而是混在数据里，调用方误以为拿到的全是值。",
+        "fix": "在求和前把异常与值分开：`values = [item for item in results if not isinstance(item, BaseException)]`，或改用 TaskGroup 让异常以 ExceptionGroup 形式统一抛出。修复后只累加数值，输出 total: 4。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.async.taskgroup`、`py.async.exception-group` 与 `py.async.sibling-cancellation` 实现 async `collect(factories, log)`：用 TaskGroup 并发运行，成功时返回 (按输入顺序的结果列表, 空错误列表)；任一工厂抛错时捕获 ExceptionGroup，返回 (None, 排序后的错误消息列表)；每个任务在 finally 里把自身下标写入 log 以证明清理发生。用同步 unittest 加 asyncio.run 断言。（对照 `py.async.gather` 的 return_exceptions 语义，理解两套收集方式为何不同。）",
+        "acceptance": [
+          "全部成功时结果按输入顺序返回，错误列表为空",
+          "一个工厂抛 ValueError 时返回的错误列表恰好是 ['boom']",
+          "失败批次里被取消的兄弟任务都执行了 finally（log 含全部下标）",
+          "含 sleep(5) 的慢任务被取消而不是被等满：失败批次 1 秒内返回"
+        ],
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def collect(factories, log):\n    results = {}\n\n    async def run(index, factory):\n        try:\n            results[index] = await factory()\n        finally:\n            log.append(index)\n\n    messages = []\n    try:\n        async with asyncio.TaskGroup() as group:\n            for index, factory in enumerate(factories):\n                group.create_task(run(index, factory))\n    except* Exception as group_error:\n        messages = sorted(str(item) for item in group_error.exceptions)\n    if messages:\n        return None, messages\n    return [results[index] for index in range(len(factories))], []\n\n\nasync def ok(value):\n    await asyncio.sleep(0)\n    return value\n\n\nasync def boom():\n    await asyncio.sleep(0)\n    raise ValueError(\"boom\")\n\n\nasync def slow():\n    await asyncio.sleep(5)\n    return \"late\"\n\n\nclass CollectTest(unittest.TestCase):\n    def test_all_success_keeps_order(self):\n        results, errors = asyncio.run(collect([lambda: ok(3), lambda: ok(1)], []))\n        self.assertEqual(results, [3, 1])\n        self.assertEqual(errors, [])\n\n    def test_failure_reports_the_exception_group_message(self):\n        results, errors = asyncio.run(collect([boom], []))\n        self.assertIsNone(results)\n        self.assertEqual(errors, [\"boom\"])\n\n    def test_cancelled_siblings_run_finally(self):\n        log = []\n        asyncio.run(collect([slow, boom], log))\n        self.assertEqual(sorted(log), [0, 1])\n\n    def test_slow_sibling_is_cancelled_not_awaited(self):\n        started = time.perf_counter()\n        results, errors = asyncio.run(collect([slow, boom], []))\n        elapsed = time.perf_counter() - started\n        self.assertIsNone(results)\n        self.assertEqual(errors, [\"boom\"])\n        self.assertLess(elapsed, 1.0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "return_exceptions=True 之后忘了区分异常与值",
+        "把 CancelledError 当成业务异常吞掉",
+        "清理放在 finally 之外的正常路径",
+        "把 ExceptionGroup 当普通异常单个 except"
+      ]
+    },
+    {
+      "code": "py.synth.10",
+      "title": "实现会回滚的上下文管理器",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.with.contextmanager`、`py.with.suppress` 与 `py.exc.flow`：`yield` 为什么必须包在 try/finally 里？在 with 块里抛出的异常是怎样进入生成器的？",
+        "answer": [
+          "`@contextmanager` 把生成器推进到 yield 处暂停；with 块抛异常时框架调用 `gen.throw()`，异常在 yield 那一行被抛出，只有包在 try/finally 里才会走清理路径",
+          "yield 不在 try 中时异常直接在生成器里冒出，`yield` 之后的代码被跳过，释放资源的语句永不执行",
+          "异常穿过 `__exit__` 后会继续向外传播；`__exit__` 返回 True（或在生成器里吞掉异常）才会阻止传播，`contextlib.suppress` 就是吞掉指定异常的现成上下文管理器",
+          "记录并重新抛出要用裸 `raise`，它保留原始 traceback 与异常链；`raise error` 会重置 traceback 起点，调试信息变差",
+          "在 `__exit__`/清理代码里再抛异常会替换原异常，表现为 `During handling of the above exception, another exception occurred`"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明 commit 与 rollback 分别在什么条件下出现",
+        "code": "from contextlib import contextmanager, suppress\n\n\n@contextmanager\ndef transaction(log):\n    log.append(\"begin\")\n    try:\n        yield log\n        log.append(\"commit\")\n    except Exception as error:\n        log.append(\"rollback:\" + type(error).__name__)\n        raise\n    finally:\n        log.append(\"close\")\n\n\nlog = []\nwith transaction(log):\n    log.append(\"work\")\nprint(\"committed:\", log)\n\nlog = []\ntry:\n    with transaction(log):\n        log.append(\"work\")\n        raise ValueError(\"bad\")\nexcept ValueError:\n    log.append(\"propagated\")\nprint(\"rolled back:\", log)\n\nwith suppress(ValueError):\n    raise ValueError(\"ignored\")\nprint(\"suppressed ok\")\n",
+        "expected": [
+          "committed: ['begin', 'work', 'commit', 'close']",
+          "rolled back: ['begin', 'work', 'rollback:ValueError', 'close', 'propagated']",
+          "suppressed ok"
+        ],
+        "explain": "正常走完 with 块，生成器在 yield 之后继续执行，追加 commit，finally 再追加 close。第二次在 with 块里抛 ValueError，框架用 gen.throw 把异常注入 yield 处，except 分支记下 rollback:ValueError 后裸 raise 继续传播，finally 追加 close，最后外层 except 追加 propagated。suppress 在 __exit__ 里返回 True，异常被吞掉，所以能继续打印 suppressed ok。"
+      },
+      "debug": {
+        "prompt": "上下文管理器在异常退出时漏掉了释放步骤，找出根因并给出修法",
+        "code": "from contextlib import contextmanager\n\n\n@contextmanager\ndef open_resource(log):\n    log.append(\"acquire\")\n    yield \"handle\"\n    log.append(\"release\")\n\n\nlog = []\ntry:\n    with open_resource(log) as handle:\n        log.append(\"use:\" + handle)\n        raise RuntimeError(\"boom\")\nexcept RuntimeError:\n    log.append(\"caught\")\nprint(\"log:\", log)\n",
+        "rootCause": "yield 之后没有 try/finally：with 块抛 RuntimeError 时，contextmanager 在 yield 处用 gen.throw 注入异常，`log.append(\"release\")` 这一行被直接跳过，资源永不释放；异常照常向外传播，所以 log 是 ['acquire', 'use:handle', 'caught']，看不到 release。",
+        "fix": "把 yield 包进 try/finally，把 `log.append(\"release\")` 放进 finally；修复后释放一定执行，log 变成 ['acquire', 'use:handle', 'release', 'caught']。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.with.contextmanager`、`py.with.suppress` 与 `py.exc.flow` 实现 `transaction(log)`：正常退出追加 commit，异常退出追加 rollback:<类型名> 并把原异常继续抛出，两种情况都追加 close。再用 unittest 断言日志顺序、异常类型，并用 contextlib.suppress 证明异常可被外层吞掉。",
+        "acceptance": [
+          "正常退出日志是 begin、work、commit、close",
+          "异常退出日志是 begin、work、rollback:ValueError、close，且 ValueError 继续抛出",
+          "rollback 记录里保留了原始异常类型名（换一种异常也成立）",
+          "同一个异常能被外层 suppress 吞掉，且清理先于吞掉完成"
+        ],
+        "reference": "import unittest\nfrom contextlib import contextmanager, suppress\n\n\n@contextmanager\ndef transaction(log):\n    log.append(\"begin\")\n    try:\n        yield log\n        log.append(\"commit\")\n    except Exception as error:\n        log.append(\"rollback:\" + type(error).__name__)\n        raise\n    finally:\n        log.append(\"close\")\n\n\nclass TransactionTest(unittest.TestCase):\n    def test_success_path(self):\n        log = []\n        with transaction(log):\n            log.append(\"work\")\n        self.assertEqual(log, [\"begin\", \"work\", \"commit\", \"close\"])\n\n    def test_failure_path_propagates(self):\n        log = []\n        with self.assertRaises(ValueError):\n            with transaction(log):\n                log.append(\"work\")\n                raise ValueError(\"bad\")\n        self.assertEqual(log, [\"begin\", \"work\", \"rollback:ValueError\", \"close\"])\n\n    def test_rollback_keeps_the_original_type(self):\n        log = []\n        with self.assertRaises(KeyError):\n            with transaction(log):\n                raise KeyError(\"missing\")\n        self.assertIn(\"rollback:KeyError\", log)\n\n    def test_outer_suppress_swallows_after_cleanup(self):\n        log = []\n        with suppress(ValueError):\n            with transaction(log):\n                raise ValueError(\"bad\")\n        self.assertEqual(log[-1], \"close\")\n        self.assertIn(\"rollback:ValueError\", log)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "yield 不在 try/finally 里导致清理被跳过",
+        "用 raise error 破坏原始 traceback",
+        "误以为 with 会自动吞掉异常",
+        "在 __exit__ 里抛新异常覆盖原异常"
+      ]
+    },
+    {
+      "code": "py.synth.11",
+      "title": "实现逐用例隔离的临时文件往返",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.pytest.parametrize`、`py.pytest.tmp-path` 与 `py.io.jsonl`：文件类测试为什么不能写固定路径？参数化与临时目录 fixture 各负责什么？`py.path.pathlib` 在临时目录场景里提供了什么便利？jsonl 写入有什么硬性要求？",
+        "answer": [
+          "`tmp_path` 是每个测试用例独享的临时目录 fixture，函数级作用域保证用例之间不共享文件，固定路径在重复运行或并行运行时会互相污染，失败现场也难保留",
+          "fixture 负责资源的准备与清理（yield 前 setup、yield 后 teardown）；parametrize 负责把同一段断言跑在多组输入上；两者正交，参数化时每组输入都会重新执行一次函数级 fixture",
+          "`py.io.jsonl` 要求一行一条完整记录：写入必须每条记录自带换行，不能用不写换行的重复 dump，否则多条记录粘成一行，读取时整行解析失败",
+          "读取时按行解析并跳过空行，追加写入用 `open(..., \"a\", encoding=\"utf-8\")`，路径用 pathlib 组合，后缀用 `.jsonl` 表明格式",
+          "用 unittest 加 tempfile.TemporaryDirectory 能复现同样的隔离语义，而且脚本模式与 `python3 -m pytest` 双模式都能跑；pytest 的 tmp_path 是同一思想的框架实现"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明 count 为什么等于写入的记录条数",
+        "code": "import json\nimport tempfile\nfrom pathlib import Path\n\nwith tempfile.TemporaryDirectory() as work:\n    path = Path(work) / \"rows.jsonl\"\n    with path.open(\"w\", encoding=\"utf-8\") as handle:\n        for value in (1, 2, 3):\n            handle.write(json.dumps({\"value\": value}) + \"\\n\")\n\n    text = path.read_text(encoding=\"utf-8\")\n    rows = [json.loads(line) for line in text.splitlines() if line]\n    print(\"count:\", len(rows))\n    print(\"values:\", [row[\"value\"] for row in rows])\n    print(\"suffix:\", path.suffix)\n",
+        "expected": [
+          "count: 3",
+          "values: [1, 2, 3]",
+          "suffix: .jsonl"
+        ],
+        "explain": "每条记录写入时都带了自己的换行，所以文件是三行；读取时逐行 json.loads，过滤掉空行后得到三条记录，count 是 3。Path 用 `/` 组合路径，suffix 自然是 .jsonl。临时目录在 with 退出时被删除，不会留下固定路径污染后续用例。"
+      },
+      "debug": {
+        "prompt": "下面用 json.dump 追加记录，读回来只剩一行，找出根因并给出修法",
+        "code": "import json\nimport tempfile\nfrom pathlib import Path\n\n\ndef append_row(path, value):\n    with path.open(\"a\", encoding=\"utf-8\") as handle:\n        json.dump({\"value\": value}, handle)\n\n\nwith tempfile.TemporaryDirectory() as work:\n    path = Path(work) / \"rows.jsonl\"\n    for value in (1, 2):\n        append_row(path, value)\n    text = path.read_text(encoding=\"utf-8\")\n    print(\"raw:\", text)\n    print(\"lines:\", len(text.splitlines()))\n",
+        "rootCause": "`json.dump` 只序列化不写分隔符，两条记录被粘成 `{\"value\": 1}{\"value\": 2}` 一行，破坏了 jsonl “一行一条”的约定；于是 splitlines 只有 1 行，按行 json.loads 时整行会抛 JSONDecodeError: Extra data。",
+        "fix": "把写入改成 `handle.write(json.dumps({\"value\": value}) + \"\\n\")`，让每条记录自带换行；修复后 raw 是两行、lines: 2，逐行解析各自成功。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.pytest.parametrize`、`py.pytest.tmp-path` 与 `py.io.jsonl` 实现 `write_rows(path, rows)` 与 `read_rows(path)`：一行一条写入 jsonl，读取时跳过空行；再用 unittest 把多组输入按参数化方式断言，每组用例使用相互独立的临时子目录（等价于 tmp_path 的隔离语义）。",
+        "acceptance": [
+          "每组参数写入后读回的值与输入完全一致",
+          "文件里的空行被跳过，不产生多余记录",
+          "不同参数组使用相互独立的临时目录，彼此不污染",
+          "文件后缀是 .jsonl，且每行都是合法的 JSON 对象"
+        ],
+        "reference": "import json\nimport tempfile\nimport unittest\nfrom pathlib import Path\n\n\ndef write_rows(path, rows):\n    with Path(path).open(\"w\", encoding=\"utf-8\") as handle:\n        for row in rows:\n            handle.write(json.dumps(row, ensure_ascii=False) + \"\\n\")\n\n\ndef read_rows(path):\n    rows = []\n    for line in Path(path).read_text(encoding=\"utf-8\").splitlines():\n        if not line.strip():\n            continue\n        rows.append(json.loads(line))\n    return rows\n\n\nCASES = [\n    ([{\"value\": 1}, {\"value\": 2}], [1, 2]),\n    ([], []),\n    ([{\"value\": \"中文\"}], [\"中文\"]),\n]\n\n\nclass RowsTest(unittest.TestCase):\n    def test_round_trip_per_case(self):\n        for rows, expected in CASES:\n            with self.subTest(rows=rows):\n                with tempfile.TemporaryDirectory() as work:\n                    path = Path(work) / \"rows.jsonl\"\n                    write_rows(path, rows)\n                    values = [row[\"value\"] for row in read_rows(path)]\n                    self.assertEqual(values, expected)\n\n    def test_blank_lines_are_skipped(self):\n        with tempfile.TemporaryDirectory() as work:\n            path = Path(work) / \"rows.jsonl\"\n            path.write_text('{\"value\": 1}\\n\\n{\"value\": 2}\\n', encoding=\"utf-8\")\n            self.assertEqual(len(read_rows(path)), 2)\n\n    def test_cases_use_isolated_directories(self):\n        paths = []\n        for rows, _ in CASES:\n            work = tempfile.TemporaryDirectory()\n            self.addCleanup(work.cleanup)\n            path = Path(work.name) / \"rows.jsonl\"\n            write_rows(path, rows)\n            paths.append(path)\n        self.assertEqual(len({str(path.parent) for path in paths}), len(CASES))\n\n    def test_suffix_and_json_objects(self):\n        with tempfile.TemporaryDirectory() as work:\n            path = Path(work) / \"rows.jsonl\"\n            write_rows(path, [{\"value\": 1}])\n            self.assertEqual(path.suffix, \".jsonl\")\n            line = path.read_text(encoding=\"utf-8\").splitlines()[0]\n            self.assertIsInstance(json.loads(line), dict)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "文件测试写死固定路径，用例互相污染",
+        "json.dump 不加换行破坏 jsonl 一行一条",
+        "读取 jsonl 不跳过空行导致解析失败",
+        "参数化数据与断言类型不匹配，失败信息难读"
+      ]
+    },
+    {
+      "code": "py.synth.12",
+      "title": "实现在进程池里分块映射的负载",
+      "minutes": 30,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.process.pool`、`py.exec.map-chunksize` 与 `py.process.main-guard-spawn`：ProcessPoolExecutor 的提交为什么必须放在 `if __name__ == \"__main__\":` 之内？chunksize 影响什么，跨进程的数据又有什么限制？",
+        "answer": [
+          "子进程要重新导入主模块，没有 main guard 时导入会再次执行提交池任务的顶层代码，在 spawn/forkserver 下不断派生新进程，轻则 RuntimeError，重则 fork 炸弹",
+          "Python 3.14 在 Linux 的默认 start method 是 forkserver，它和 spawn 一样要求主模块可安全导入，把入口放进 main guard 是跨平台唯一稳妥写法",
+          "`map(fn, iterable, chunksize=n)` 把输入按 n 个一批发给 worker，减少 IPC 往返与调度开销；chunksize 太大负载不均、并行度下降，太小则进程间通信次数激增",
+          "任务函数与参数必须可 pickle 才能过进程边界：lambda、局部函数、打开的 file/socket、生成器都不行；返回值同样要可序列化",
+          "子进程有独立内存空间，对全局变量的修改不会回到父进程；共享状态要靠返回值、multiprocessing.Queue 或 Manager"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明结果顺序为什么与进程调度无关",
+        "code": "from concurrent.futures import ProcessPoolExecutor\n\n\ndef square(value):\n    return value * value\n\n\ndef main():\n    with ProcessPoolExecutor(max_workers=2) as pool:\n        results = list(pool.map(square, [1, 2, 3, 4], chunksize=2))\n    print(\"results:\", results)\n    print(\"sum:\", sum(results))\n\n\nif __name__ == \"__main__\":\n    main()\n",
+        "expected": [
+          "results: [1, 4, 9, 16]",
+          "sum: 30"
+        ],
+        "explain": "`map` 按输入顺序返回结果，与哪个 worker 先算完无关；chunksize=2 只是把 [1, 2, 3, 4] 分成两批发送，减少 IPC 次数。square 定义在模块顶层、参数与返回值都是可 pickle 的整数，所以能跨进程；`if __name__ == \"__main__\"` 防止子进程导入时再次启动池。"
+      },
+      "debug": {
+        "prompt": "下面把 lambda 提交给进程池，结果拿不到值，找出根因并给出修法",
+        "code": "from concurrent.futures import ProcessPoolExecutor\n\n\ndef main():\n    with ProcessPoolExecutor(max_workers=1) as pool:\n        future = pool.submit(lambda value: value + 1, 1)\n        print(\"result:\", future.result(timeout=5.0))\n\n\nif __name__ == \"__main__\":\n    main()\n",
+        "rootCause": "进程池要把任务函数序列化后送给子进程，lambda 没有可导入的模块级名字，pickle 无法按名字引用它，序列化阶段就失败；调用 `future.result(timeout=5.0)` 时把错误抛回父进程，实测是 `_pickle.PicklingError: Can't pickle local object <function main.<locals>.<lambda> ...>`（旧版本可能表现为 AttributeError），拿不到结果。",
+        "fix": "把要提交的函数定义成模块顶层的普通函数（例如 `def increment(value): return value + 1`），只传可 pickle 的参数；修复后 `future.result(timeout=5.0)` 返回 2。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.process.pool`、`py.exec.map-chunksize` 与 `py.process.payload-boundary` 实现 `parallel_squares(values, workers, chunk)`：用 ProcessPoolExecutor.map 分块求平方，保持输入顺序，显式传入 max_workers 与 chunksize。用 unittest 断言结果顺序、分块参数、可序列化边界与返回值类型。",
+        "acceptance": [
+          "返回结果按输入顺序对应各元素的平方",
+          "map 调用显式使用了传入的 max_workers 与 chunksize",
+          "不可 pickle 的 lambda 在进程边界被拒绝并表现为异常",
+          "返回的是可 JSON 序列化的普通列表（数据确实跨过了进程边界）"
+        ],
+        "reference": "import inspect\nimport json\nimport unittest\nfrom concurrent.futures import ProcessPoolExecutor\n\n\ndef square(value):\n    return value * value\n\n\ndef parallel_squares(values, workers, chunk):\n    with ProcessPoolExecutor(max_workers=workers) as pool:\n        return list(pool.map(square, values, chunksize=chunk))\n\n\nclass ParallelSquaresTest(unittest.TestCase):\n    def test_results_keep_input_order(self):\n        self.assertEqual(parallel_squares([3, 1, 2], 2, 2), [9, 1, 4])\n\n    def test_uses_requested_pool_size_and_chunksize(self):\n        source = inspect.getsource(parallel_squares)\n        self.assertIn(\"max_workers=workers\", source)\n        self.assertIn(\"chunksize=chunk\", source)\n        self.assertEqual(parallel_squares(list(range(5)), 2, 2), [0, 1, 4, 9, 16])\n\n    def test_unpicklable_callable_is_rejected(self):\n        with ProcessPoolExecutor(max_workers=1) as pool:\n            future = pool.submit(lambda value: value, 1)\n            with self.assertRaises(Exception):\n                future.result(timeout=5.0)\n\n    def test_result_is_plain_serializable_list(self):\n        payload = parallel_squares([1, 2], 1, 1)\n        self.assertEqual(json.loads(json.dumps(payload)), [1, 4])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "忘记 main guard，子进程重复启动池",
+        "提交 lambda 或局部函数给进程池",
+        "以为子进程里改全局变量父进程能看见",
+        "chunksize 设得过大或过小"
+      ]
+    },
+    {
+      "code": "py.synth.13",
+      "title": "实现明确单次耗尽的迭代器类",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.iter.one-shot-class`、`py.iter.factory-vs-self`、`py.iter.protocol` 与 `py.lazy.reuse-trap`：为什么迭代器的 `__iter__` 应该返回 self，而可重复遍历的容器应该每次返回新迭代器？把同一个迭代器交给两处消费会发生什么？",
+        "answer": [
+          "迭代器协议要求 `__iter__` 返回迭代器自身、`__next__` 推进内部游标，它天生是单次可耗尽的，`for` 循环正是依赖这一约定",
+          "可重复遍历的容器把游标放在新迭代器里：`__iter__` 每次调用都返回全新迭代器，于是同一容器能被多次遍历；range、list 都是这种分工",
+          "把同一个迭代器交给两处消费时，第二处看到的是剩余元素甚至空序列，因为游标被共享；数据没丢，是消费位置被第一次遍历推进了",
+          "要让容器可重复遍历，就让 `__iter__` 返回 `iter(self.items)` 或一个内部迭代器类实例，而不是 `return self`；要让单次流语义明确，就显式用迭代器类并在文档/命名上体现",
+          "`isinstance(x, collections.abc.Iterator)` 要求同时具备 `__iter__` 与 `__next__`；只有 `__iter__` 的对象是可迭代的，但不一定是迭代器"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明第二次 list 为什么是空列表",
+        "code": "def counter(limit):\n    value = 0\n    while value < limit:\n        yield value\n        value += 1\n\n\nstream = counter(3)\nprint(\"kind:\", type(stream).__name__)\nprint(\"iter is self:\", iter(stream) is stream)\nprint(\"first:\", list(stream))\nprint(\"second:\", list(stream))\nprint(\"fresh:\", list(counter(3)))\n",
+        "expected": [
+          "kind: generator",
+          "iter is self: True",
+          "first: [0, 1, 2]",
+          "second: []",
+          "fresh: [0, 1, 2]"
+        ],
+        "explain": "生成器本身就是迭代器，`iter(stream)` 返回它自己；第一次 list 把游标推到 StopIteration，所以第二次 list 直接得到空列表。重新调用 `counter(3)` 会创建一个全新的生成器，游标从 0 开始，因此又拿到完整序列。"
+      },
+      "debug": {
+        "prompt": "下面这个类看起来是容器，第二次遍历却什么也拿不到，找出根因并给出修法",
+        "code": "class Bag:\n    def __init__(self, items):\n        self.items = list(items)\n        self.index = 0\n\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        if self.index >= len(self.items):\n            raise StopIteration\n        item = self.items[self.index]\n        self.index += 1\n        return item\n\n\nbag = Bag([1, 2, 3])\nprint(\"first:\", list(bag))\nprint(\"second:\", list(bag))\n",
+        "rootCause": "`__iter__` 返回 self，把遍历游标 `index` 存在容器自身上：第一次 list 把 index 推到 3（等于 len(items)），第二次 list 调用 __next__ 时立刻满足 `index >= len` 并抛 StopIteration，于是得到空列表。Bag 被写成了迭代器语义，却当成可重复遍历的容器使用。",
+        "fix": "让 `__iter__` 每次返回一个新的迭代器，例如 `return iter(self.items)`，把游标交给 list_iterator 保管；修复后两次 list 都输出 [1, 2, 3]。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.iter.one-shot-class`、`py.iter.factory-vs-self` 与 `py.iter.protocol` 实现 `Countdown` 迭代器类：`__iter__` 返回 self，`__next__` 每次递减并在 0 处 StopIteration，再提供 `countdown(start)` 工厂函数。用 unittest 断言首次遍历、单次耗尽、`iter(it) is it` 与工厂重建。",
+        "acceptance": [
+          "`list(Countdown(3))` 得到 [2, 1, 0]",
+          "对同一实例第二次 list 得到空列表，证明单次耗尽",
+          "`iter(instance) is instance`，耗尽后 next 抛 StopIteration",
+          "调用工厂函数 countdown 每次都能得到完整的新序列"
+        ],
+        "reference": "import unittest\n\n\nclass Countdown:\n    def __init__(self, start):\n        self.current = start\n\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        if self.current <= 0:\n            raise StopIteration\n        self.current -= 1\n        return self.current\n\n\ndef countdown(start):\n    return Countdown(start)\n\n\nclass CountdownTest(unittest.TestCase):\n    def test_first_pass_yields_all_values(self):\n        self.assertEqual(list(Countdown(3)), [2, 1, 0])\n\n    def test_second_pass_is_empty(self):\n        instance = Countdown(3)\n        self.assertEqual(list(instance), [2, 1, 0])\n        self.assertEqual(list(instance), [])\n\n    def test_iter_returns_self_then_stopiteration(self):\n        instance = Countdown(1)\n        self.assertIs(iter(instance), instance)\n        self.assertEqual(next(instance), 0)\n        with self.assertRaises(StopIteration):\n            next(instance)\n\n    def test_factory_builds_a_fresh_iterator(self):\n        self.assertEqual(list(countdown(2)), [1, 0])\n        self.assertEqual(list(countdown(2)), [1, 0])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "容器把 __iter__ 写成 return self，第二次遍历为空",
+        "把游标存在容器上而不是迭代器上",
+        "以为 list() 会重置迭代器",
+        "把一次性迭代器当可重复序列缓存"
+      ]
+    },
+    {
+      "code": "py.synth.14",
+      "title": "实现逐次捕获参数的参数化装饰器",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.closure.late-binding`、`py.closure.factory`、`py.deco.parametrized` 与 `py.functools.partial`：为什么在循环里创建的函数会全部使用最后一次的参数？默认参数与 functools.partial 各怎样解决这个问题？",
+        "answer": [
+          "闭包按名字捕获变量而不是按值快照：内层函数在调用时才去读外层变量，循环结束后那个变量停在最后一个值，所有闭包看到同一个值，这就是 late binding",
+          "默认参数在函数定义时求值并绑定成局部名，`lambda value, factor=factor: ...` 因此把当前值快照下来，最轻量但可被调用方覆盖",
+          "`functools.partial(fn, factor)` 在构造时把参数绑进新的可调用对象，语义更清晰，适合参数多或需要关键字绑定的场景",
+          "参数化装饰器本身就是工厂：外层函数持有 times/prefix 等参数并返回真正的装饰器，每次调用工厂都会产生新的闭包作用域，这是避免串扰的正规做法",
+          "循环里创建函数时要么立即捕获（默认参数、partial），要么用工厂函数或立即调用 lambda 制造每次独立的作用域，不能指望闭包替你记住当前值"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明三组写法结果不同的原因",
+        "code": "from functools import partial\n\nlate = [lambda value: value + offset for offset in (1, 10, 100)]\nprint(\"late:\", [func(0) for func in late])\n\nbound = [lambda value, offset=offset: value + offset for offset in (1, 10, 100)]\nprint(\"default:\", [func(0) for func in bound])\n\n\ndef add(value, offset):\n    return value + offset\n\n\npatched = [partial(add, offset=offset) for offset in (1, 10, 100)]\nprint(\"partial:\", [func(0) for func in patched])\n",
+        "expected": [
+          "late: [100, 100, 100]",
+          "default: [1, 10, 100]",
+          "partial: [1, 10, 100]"
+        ],
+        "explain": "第一组的三个 lambda 都闭包引用同一个 offset 变量，推导结束后 offset=100，所以都加 100。第二组用默认参数 offset=offset 在每次迭代定义时就快照了当前值。第三组 partial 在构造时把 offset 绑定进去，效果与默认参数一致，但语义更明确。"
+      },
+      "debug": {
+        "prompt": "参数化装饰器工厂在循环里创建装饰器，注册结果全部用了最后一个前缀，找出根因并给出修法",
+        "code": "def build(prefixes):\n    handlers = []\n    for prefix in prefixes:\n        def decorate(func):\n            def wrapper(*args, **kwargs):\n                return prefix + \":\" + str(func(*args, **kwargs))\n\n            return wrapper\n\n        handlers.append(decorate)\n    return handlers\n\n\ndef identity(value):\n    return value\n\n\nhandlers = [decorate(identity) for decorate in build((\"a\", \"b\"))]\nprint(\"handlers:\", [handler(1) for handler in handlers])\n",
+        "rootCause": "三个（这里是两个）`decorate` 都在同一个 for 作用域里定义，它们和内部的 wrapper 闭包引用的是同一个 prefix 变量；循环结束后 prefix 停在 \"b\"，所以两个 wrapper 都拼出 b:1，输出 handlers: ['b:1', 'b:1']。这是闭包 late binding 与参数化装饰器工厂叠加产生的串扰。",
+        "fix": "让每个 decorate 拥有自己的 prefix：把签名改成 `def decorate(func, prefix=prefix):`，默认参数在定义时快照当前前缀，wrapper 于是闭包到各自 decorate 的局部变量；修复后输出 handlers: ['a:1', 'b:1']。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.closure.late-binding`、`py.deco.parametrized` 与 `py.functools.partial` 实现 `make_multiplier(factor)`、`build_multipliers(factors)`、`build_with_defaults(factors)` 与 `build_with_partial(factors)`：四种写法都要让每个函数捕获各自的因子。用 unittest 断言互不串扰。",
+        "acceptance": [
+          "`make_multiplier(3)(10)` 返回 30",
+          "`build_multipliers([1, 2, 3])` 的函数分别乘 1、2、3，互不串扰",
+          "默认参数捕获版本对 [1, 2, 3] 得到 [10, 20, 30]",
+          "partial 捕获版本的结果与默认参数版本一致"
+        ],
+        "reference": "import unittest\nfrom functools import partial\n\n\ndef make_multiplier(factor):\n    def multiply(value):\n        return value * factor\n\n    return multiply\n\n\ndef build_multipliers(factors):\n    return [make_multiplier(factor) for factor in factors]\n\n\ndef build_with_defaults(factors):\n    return [lambda value, factor=factor: value * factor for factor in factors]\n\n\ndef multiply(value, factor):\n    return value * factor\n\n\ndef build_with_partial(factors):\n    return [partial(multiply, factor=factor) for factor in factors]\n\n\nclass MultiplierTest(unittest.TestCase):\n    def test_factory_single(self):\n        self.assertEqual(make_multiplier(3)(10), 30)\n\n    def test_build_multipliers_capture_each_factor(self):\n        multipliers = build_multipliers([1, 2, 3])\n        self.assertEqual([item(10) for item in multipliers], [10, 20, 30])\n\n    def test_default_argument_capture(self):\n        multipliers = build_with_defaults([1, 2, 3])\n        self.assertEqual([item(10) for item in multipliers], [10, 20, 30])\n\n    def test_partial_matches_default_capture(self):\n        self.assertEqual(\n            [item(10) for item in build_with_partial([1, 2, 3])],\n            [item(10) for item in build_with_defaults([1, 2, 3])],\n        )\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "循环里创建闭包却不捕获当前值",
+        "把默认参数和 partial 的绑定时机搞混",
+        "以为闭包会保存循环变量的当前副本",
+        "参数化装饰器的参数留在共享作用域里"
+      ]
+    },
+    {
+      "code": "py.synth.15",
+      "title": "实现跨 JSON 边界的记录校验",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.typing.typeddict`、`py.typing.annotations-runtime`、`py.json.basics` 与 `py.typing.static-check`：TypedDict 在运行时会不会替你做字段检查？从 JSON 解析出来的对象为什么不能直接当业务数据用？",
+        "answer": [
+          "TypedDict 只是给 dict 加静态结构标注，运行时 `type(record) is dict`，缺字段、字段类型不对都不会在赋值时报错，检查只发生在静态检查器里",
+          "`__required_keys__`/`__optional_keys__` 与 `__annotations__` 可以在运行时读到，配合 `typing.get_type_hints` 能拿到字段类型，用来手写边界校验",
+          "`Required`/`NotRequired`/`Annotated` 这些元数据只影响静态分析与 required 集合计算，不会在运行时执行任何校验逻辑",
+          "JSON 解析只产出 str/list/dict/数值/bool/None：数字可能变成 float，没有 tuple 与日期，所以边界处必须显式校验并转换，不能相信 json.loads 的结果",
+          "非法文本由 `json.loads` 抛 JSONDecodeError；字段缺失或类型不符要由自己的校验层抛带字段名的 ValueError，静态检查器看不到运行时数据"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明 age 为什么不是 int",
+        "code": "from typing import TypedDict\n\n\nclass User(TypedDict):\n    name: str\n    age: int\n\n\nrecord = {\"name\": \"amy\", \"age\": \"7\"}\nprint(\"is dict:\", type(record) is dict)\nprint(\"required:\", sorted(User.__required_keys__))\nprint(\"annotations:\", sorted(User.__annotations__))\nprint(\"age raw:\", repr(record[\"age\"]))\nprint(\"age is int:\", isinstance(record[\"age\"], int))\n",
+        "expected": [
+          "is dict: True",
+          "required: ['age', 'name']",
+          "annotations: ['age', 'name']",
+          "age raw: '7'",
+          "age is int: False"
+        ],
+        "explain": "TypedDict 不改变运行时类型，record 仍是普通 dict；`__required_keys__` 与 `__annotations__` 只是类型元数据，供静态检查和运行时自省读取。字符串 \"7\" 没有被转换，所以 age 是 str 不是 int——标注与运行时数据可以不一致。"
+      },
+      "debug": {
+        "prompt": "下面把 JSON 解析结果直接当业务记录用，第二条数据取字段时崩溃，找出根因并给出修法",
+        "code": "from typing import TypedDict\n\n\nclass Event(TypedDict):\n    name: str\n    level: int\n\n\ndef render(event: Event):\n    return event[\"name\"].upper() + \":\" + str(event[\"level\"])\n\n\nevents = [{\"name\": \"start\", \"level\": 1}, {\"name\": \"stop\"}]\nfor event in events:\n    print(render(event))\n",
+        "rootCause": "TypedDict 只是静态标注，运行时 events 就是普通 dict；第二条记录缺 level，`event[\"level\"]` 抛 KeyError: 'level'，类型检查器不会在运行时拦住它。输出在打印 START:1 之后中断。",
+        "fix": "在边界处校验必填键并给出默认值或显式错误，例如 `level = event.get(\"level\", 0)`，或在循环前用 required keys 校验；修复后输出 START:1 与 STOP:0，不再抛 KeyError。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.typing.typeddict`、`py.typing.annotations-runtime` 与 `py.json.basics` 实现 `parse_user(payload_text)`：用 json.loads 解析后，依据 TypedDict 的 `__required_keys__` 校验必填字段，校验 name 为 str、age 为数字并转成 int，非法输入抛带字段名的 ValueError。用 unittest 断言四类边界。",
+        "acceptance": [
+          "合法 JSON 文本被解析并规范化为 name/age 的 dict，age 是 int",
+          "缺少必填字段时抛 ValueError，消息里带缺失字段名",
+          "age 类型不符（字符串）时抛 ValueError",
+          "非法 JSON 文本抛 json.JSONDecodeError"
+        ],
+        "reference": "import json\nimport unittest\nfrom typing import TypedDict\n\n\nclass User(TypedDict):\n    name: str\n    age: int\n\n\ndef parse_user(payload_text):\n    payload = json.loads(payload_text)\n    for key in sorted(User.__required_keys__):\n        if key not in payload:\n            raise ValueError(f\"missing field: {key}\")\n    if not isinstance(payload[\"name\"], str):\n        raise ValueError(\"field name must be str\")\n    if isinstance(payload[\"age\"], bool) or not isinstance(payload[\"age\"], (int, float)):\n        raise ValueError(\"field age must be a number\")\n    return {\"name\": payload[\"name\"], \"age\": int(payload[\"age\"])}\n\n\nclass ParseUserTest(unittest.TestCase):\n    def test_valid_payload_is_normalized(self):\n        result = parse_user('{\"name\": \"amy\", \"age\": 30}')\n        self.assertEqual(result, {\"name\": \"amy\", \"age\": 30})\n        self.assertIsInstance(result[\"age\"], int)\n\n    def test_missing_required_field_names_it(self):\n        with self.assertRaises(ValueError) as caught:\n            parse_user('{\"name\": \"amy\"}')\n        self.assertIn(\"age\", str(caught.exception))\n\n    def test_wrong_type_is_rejected(self):\n        with self.assertRaises(ValueError):\n            parse_user('{\"name\": \"amy\", \"age\": \"thirty\"}')\n\n    def test_invalid_json_raises_decode_error(self):\n        with self.assertRaises(json.JSONDecodeError):\n            parse_user(\"{not json\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为 TypedDict 会做运行时校验",
+        "直接相信 json.loads 的类型",
+        "把 bool 当合法的 int（isinstance(True, int) 为真）",
+        "缺字段时让 KeyError 穿到业务层"
+      ]
+    },
+    {
+      "code": "py.synth.16",
+      "title": "实现可显式失效的缓存属性",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.prop.cached`、`py.prop.property` 与 `py.desc.data-vs-nondata`：cached_property 把结果存在哪里？为什么改了底层数据后必须显式失效？它的描述符优先级与 property 有什么不同？",
+        "answer": [
+          "`functools.cached_property` 第一次计算后把结果写进实例 `__dict__`，之后同名读取直接命中实例字典，函数体不再执行",
+          "缓存没有任何自动失效：底层数据变了，缓存还是旧值；要在修改数据的路径上 `del instance.__dict__[name]` 或提供 invalidate 方法",
+          "它依赖实例 `__dict__`，所以 `__slots__` 类、`__dict__` 被代理或不可写的对象不能直接用；`property` 不依赖实例字典，适用范围更广",
+          "cached_property 只有 `__get__`，是非数据描述符，实例字典优先级更高；property 同时有 `__get__`/`__set__`，是数据描述符，优先级高于实例字典",
+          "缓存适合“结果由实例状态唯一决定、读多写少、计算昂贵”的场景；有副作用或随时间变化的值不该缓存，否则等于引入不一致状态"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明第二次读取为什么没有让 calls 增加",
+        "code": "from functools import cached_property\n\n\nclass Circle:\n    def __init__(self, radius):\n        self.radius = radius\n        self.calls = 0\n\n    @cached_property\n    def area(self):\n        self.calls += 1\n        return self.radius * self.radius\n\n\ncircle = Circle(2)\nprint(\"first:\", circle.area, \"calls:\", circle.calls)\nprint(\"second:\", circle.area, \"calls:\", circle.calls)\ncircle.radius = 3\nprint(\"cached:\", circle.area, \"calls:\", circle.calls)\ndel circle.__dict__[\"area\"]\nprint(\"invalidated:\", circle.area, \"calls:\", circle.calls)\n",
+        "expected": [
+          "first: 4 calls: 1",
+          "second: 4 calls: 1",
+          "cached: 4 calls: 1",
+          "invalidated: 9 calls: 2"
+        ],
+        "explain": "第一次读取执行函数体，把 4 写进 `circle.__dict__['area']`，calls 变成 1；第二次读取命中实例字典，函数体不执行，calls 仍是 1，结果也没变。改了 radius 之后缓存仍然返回旧的 4；显式 `del circle.__dict__['area']` 清掉缓存，下一次读取重新计算得到 9、calls 变成 2。"
+      },
+      "debug": {
+        "prompt": "下面在 __slots__ 类上用 cached_property，第一次读取就崩溃，找出根因并给出修法",
+        "code": "from functools import cached_property\n\n\nclass Point:\n    __slots__ = (\"x\",)\n\n    def __init__(self, x):\n        self.x = x\n\n    @cached_property\n    def double(self):\n        return self.x * 2\n\n\npoint = Point(3)\nprint(\"double:\", point.double)\n",
+        "rootCause": "`cached_property` 计算完成后要把结果写进 `instance.__dict__`，而 Point 用 `__slots__ = (\"x\",)` 后没有 `__dict__`，functools 直接抛 `TypeError: No '__dict__' attribute on 'Point' instance to cache 'double' property.`，第一次读取就失败。",
+        "fix": "把 `__dict__` 加进 __slots__（`__slots__ = (\"x\", \"__dict__\")`），或改用普通 property 加一个缓存的 slot 字段；修复后 cache 有地方可写，输出 double: 6。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.prop.cached`、`py.prop.property` 与 `py.model.invariants` 实现 `Invoice`：用 cached_property 缓存 total 并统计计算次数，提供 add_item 与 invalidate_total 保证修改后缓存失效。用 unittest 断言缓存命中、自动失效、手动失效与直接改底层列表时的陈旧缓存现象。",
+        "acceptance": [
+          "连续两次读取 total 只计算一次（calls 为 1）",
+          "add_item 之后 total 自动失效并在下次读取时重算",
+          "手动 invalidate_total 后再次读取得到新值",
+          "绕过方法直接 append 底层列表不会自动刷新，必须显式失效才更新"
+        ],
+        "reference": "import unittest\nfrom functools import cached_property\n\n\nclass Invoice:\n    def __init__(self, items):\n        self.items = list(items)\n        self.calls = 0\n\n    @cached_property\n    def total(self):\n        self.calls += 1\n        return sum(self.items)\n\n    def add_item(self, value):\n        self.items.append(value)\n        self.invalidate_total()\n\n    def invalidate_total(self):\n        self.__dict__.pop(\"total\", None)\n\n\nclass InvoiceTest(unittest.TestCase):\n    def test_cache_hits_once(self):\n        invoice = Invoice([1, 2, 3])\n        self.assertEqual(invoice.total, 6)\n        self.assertEqual(invoice.total, 6)\n        self.assertEqual(invoice.calls, 1)\n\n    def test_add_item_invalidates_and_recomputes(self):\n        invoice = Invoice([1, 2])\n        self.assertEqual(invoice.total, 3)\n        invoice.add_item(10)\n        self.assertEqual(invoice.total, 13)\n        self.assertEqual(invoice.calls, 2)\n\n    def test_manual_invalidate_recomputes(self):\n        invoice = Invoice([5])\n        self.assertEqual(invoice.total, 5)\n        invoice.items.append(5)\n        invoice.invalidate_total()\n        self.assertEqual(invoice.total, 10)\n\n    def test_direct_mutation_keeps_stale_cache(self):\n        invoice = Invoice([1])\n        self.assertEqual(invoice.total, 1)\n        invoice.items.append(9)\n        self.assertEqual(invoice.total, 1)\n        invoice.invalidate_total()\n        self.assertEqual(invoice.total, 10)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "改了底层数据却忘了失效缓存",
+        "在 __slots__ 类上用 cached_property",
+        "把 cached_property 当数据描述符，试图用同名实例属性覆盖",
+        "给有副作用或随时间变化的值加缓存"
+      ]
+    },
+    {
+      "code": "py.synth.17",
+      "title": "实现确定释放资源的生成器",
+      "minutes": 20,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.gen.resource-cleanup`、`py.gen.throw-close`、`py.with.contextmanager` 与 `py.io.files`：生成器里的 finally 什么时候执行？把生成器交给 for 循环并提前 break 会发生什么？",
+        "answer": [
+          "生成器被正常耗尽、被 `close()`、被 `throw()`，或在 CPython 里引用计数归零被回收时，都会在挂起点注入 GeneratorExit/异常，从而触发 finally 中的清理",
+          "for 循环提前 break 不会调用 close：只要还有引用，生成器就停在挂起点不清理；只有对象失去引用被回收时才触发 finally，时机依赖实现，不应依赖",
+          "要确定性释放，就显式 `close()` 或用 `with`（`contextlib.closing` 对生成器没必要，生成器自带 close），把生成器包在上下文管理器里最清晰",
+          "生成器内部用 `with open(...)` 时，close 会推动 with 的 `__exit__` 执行；如果 finally 里再 yield，会抛 RuntimeError: generator ignored GeneratorExit",
+          "清理里不要吞掉 GeneratorExit；它继承 BaseException，`except Exception` 不会捕获它，但显式 `except BaseException` 会把它吞掉并破坏关闭流程"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明 after break 这一行里 close 为什么已经发生",
+        "code": "def reader(log):\n    log.append(\"open\")\n    try:\n        yield 1\n        yield 2\n    finally:\n        log.append(\"close\")\n\n\nlog = []\nstream = reader(log)\nprint(\"first:\", next(stream), \"log:\", log)\nstream.close()\nprint(\"after close:\", log)\nlog = []\nfor value in reader(log):\n    print(\"value:\", value)\n    break\nprint(\"after break:\", log)\n",
+        "expected": [
+          "first: 1 log: ['open']",
+          "after close: ['open', 'close']",
+          "value: 1",
+          "after break: ['open', 'close']"
+        ],
+        "explain": "第一次 next 把生成器推进到第一个 yield，只记了 open；`stream.close()` 在挂起点注入 GeneratorExit，finally 记下 close。for 循环里的生成器是临时对象，break 后引用计数归零，CPython 立即回收并触发 finally，所以 after break 已经能看到 close；这个时机是实现细节，显式 close 才可靠。"
+      },
+      "debug": {
+        "prompt": "生成器把清理写在函数末尾，显式 close 之后资源仍没释放，找出根因并给出修法",
+        "code": "def chunks(log):\n    log.append(\"open\")\n    for value in (1, 2, 3):\n        yield value\n    log.append(\"close\")\n\n\nlog = []\nstream = chunks(log)\nprint(\"first:\", next(stream))\nprint(\"partial:\", log)\nstream.close()\nprint(\"after close:\", log)\n",
+        "rootCause": "清理语句 `log.append(\"close\")` 写在生成器末尾而不是 finally 里；`stream.close()` 在 yield 处注入 GeneratorExit，生成器函数立即退出，末尾那条语句被跳过，所以 after close 仍是 ['open']，资源没有释放。",
+        "fix": "把记录 close 的语句放进 try/finally：`try: ... yield ... finally: log.append(\"close\")`；修复后显式 close 会走 finally，输出 first: 1、partial: ['open']、after close: ['open', 'close']。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.gen.resource-cleanup`、`py.gen.throw-close` 与 `py.with.contextmanager` 实现 `read_lines(log, lines)` 生成器（进入记 open，finally 记 close）与 `consume_first(stream, log)`（只取一项并显式 close）。用 unittest 断言正常耗尽、close、throw 与提前消费四种路径都恰好清理一次。",
+        "acceptance": [
+          "正常耗尽后 finally 清理恰好执行一次",
+          "显式 close 后清理恰好执行一次，重复 close 不重复记录",
+          "throw 注入异常后清理执行一次，且异常继续向外传播",
+          "consume_first 返回第一项，并在返回前完成清理"
+        ],
+        "reference": "import unittest\n\n\ndef read_lines(log, lines):\n    log.append(\"open\")\n    try:\n        for line in lines:\n            yield line\n    finally:\n        log.append(\"close\")\n\n\ndef consume_first(stream, log):\n    try:\n        return next(stream)\n    finally:\n        stream.close()\n\n\nclass ReadLinesTest(unittest.TestCase):\n    def test_exhaustion_runs_cleanup_once(self):\n        log = []\n        self.assertEqual(list(read_lines(log, [\"a\", \"b\"])), [\"a\", \"b\"])\n        self.assertEqual(log, [\"open\", \"close\"])\n\n    def test_close_runs_cleanup_once(self):\n        log = []\n        stream = read_lines(log, [\"a\", \"b\"])\n        self.assertEqual(next(stream), \"a\")\n        stream.close()\n        self.assertEqual(log, [\"open\", \"close\"])\n        stream.close()\n        self.assertEqual(log, [\"open\", \"close\"])\n\n    def test_throw_propagates_and_cleans_up(self):\n        log = []\n        stream = read_lines(log, [\"a\", \"b\"])\n        next(stream)\n        with self.assertRaises(ValueError):\n            stream.throw(ValueError(\"stop\"))\n        self.assertEqual(log, [\"open\", \"close\"])\n\n    def test_consume_first_closes_before_return(self):\n        log = []\n        stream = read_lines(log, [\"x\", \"y\"])\n        self.assertEqual(consume_first(stream, log), \"x\")\n        self.assertEqual(log, [\"open\", \"close\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "清理语句写在生成器末尾而不是 finally",
+        "依赖 for break 自动 close 生成器",
+        "在 finally 里再 yield 触发 GeneratorExit 错误",
+        "用 except BaseException 吞掉 GeneratorExit"
+      ]
+    },
+    {
+      "code": "py.synth.18",
+      "title": "实现只记一次日志的异常边界",
+      "minutes": 25,
+      "module": "综合",
+      "level": "进阶",
+      "taskRefs": [],
+      "concept": {
+        "prompt": "结合 `py.exc.hierarchy-design`、`py.logging.boundary` 与 `py.exc.flow`：自定义异常为什么要按调用方可处理性分层？日志为什么只在边界记一次？`raise ... from` 与裸 raise 各保留了什么？",
+        "answer": [
+          "异常层次按“调用方能否处理”分层：可预期的业务错误放到一个 AppError 基类下，编程错误（ValueError/TypeError）不混进来，边界层才能用 `except AppError` 精确分流",
+          "自定义基类让边界能统一捕获，子类语义又留给上层做不同处理；到处直接继承 Exception 会让边界无法区分“该记录并返回错误”和“该让程序崩溃”",
+          "日志只在边界记一次：底层负责抛出带上下文的异常，逐层 logger.exception 会把同一条错误打多遍、淹没根因，也让日志计数失真",
+          "`raise NewError(...) from error` 设置 `__cause__`，traceback 显示“The above exception was the direct cause...”，跨层翻译语义清晰",
+          "裸 `raise` 重新抛出当前异常并保留原始 traceback；在 except 里 `raise NewError(...)` 不带 from 会隐式设置 `__context__`，信息还在但语义弱于显式 from"
+        ]
+      },
+      "predict": {
+        "prompt": "写出输出，并说明三种异常分别命中哪个分支",
+        "code": "import logging\nfrom io import StringIO\n\nstream = StringIO()\nlogger = logging.Logger(\"boundary\")\nhandler = logging.StreamHandler(stream)\nhandler.setFormatter(logging.Formatter(\"%(levelname)s:%(message)s\"))\nlogger.addHandler(handler)\nlogger.setLevel(logging.INFO)\n\n\nclass AppError(Exception):\n    pass\n\n\nclass NotFound(AppError):\n    pass\n\n\nclass InvalidInput(AppError):\n    pass\n\n\ndef classify(error):\n    if isinstance(error, NotFound):\n        return \"not-found\"\n    if isinstance(error, AppError):\n        return \"app\"\n    return \"other\"\n\n\nfor error in (NotFound(\"missing\"), InvalidInput(\"bad\"), ValueError(\"plain\")):\n    logger.info(\"classify %s -> %s\", type(error).__name__, classify(error))\n\nprint(\"log:\", stream.getvalue().splitlines())\n",
+        "expected": [
+          "log: ['INFO:classify NotFound -> not-found', 'INFO:classify InvalidInput -> app', 'INFO:classify ValueError -> other']"
+        ],
+        "explain": "NotFound 先命中更具体的分支；InvalidInput 不在 NotFound 分支但属于 AppError，落到 app 分支；ValueError 完全不在业务层级里，返回 other。logger 只挂了写入 StringIO 的 handler，日志内容确定，说明按层级分流能准确区分业务错误与编程错误。"
+      },
+      "debug": {
+        "prompt": "下面同一次失败在两层各记了一条日志，找出根因并给出修法",
+        "code": "import logging\nfrom io import StringIO\n\nstream = StringIO()\nlogger = logging.Logger(\"app\")\nhandler = logging.StreamHandler(stream)\nhandler.setFormatter(logging.Formatter(\"%(levelname)s:%(message)s\"))\nlogger.addHandler(handler)\nlogger.setLevel(logging.INFO)\n\n\nclass AppError(Exception):\n    pass\n\n\ndef load(key):\n    try:\n        raise KeyError(key)\n    except KeyError as error:\n        logger.error(\"repository failed\")\n        raise AppError(\"cannot load\") from error\n\n\ndef boundary(key):\n    try:\n        return load(key)\n    except AppError:\n        logger.error(\"request failed\")\n        return None\n\n\nprint(\"result:\", boundary(\"7\"))\nprint(\"log:\", stream.getvalue().splitlines())\n",
+        "rootCause": "同一次失败在底层 load 与边界 boundary 各记了一条日志：log 出现 ['ERROR:repository failed', 'ERROR:request failed'] 两条。重复日志会让计数失真、掩盖真正根因，而且两条都没带出原始 KeyError 的具体信息。",
+        "fix": "只在边界记一次日志，底层只负责翻译并保留原因：`except KeyError as error: raise AppError(\"cannot load\") from error`，boundary 里保留那一条 logger.error；修复后 log 只有 ['ERROR:request failed']，异常链里仍能通过 __cause__ 追溯到 KeyError。"
+      },
+      "code_task": {
+        "prompt": "结合 `py.exc.hierarchy-design`、`py.logging.boundary` 与 `py.exc.flow` 实现 `AppError`/`NotFound` 层级与边界函数 `handle(logger, repository, key)`：底层把 KeyError 翻译成 NotFound 并用 `raise ... from` 保留原因，边界只记一次错误日志并返回结果 dict。用 unittest 加内存 handler 断言。",
+        "acceptance": [
+          "成功时返回 ok 结果且不产生任何错误日志",
+          "缺键时底层翻译成 NotFound，边界的错误日志恰好一条且含 NotFound",
+          "返回结果里的 cause 是 KeyError（异常链 __cause__ 被保留）",
+          "非 AppError 的编程错误不被边界吞掉，继续向外抛出"
+        ],
+        "reference": "import logging\nimport unittest\nfrom io import StringIO\n\n\nclass AppError(Exception):\n    pass\n\n\nclass NotFound(AppError):\n    pass\n\n\ndef make_logger():\n    logger = logging.Logger(\"boundary\")\n    handler = logging.StreamHandler(StringIO())\n    handler.setFormatter(logging.Formatter(\"%(levelname)s:%(message)s\"))\n    logger.addHandler(handler)\n    logger.setLevel(logging.INFO)\n    return logger, handler.stream\n\n\ndef load(repository, key):\n    try:\n        return repository[key]\n    except KeyError as error:\n        raise NotFound(\"missing \" + key) from error\n\n\ndef handle(logger, repository, key):\n    try:\n        value = load(repository, key)\n    except AppError as error:\n        cause = type(error.__cause__).__name__ if error.__cause__ else \"\"\n        logger.error(\"request failed: %s\", type(error).__name__)\n        return {\"ok\": False, \"error\": type(error).__name__, \"cause\": cause}\n    return {\"ok\": True, \"value\": value}\n\n\nclass BoundaryTest(unittest.TestCase):\n    def test_success_has_no_error_log(self):\n        logger, stream = make_logger()\n        result = handle(logger, {\"7\": \"seven\"}, \"7\")\n        self.assertEqual(result, {\"ok\": True, \"value\": \"seven\"})\n        self.assertEqual(stream.getvalue(), \"\")\n\n    def test_missing_key_is_translated_and_logged_once(self):\n        logger, stream = make_logger()\n        result = handle(logger, {}, \"7\")\n        self.assertFalse(result[\"ok\"])\n        self.assertEqual(result[\"error\"], \"NotFound\")\n        lines = stream.getvalue().splitlines()\n        self.assertEqual(len(lines), 1)\n        self.assertIn(\"NotFound\", lines[0])\n\n    def test_cause_is_preserved(self):\n        logger, _ = make_logger()\n        result = handle(logger, {}, \"7\")\n        self.assertEqual(result[\"cause\"], \"KeyError\")\n\n    def test_programming_errors_are_not_swallowed(self):\n        logger, _ = make_logger()\n        with self.assertRaises(TypeError):\n            handle(logger, None, \"7\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "每一层都 logger.exception，同一条错误打多遍",
+        "用 except Exception 吞掉编程错误",
+        "翻译异常时不带 from 丢失原因链",
+        "把业务异常与编程错误混在一个层级里"
+      ]
+    }
+  ]
+}
