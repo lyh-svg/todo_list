@@ -354,11 +354,29 @@ class ReviewBootstrapTests(unittest.TestCase):
         self.assertIn("内容文件不存在", warning.getvalue())
         self.assertIn(str(missing), warning.getvalue())
 
-    def test_broken_content_file_returns_none_without_raising(self) -> None:
-        broken = Path(_TEMP.name) / "broken-content.json"
-        broken.write_bytes(b"{ not json")
-        with mock.patch.object(review_storage, "WEEK1_PATH", broken):
-            self.assertIsNone(review_storage.ensure_review_content_ready())
+    def test_broken_content_file_is_skipped_and_others_still_import(self) -> None:
+        """文件名匹配 glob 的损坏周文件被跳过，其它周照常导入，返回导入条数（不抛异常、不是 None）。
+
+        旧用例把损坏文件命名成 broken-content.json，不匹配 `py-week*.json`，实际走的是"一个
+        周文件都没有"分支、断言 None——用例绿却没覆盖它声称的"坏文件被跳过"路径。
+        """
+        with tempfile.TemporaryDirectory(prefix="todo-review-broken-") as work:
+            broken = Path(work) / "py-week99.json"
+            broken.write_bytes(b"{ not json")
+            sample = json.loads(CONTENT_PATH.read_text(encoding="utf-8"))["points"][0]
+            good = Path(work) / "py-week1.json"
+            good.write_text(json.dumps(
+                {"schemaVersion": 1, "week": 1, "level": "基础", "points": [sample]},
+                ensure_ascii=False), encoding="utf-8")
+            warning = io.StringIO()
+            with mock.patch.object(review_storage, "WEEK1_PATH", broken), \
+                    contextlib.redirect_stderr(warning):
+                imported = review_storage.ensure_review_content_ready()
+        self.assertEqual(imported, 1, "返回的是其它周真正导入的条数，而不是 None")
+        self.assertIn("py-week99.json", warning.getvalue())
+        self.assertIn("跳过", warning.getvalue())
+        self.assertIn(sample["code"],
+                      {entry["code"] for entry in review_storage.list_points()["points"]})
 
     def test_main_wires_startup_bootstrap(self) -> None:
         source = (APP_DIR / "local_server.py").read_text(encoding="utf-8")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import uuid
 from datetime import date, timedelta
@@ -82,16 +83,27 @@ def import_content(points: list[dict], *, week: int = 1, origin: str = DEFAULT_O
     return {"inserted": inserted, "updated": updated, "unchanged": unchanged}
 
 
+# `py-week<数字>.json`：排序键取文件名里的周编号，纯字典序会把 py-week10 排到 py-week2 前面。
+WEEK_FILE_PATTERN = re.compile(r"py-week(\d+)\.json$")
+
+
+def _week_sort_key(path: Path) -> tuple[int, str]:
+    """周编号越小越靠前；文件名里没有数字的（理论上不该有）排到最后，再按文件名兜底。"""
+    match = WEEK_FILE_PATTERN.search(path.name)
+    return (int(match.group(1)) if match else sys.maxsize, path.name)
+
+
 def content_paths() -> list[Path]:
-    """随仓库发布的课程库文件：`content/review/py-week*.json`，按文件名排序。
+    """随仓库发布的课程库文件：`content/review/py-week*.json`，按周编号（数字）排序。
 
     扫描根取 `WEEK1_PATH` 所在目录：测试把 `WEEK1_PATH` 指到临时目录即可隔离内容。
+    用数字键而不是字典序：否则第 10 周会排在第 2 周前面，导入顺序与周次脱节。
     """
-    return sorted(WEEK1_PATH.parent.glob("py-week*.json"))
+    return sorted(WEEK1_PATH.parent.glob("py-week*.json"), key=_week_sort_key)
 
 
 def ensure_content_imported() -> int:
-    """按文件名顺序逐个导入所有周课程库，返回本次 `inserted+updated` 的总和。
+    """按周编号顺序逐个导入所有周课程库，返回本次 `inserted+updated` 的总和。
 
     幂等：内容未变的点只计入 `unchanged`，因此重复调用返回 0。
     单个文件缺失/损坏/校验失败时只打印告警并跳过它，其它周照常导入，绝不抛给启动路径。

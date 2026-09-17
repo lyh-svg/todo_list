@@ -217,14 +217,19 @@ class MultiWeekContentImportTests(unittest.TestCase):
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return path
 
-    def test_scans_every_week_file_sorted_by_name(self) -> None:
+    def test_scans_every_week_file_sorted_by_week_number(self) -> None:
+        """按周编号排序：py-week10 必须排在 py-week2 之后（字典序会把它排到前面）。"""
         with tempfile.TemporaryDirectory(prefix="todo-review-weeks-") as work:
+            self.write_week(work, "py-week10.json", 10, ["py.w10.a"])
             self.write_week(work, "py-week2.json", 2, ["py.w2.b", "py.w2.a"])
             self.write_week(work, "py-week1.json", 1, ["py.w1.a"])
             with mock.patch.object(review_storage, "WEEK1_PATH", Path(work) / "py-week1.json"):
+                names = [path.name for path in review_storage.content_paths()]
                 total = review_storage.ensure_content_imported()
-        self.assertEqual(total, 3)
-        self.assertEqual(review_storage.list_points()["total"], 3)
+        self.assertEqual(names, ["py-week1.json", "py-week2.json", "py-week10.json"],
+                         "导入顺序必须按周编号，而不是文件名字典序")
+        self.assertEqual(total, 4)
+        self.assertEqual(review_storage.list_points()["total"], 4)
 
     def test_repeat_scan_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(prefix="todo-review-weeks-") as work:

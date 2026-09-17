@@ -895,8 +895,8 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "class User:\n    def __init__(self, name):\n        self.name = name\n\n    def __str__(self):\n        return f\"User({self.name})\"\n\n\nu = User(\"ada\")\nprint(u)\nprint([u])\nprint(u)",
-        "rootCause": "只定义了 __str__ 而没有 __repr__。print(u) 正常，但列表、字典等容器打印元素时走 repr，于是 __repr__ 继承 object 的实现，输出里出现 <User object at 0x7f...> 这种带内存地址的字符串，日志不可复现、无法用于断言。",
+        "code": "class User:\n    def __init__(self, name):\n        self.name = name\n\n    def __str__(self):\n        return f\"User({self.name})\"\n\n\nu = User(\"ada\")\nprint(u)\nprint([u])",
+        "rootCause": "只定义了 __str__ 而没有 __repr__。print(u) 正常，但列表、字典等容器打印元素时走 repr，于是 __repr__ 继承 object 的实现，输出里出现 [<__main__.User object at 0x...>] 这种带内存地址的字符串，日志不可复现、无法用于断言。",
         "fix": "补上返回可重建字符串的 __repr__，例如 def __repr__(self): return f\"User({self.name!r})\"；__str__ 可以保留，也可以删掉让它回退到 __repr__。"
       },
       "code_task": {
@@ -1274,9 +1274,9 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "class DBConnection:\n    def __init__(self, dsn):\n        self.dsn = dsn\n        self.conn = None\n\n    def open(self):\n        self.conn = \"connected:\" + self.dsn\n\n    def __enter__(self):\n        self.open()\n\n    def __exit__(self, exc_type, exc, tb):\n        self.conn = None\n\n\nwith DBConnection(\"db://main\") as conn:\n    print(conn.query(\"select 1\"))",
-        "rootCause": "__enter__ 打开了连接却没有 return self，with 把它的返回值 None 绑给 as 目标 conn；于是 conn.query(...) 实际是 None.query(...)，抛 AttributeError: 'NoneType' object has no attribute 'query'。__exit__ 写对了也救不了，因为异常发生在绑定之后。",
-        "fix": "在 __enter__ 末尾 return self（或 return self.conn），让 with 交付真正要用的对象：\n    def __enter__(self):\n        self.open()\n        return self\n必要时再补一个 close()，让 __exit__ 调用它而不是直接清空属性。"
+        "code": "class DBConnection:\n    def __init__(self, dsn):\n        self.dsn = dsn\n        self.conn = None\n\n    def open(self):\n        self.conn = \"connected:\" + self.dsn\n\n    def query(self, sql):\n        return f\"[{self.conn}] {sql}\"\n\n    def __enter__(self):\n        self.open()\n\n    def __exit__(self, exc_type, exc, tb):\n        self.conn = None\n\n\nwith DBConnection(\"db://main\") as conn:\n    print(conn.query(\"select 1\"))",
+        "rootCause": "__enter__ 打开了连接却没有 return self，with 把它的返回值 None 绑给 as 目标 conn；于是 conn.query(...) 实际是 None.query(...)，抛 AttributeError: 'NoneType' object has no attribute 'query'。类里明明有 query 方法也没用——属性查找发生在 None 上；__exit__ 写对了也救不了，因为异常发生在绑定之后。",
+        "fix": "在 __enter__ 末尾 return self（或 return self.conn），让 with 交付真正要用的对象：\n    def __enter__(self):\n        self.open()\n        return self\n修完 with DBConnection(\"db://main\") as conn: print(conn.query(\"select 1\")) 才会走到 DBConnection.query，打印 [connected:db://main] select 1（query 方法必须存在于类上，否则 conn 拿对了也还是 AttributeError）。必要时再补一个 close()，让 __exit__ 调用它而不是直接清空属性。"
       },
       "code_task": {
         "prompt": "写一个上下文管理器类 Section：构造参数是 name；__enter__ 向 self.events 追加 \"start:\" + name 并返回 name；__exit__ 向 self.events 追加 \"end:\" + name 并返回 False。要求块内抛异常时 __exit__ 仍然执行，且异常继续向外传播。用 unittest 覆盖正常路径与异常路径。",
@@ -1401,9 +1401,9 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "from contextlib import contextmanager\n\n\n@contextmanager\ndef locked(lock):\n    lock.acquire()\n    yield lock\n    lock.release()\n\n\nwith locked(my_lock):\n    do_work()  # 这里抛异常\nprint(\"finished\")",
-        "rootCause": "yield 之后没有 try/finally。块内异常会在 yield 那一行被抛回生成器，lock.release() 这行被跳过，生成器带着异常结束，锁永远不会释放；下一个线程再 acquire 就死锁。",
-        "fix": "把 yield 放进 try，释放动作放 finally：\n    lock.acquire()\n    try:\n        yield lock\n    finally:\n        lock.release()\n这样正常退出和异常退出都会释放，且不改变异常的传播。"
+        "code": "from contextlib import contextmanager\n\n\nclass FakeLock:\n    def __init__(self):\n        self.locked = False\n\n    def acquire(self):\n        self.locked = True\n\n    def release(self):\n        self.locked = False\n\n\n@contextmanager\ndef locked(lock):\n    lock.acquire()\n    yield lock\n    lock.release()\n\n\ndef do_work():\n    raise RuntimeError(\"boom\")\n\n\nmy_lock = FakeLock()\ntry:\n    with locked(my_lock):\n        do_work()\nexcept RuntimeError as exc:\n    print(\"caught\", exc)\nprint(\"locked after error:\", my_lock.locked)",
+        "rootCause": "yield 之后没有 try/finally。do_work() 抛出的 RuntimeError 会在 yield 那一行被抛回生成器，lock.release() 这行被跳过，生成器带着异常结束；异常继续向外传播，最外层 except 打印了 caught boom，但紧接着打印的 my_lock.locked 仍是 True——锁没释放，真实程序里下一个线程再 acquire 就死锁。",
+        "fix": "把 yield 放进 try，释放动作放 finally：\n    lock.acquire()\n    try:\n        yield lock\n    finally:\n        lock.release()\n这样正常退出和异常退出都会释放。同样的代码修完后第二行变成 locked after error: False，异常照样向外传播。"
       },
       "code_task": {
         "prompt": "用 @contextmanager 写 step(log, name)：进入时向 log 追加 \">\" + name，退出时追加 \"<\" + name；如果块内抛 ValueError，就追加 \"handled:\" + str(exc) 并抑制它，其他异常照常传播。用 unittest 覆盖正常、抑制 ValueError、传播 KeyError 三条路径。",
@@ -1868,8 +1868,8 @@
       },
       "debug": {
         "prompt": "下面代码想用 Validator 实例做校验，调用后却输出 None。找出根因并给出修法",
-        "code": "class Validator:\n    def __init__(self, limit):\n        self.limit = limit\n\n    def __call__(self, text):\n        if len(text) > self.limit:\n            raise ValueError(\"过长\")\n        text.strip()\n\nvalidator = Validator(3)\nprint(validator(\"python\"))\nprint(validator(\"ok\"))",
-        "rootCause": "__call__ 没有 return，隐式返回 None；另外 text.strip() 的结果没有绑定也没有返回，校验通过时等于什么都没做。",
+        "code": "class Validator:\n    def __init__(self, limit):\n        self.limit = limit\n\n    def __call__(self, text):\n        if len(text) > self.limit:\n            raise ValueError(\"过长\")\n        text.strip()\n\nvalidator = Validator(8)\nprint(validator(\"python\"))\nprint(validator(\"ok\"))",
+        "rootCause": "__call__ 没有 return，隐式返回 None；另外 text.strip() 的结果既没绑定也没返回，校验通过时等于什么都没做。两次调用都落在 limit 内、不触发 ValueError，于是两行 print 都输出 None，而不是规范化后的字符串。",
         "fix": "在 __call__ 里显式返回规范化后的结果，例如 return text.strip()，让调用方拿到值而不是 None。"
       },
       "code_task": {
@@ -1928,9 +1928,9 @@
       },
       "debug": {
         "prompt": "下面代码希望金额永远非负，但 print 出来是负数。找出根因并给出修法",
-        "code": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Payment:\n    amount: float\n\n    def __post_init__(self):\n        if self.amount < 0:\n            raise ValueError(\"金额不能为负\")\n\npayment = Payment(10.0)\npayment.amount = -10.0\nprint(payment.amount)",
-        "rootCause": "类型是 frozen=True 的 dataclass，普通属性赋值会被 __setattr__ 拦下抛 FrozenInstanceError，不变量本来靠“不可变”保住；一旦有人用 object.__setattr__ 绕过校验，负数就能写进去，__post_init__ 只在构造时跑过一次，事后不会再校验。",
-        "fix": "不要用 object.__setattr__ 绕开冻结；确需可变就用普通 dataclass，把校验放进 property 的 setter，让每次修改都走同一段校验逻辑。"
+        "code": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Payment:\n    amount: float\n\n    def __post_init__(self):\n        if self.amount < 0:\n            raise ValueError(\"金额不能为负\")\n\npayment = Payment(10.0)\nobject.__setattr__(payment, \"amount\", -10.0)\nprint(payment.amount)",
+        "rootCause": "frozen=True 只拦普通属性赋值：写 payment.amount = -10.0 会被 __setattr__ 拦下抛 FrozenInstanceError，print 根本执行不到。但这段坏代码改用 object.__setattr__ 直接绕过冻结改写字段，__post_init__ 只在构造时跑过一次，事后没有任何地方复核，于是 -10.0 被写进去、第 3 行原样打印出 -10.0。frozen 保住的是“没人绕过”这一约定，不是不变量本身。",
+        "fix": "不要用 object.__setattr__ 绕开冻结写入非法值。确需金额可变就别用 frozen，去掉冻结并用 property 的 setter 守住不变量：\n    class Payment:\n        def __init__(self, amount):\n            self.amount = amount\n\n        @property\n        def amount(self):\n            return self._amount\n\n        @amount.setter\n        def amount(self, value):\n            if value < 0:\n                raise ValueError(\"金额不能为负\")\n            self._amount = value\n这样每次修改都会走同一段校验：payment.amount = -10.0 当场抛 ValueError，负数再也打印不出来。"
       },
       "code_task": {
         "prompt": "写冻结 dataclass Temperature，字段 celsius: float，不变量：不小于 -273.15；提供方法 to_kelvin() 返回摄氏温度加 273.15；非法温度必须在构造时抛 ValueError。",
@@ -2101,9 +2101,9 @@
       },
       "debug": {
         "prompt": "下面代码希望父类登记所有子类的 kind，运行却报 AttributeError。找出根因并给出修法",
-        "code": "class Base:\n    kinds = {}\n\n    def __init_subclass__(self, **kwargs):\n        super().__init_subclass__(**kwargs)\n        Base.kinds[self.kind] = self\n\nclass A(Base):\n    kind = \"a\"\n\nprint(Base.kinds)",
-        "rootCause": "__init_subclass__ 是隐式 classmethod，第一个参数拿到的是新建的子类；这里把参数命名为 self 并当作实例用，但传进来的其实是类 A，A 本身没有 kind 实例属性查找问题不大，问题在于把它当实例：一旦子类没定义 kind，或误以为能访问实例状态，就会 AttributeError；写法上 self 也误导后续维护者。",
-        "fix": "把第一个参数改为 cls 并用 cls.kind 取子类属性，注册时记录 cls；子类缺 kind 时在此处显式抛错而不是等运行期才发现。"
+        "code": "class Base:\n    kinds = {}\n\n    def __init_subclass__(self, **kwargs):\n        super().__init_subclass__(**kwargs)\n        Base.kinds[self.kind] = self\n\nclass A(Base):\n    pass\n\nprint(Base.kinds)",
+        "rootCause": "__init_subclass__ 是隐式 classmethod，Python 传进来的第一参数是刚创建的子类 A，不是实例；代码把它命名为 self 当成实例用，直接在类上读 self.kind。A 没有定义 kind，注册回调里立刻抛 AttributeError: type object 'A' has no attribute 'kind'，class A(Base) 都没执行完，后面的 print(Base.kinds) 根本到不了；把参数改名成 cls 并不改变这一点。",
+        "fix": "把第一参数改名为 cls 表明它是类，并要求子类显式声明 kind，缺失时给出可读报错而不是让属性查找崩掉：\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        kind = getattr(cls, \"kind\", None)\n        if not kind:\n            raise TypeError(f\"{cls.__name__} 必须定义 kind\")\n        Base.kinds[kind] = cls\n\nclass A(Base):\n    kind = \"a\"\n\nprint(Base.kinds)  # 修完输出 {'a': <class '__main__.A'>}\n只改 cls 这个名字不会改变行为，补上 A 的 kind（以及缺失时的显式报错）才让注册真正跑通。"
       },
       "code_task": {
         "prompt": "写基类 Command：子类定义时自动把“小写类名 -> 子类”登记到 Command.registry；若同一小写类名已被登记，创建子类时立即抛 ValueError；再写 make(name) 按名字取出子类，未登记返回 None。",
