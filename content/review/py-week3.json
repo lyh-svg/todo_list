@@ -403,10 +403,9 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "class Counter:\n    def __init__(self, start):\n        self.value = start\n\n    def bump(self):\n        self.value += 1\n        return self.value\n\n\ndef make_bumper(start):\n    counter = Counter(start)\n\n    def bump():\n        return counter.bump()\n\n    return bump\n\n\ndef run_twice(bump):\n    return bump(), bump()\n\n\nprint(run_twice(make_bumper(10)))\n",
-        "rootCause": "闭包捕获的是变量而不是值：bump 的 __closure__ 里那个细胞持有的是 Counter 对象本身。bump() 调用 counter.bump() 时，被改的是细胞里那个对象的属性 value，而不是把新值重新绑给 counter；细胞从创建到调用一直指向同一个对象，所以每次调用都继续累加同一个计数器，bump() 的两次输出是 11、12 而不是 11、11。误以为闭包在定义时把 counter 的初始值（10）复制了一份，才会以为同一个 bump 反复调用都从 10 开始；实际是那一个细胞里的同一个实例被反复推进。",
-        "fix": "先想清楚要的是同一个闭包累加，还是每次拿到一份新状态。要累加就保留现在共享细胞对象的写法，这就是闭包的用途：同一个 bump 连续调用得到 11、12 是正确行为，调用方不该假设它每次返回初值。要每次从同一起点重来，就不要跨调用共享同一个可变对象：让调用方按需调用工厂（每次 make_bumper(10) 都是一份新细胞），或在参数里传初始值而不在细胞内累加，例如 def bump(start): return start + 1。定位问题看细胞保存的是引用：print(bump.__code__.co_freevars) 打印 ('counter',)，print(bump.__closure__[0].cell_contents.value) 会随调用从 10 变成 11、12。",
-        "fixed_code": "class Counter:\n    def __init__(self, start):\n        self.value = start\n\n    def bump(self):\n        self.value += 1\n        return self.value\n\n\ndef make_bumper(start):\n    counter = Counter(start)\n\n    def bump():\n        return counter.bump()\n\n    return bump\n\n\ndef run_once(bump):\n    return bump()\n\n\nprint(run_once(make_bumper(10)), run_once(make_bumper(10)))\nbump = make_bumper(10)\nprint(bump.__code__.co_freevars)\nbump()\nprint(bump.__closure__[0].cell_contents.value)\n"
+        "code": "def make_greeting(name):\n    def greet():\n        return \"hello \" + name\n\n    name = \"guest\"\n    return greet\n\n\nspeak = make_greeting(\"amy\")\nprint(speak())\nprint(speak.__code__.co_freevars)\nprint(speak.__closure__[0].cell_contents)",
+        "rootCause": "作者以为闭包在 def greet 那一刻把 name 的值（\"amy\"）复制一份存起来，于是在 greet 定义之后用 name = \"guest\" 做兜底默认值，判定它不会影响已经建好的闭包。实际闭包捕获的是变量本身：name 被提升为细胞，greet.__closure__[0] 指向的就是那个细胞，name = \"guest\" 是对同一个细胞重新绑定；speak() 要等到调用时才去细胞取值，读到的自然是 \"guest\"。co_freevars 打印 ('name',)、cell_contents 打印 guest，正好从两个角度证明细胞保存的是变量而不是值快照。",
+        "fix": "要“快照”就在定义闭包时把值固定下来：用默认参数 `def greet(name=name)`，或先把值赋给一个之后不再改动的名字再把它当自由变量，兜底赋值另换一个名字，别重绑定被捕获的那个变量。修好后 speak() 得到 'hello amy'，默认参数版本的 co_freevars 为空，说明它不再依赖外层细胞：\n\n    def make_greeting(name):\n        def greet(name=name):\n            return \"hello \" + name\n\n        name = \"guest\"\n        return greet\n\n\n    speak = make_greeting(\"amy\")\n    print(speak())                     # hello amy\n    print(speak.__code__.co_freevars)  # ()\n    print(speak.__code__.co_varnames)  # ('name',)\n\n如果确实想保留自由变量语义、又想让兜底生效，就把兜底写成 `name = name or \"guest\"` 并放在定义闭包之前——关键始终是“这个细胞在什么时候被重新绑定”。"
       },
       "code_task": {
         "prompt": "实现 make_bumper(start)：内部创建一个 Counter 实例（有 value 属性和 bump() 方法），返回一个闭包 bump()，每次调用转发到该实例的 bump() 并返回新的 value。要求闭包通过细胞持有这个实例，而不是把初始值复制进参数。",
@@ -463,8 +462,7 @@
         "prompt": "找出下面代码的问题，说明根因并给出修法",
         "code": "def make_counter_naive(start):\n    count = start\n\n    def bump():\n        count = count + 1\n        return count\n\n    return bump\n\n\ndef make_counter(start):\n    count = start\n\n    def bump():\n        nonlocal count\n        count += 1\n        return count\n\n    return bump\n\n\nnaive = make_counter_naive(0)\nprint(naive())\ncounter = make_counter(0)\nprint(counter(), counter())\n",
         "rootCause": "make_counter_naive 的 bump 里写了 count = count + 1。函数内的赋值让 count 成为 bump 的局部变量，右侧读取时这个局部名字还没有绑定，于是抛 UnboundLocalError: cannot access local variable 'count' where it is not associated with a value。外层函数确实有 count，但那不影响编译期的判断：赋值语句一出现，这个名字就被划进内层局部作用域了，闭包细胞根本没建立起来。",
-        "fix": "在内层函数里声明 nonlocal count，让赋值落到外层那个绑定上：\n\ndef bump():\n    nonlocal count\n    count += 1\n    return count\n\nnonlocal 必须写在函数体最前面、任何使用该名字的语句之前，而且它要求外层函数作用域里已经存在 count，否则直接 SyntaxError: no binding for nonlocal 'count' found。若目标其实是模块全局变量就改用 global；若只是读取外层变量，则什么声明都不需要。",
-        "fixed_code": "def make_counter(start):\n    count = start\n\n    def bump():\n        nonlocal count\n        count += 1\n        return count\n\n    def read():\n        return count\n\n    return bump, read\n\n\nbump, read = make_counter(0)\nprint(bump(), bump())\nprint(read())\n"
+        "fix": "在内层函数里声明 nonlocal count，让赋值落到外层那个绑定上：\n\ndef bump():\n    nonlocal count\n    count += 1\n    return count\n\nnonlocal 必须写在函数体最前面、任何使用该名字的语句之前，而且它要求外层函数作用域里已经存在 count，否则直接 SyntaxError: no binding for nonlocal 'count' found。若目标其实是模块全局变量就改用 global；若只是读取外层变量，则什么声明都不需要。"
       },
       "code_task": {
         "prompt": "实现 make_counter(start)：返回 (bump, read) 两个闭包，bump(step=1) 把外层计数加上 step 后返回新值，read() 只读当前值。要求 bump 里用 nonlocal 重绑定外层变量，read 里不出现 nonlocal。",
@@ -525,8 +523,7 @@
         "prompt": "找出下面代码的问题，说明根因并给出修法",
         "code": "def make_logger():\n    def log(entry):\n        history.append(entry)\n        return len(history)\n\n    return log\n\n\nhistory = []\n\nfirst = make_logger()\nsecond = make_logger()\nprint(first(\"a\"))\nprint(second(\"b\"))\nprint(len(history))\n",
         "rootCause": "history 定义在模块层，是全局变量而不是外层函数的局部变量。make_logger 里的 log 引用它得到的是全局查找，根本没有建立闭包细胞，两次 make_logger() 返回的 log 都写同一个全局列表，所以是 1、2、len(history) 也是 2——两个独立的 logger 共享了同一份状态，第一条日志也没有随“独立的一个 logger”隔离。把状态放在模块层，就等于让所有实例共享。",
-        "fix": "把状态移进工厂函数的局部作用域，让它被提升为细胞，随每次 make_logger() 调用新建一份：\n\ndef make_logger():\n    history = []\n\n    def log(entry):\n        history.append(entry)\n        return len(history)\n\n    def count():\n        return len(history)\n\n    return log, count\n\n这样两个 logger 的 count() 分别是 1 和 1，互不干扰。若确实需要共享全局历史，就由调用方显式传入同一个列表作为参数，把共享写成看得见的依赖，而不是藏在模块作用域里。",
-        "fixed_code": "def make_logger():\n    history = []\n\n    def log(entry):\n        history.append(entry)\n        return len(history)\n\n    def count():\n        return len(history)\n\n    return log, count\n\n\nfirst_log, first_count = make_logger()\nsecond_log, second_count = make_logger()\nprint(first_log(\"a\"))\nprint(second_log(\"b\"))\nprint(first_count(), second_count())\n"
+        "fix": "把状态移进工厂函数的局部作用域，让它被提升为细胞，随每次 make_logger() 调用新建一份：\n\ndef make_logger():\n    history = []\n\n    def log(entry):\n        history.append(entry)\n        return len(history)\n\n    def count():\n        return len(history)\n\n    return log, count\n\n这样两个 logger 的 count() 分别是 1 和 1，互不干扰。若确实需要共享全局历史，就由调用方显式传入同一个列表作为参数，把共享写成看得见的依赖，而不是藏在模块作用域里。"
       },
       "code_task": {
         "prompt": "实现 make_logger(prefix)：每次调用创建一份独立的日志状态，返回 (log, count)。log(message) 追加 \"prefix:message\" 并返回当前条数；count() 返回条数。要求两份日志状态互不影响，且外层函数返回之后状态继续可用。",
@@ -564,13 +561,13 @@
         }
       ],
       "concept": {
-        "prompt": "循环里创建的闭包为什么全用同一个值？三种常见修法分别怎么做到即时捕获？",
+        "prompt": "闭包的细胞（cell）是什么时候创建的？在调试器里它长什么样、怎么读？为什么循环里创建的闭包全都共享同一个细胞？",
         "answer": [
-          "循环不会为每次迭代新建作用域，同一个变量（细胞）被所有闭包共享，闭包里读到的值要等调用时才去细胞取，所以全部取到循环结束后的最后一个值",
-          "修法一是默认参数 def f(i=i)：在定义函数那一刻把当前值复制进参数默认值，调用时不再看细胞，属于即时捕获",
-          "修法二是工厂函数：外层每次调用建立新的局部变量细胞，内层函数引用它，每次迭代得到各自的细胞",
-          "修法三是 functools.partial：partial(fn, i) 在创建对象时就把 i 的当前对象存进 .args，调用时再作为参数传入，同样是即时捕获",
-          "三种修法都把“取值时刻”提前到定义或创建对象的那一刻，输出应为 0、1、2，同一个循环变量细胞仍然活到循环之后"
+          "细胞不在定义内层函数时创建，而在外层作用域执行到“被内层引用的那个局部名”第一次绑定时生成：执行到 count = 0（或推导式的循环变量被赋值）那一刻，这个槽位从普通局部变量提升为 cell，之后不会为每次迭代重建",
+          "调试器里看不到普通栈槽，值藏在细胞里：pdb 里 p i 是解释器替你解包后的当前值，p __closure__ 能看到内层函数的细胞元组，p __closure__[0].cell_contents 才是真正保存的绑定；frame.f_locals[\"i\"] 读到的同样是 cell_contents",
+          "细胞的名单在编译期就写在 co_freevars（内层）与 co_cellvars（外层）里，运行期的 __closure__ 按同一顺序排列；据此可以在调试器里判断某个名字到底是局部变量还是自由变量",
+          "循环只有一次作用域，同一个名字只有一个细胞：每次迭代只是给同一个细胞重新绑定值，所有 lambda 的 __closure__ 指向同一个 cell，所以调用时全都读到循环结束后的最后一个值",
+          "想知道“值是什么时候定下来的”就看细胞在那一刻的内容：要即时捕获就把它复制到默认参数（存进函数的 __defaults__）、工厂函数新建的独立细胞、或 partial.args 里，而不是继续读循环变量那个细胞"
         ]
       },
       "predict": {
@@ -588,19 +585,19 @@
         "prompt": "找出下面代码的问题，说明根因并给出修法",
         "code": "def make_multipliers(factors):\n    return [lambda value: value * factor for factor in factors]\n\n\nmultipliers = make_multipliers([1, 2, 3])\nprint([multiply(10) for multiply in multipliers])\n",
         "rootCause": "列表推导式里的 lambda 都闭包了同一个循环变量 factor，推导式本身不共享外层作用域但同一个推导式内只有一份 factor 细胞。推导式结束后 factor 绑定到最后一个元素 3，之后才调用这些 lambda，于是每个都算 value * 3，[10, 20, 30] 变成 [30, 30, 30]。问题不在 lambda 的写法，而在所有闭包共用一个变量细胞、取值被推迟到调用时。",
-        "fix": "让每次迭代产生一个新的绑定，再让闭包引用那个绑定。用工厂函数：\n\ndef make_multipliers(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n也可以保留闭包但改默认参数：lambda value, factor=factor: value * factor。若只是要固定一个实参，还可以用 partial(operator.mul, ...) 之类把参数在创建时绑定好。改完 [multiply(10) for multiply in make_multipliers([1, 2, 3])] 得到 [10, 20, 30]。",
-        "fixed_code": "def make_multipliers(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n\nmultipliers = make_multipliers([1, 2, 3])\nprint([multiply(10) for multiply in multipliers])\nprint([multiply(10) for multiply in make_multipliers([4, 5])])\n"
+        "fix": "让每次迭代产生一个新的绑定，再让闭包引用那个绑定。用工厂函数：\n\ndef make_multipliers(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n也可以保留闭包但改默认参数：lambda value, factor=factor: value * factor。若只是要固定一个实参，还可以用 partial(operator.mul, ...) 之类把参数在创建时绑定好。改完 [multiply(10) for multiply in make_multipliers([1, 2, 3])] 得到 [10, 20, 30]。"
       },
       "code_task": {
-        "prompt": "实现 make_multipliers(factors)：返回与 factors 等长的函数列表，第 k 个函数是闭包，调用 multiply(value) 返回 value 乘 factors[k]。要求任意时刻调用结果都不受循环变量当前值影响。",
+        "prompt": "用三种修法各实现一遍 make_multipliers(factors)：① 默认参数绑定 lambda value, factor=factor: value * factor；② 工厂函数 build(factor) 返回闭包；③ functools.partial(multiply, factor)。三种都返回与 factors 等长的函数列表，第 k 个函数 multiply(value) 返回 value * factors[k]。用 unittest 验证三种实现都把“取值时刻”固定在创建/定义那一刻：与 factors 逐项对应、调用顺序无关、空列表、长度，以及事后原地改动 factors 也不影响已经建好的函数。",
         "acceptance": [
-          "make_multipliers([1, 2, 3]) 的三个函数调用 multiply(10) 分别得到 10、20、30",
-          "先调用这些函数再重复调用，结果不变，说明捕获的值没有被循环变量覆盖",
-          "make_multipliers([]) 返回空列表",
-          "返回列表长度等于输入长度，例如 5 个因子得到 5 个函数",
+          "三种实现（默认参数、工厂函数、functools.partial）都返回与输入等长的函数列表，空输入返回空列表",
+          "三种实现的 make_multipliers([1, 2, 3]) 第 k 个函数 multiply(10) 分别得到 10、20、30",
+          "调用顺序无关：先调用后面的函数、再回头调用前面的，结果不变，说明取值不发生在调用时",
+          "工厂函数版本闭包的 co_freevars 是 ('factor',)，partial 版本的 .args 里存着创建时的 factor，默认参数版本把值存在 __defaults__ 里",
+          "创建好函数列表之后再原地改动 factors（如 factors[0] = 99），三种实现的结果都不变，证明是即时捕获而不是读同一个循环变量细胞",
           "make_multipliers([1, 2, 3, 4]) 的四个函数 multiply(1) 依次得到 1、2、3、4"
         ],
-        "reference": "import unittest\n\n\ndef make_multipliers(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n\nclass LateBindingTest(unittest.TestCase):\n    def test_each_function_uses_its_own_factor(self):\n        multipliers = make_multipliers([1, 2, 3])\n        self.assertEqual([multiply(10) for multiply in multipliers], [10, 20, 30])\n\n    def test_calls_do_not_change_captured_values(self):\n        multipliers = make_multipliers([2, 4])\n        multipliers[0](1)\n        multipliers[1](1)\n        self.assertEqual(multipliers[0](5), 10)\n        self.assertEqual(multipliers[1](5), 20)\n\n    def test_empty_factors(self):\n        self.assertEqual(make_multipliers([]), [])\n\n    def test_function_count_matches_input(self):\n        self.assertEqual(len(make_multipliers([1, 2, 3, 4, 5])), 5)\n\n    def test_longer_input_still_maps_correctly(self):\n        multipliers = make_multipliers([1, 2, 3, 4])\n        self.assertEqual([multiply(1) for multiply in multipliers], [1, 2, 3, 4])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import functools\nimport unittest\n\n\ndef multiply(factor, value):\n    return value * factor\n\n\ndef make_with_default(factors):\n    return [lambda value, factor=factor: value * factor for factor in factors]\n\n\ndef make_with_factory(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n\ndef make_with_partial(factors):\n    return [functools.partial(multiply, factor) for factor in factors]\n\n\nMAKERS = (make_with_default, make_with_factory, make_with_partial)\n\n\nclass LateBindingTest(unittest.TestCase):\n    def test_each_maker_maps_each_factor(self):\n        for maker in MAKERS:\n            with self.subTest(maker=maker.__name__):\n                multipliers = maker([1, 2, 3])\n                self.assertEqual([multiply(10) for multiply in multipliers], [10, 20, 30])\n\n    def test_call_order_does_not_matter(self):\n        for maker in MAKERS:\n            with self.subTest(maker=maker.__name__):\n                first, second = maker([2, 4])\n                self.assertEqual(second(5), 20)\n                self.assertEqual(first(5), 10)\n\n    def test_empty_and_length(self):\n        for maker in MAKERS:\n            with self.subTest(maker=maker.__name__):\n                self.assertEqual(maker([]), [])\n                self.assertEqual(len(maker([1, 2, 3, 4, 5])), 5)\n\n    def test_longer_input_maps_correctly(self):\n        for maker in MAKERS:\n            with self.subTest(maker=maker.__name__):\n                multipliers = maker([1, 2, 3, 4])\n                self.assertEqual([multiply(1) for multiply in multipliers], [1, 2, 3, 4])\n\n    def test_value_is_fixed_at_creation_time(self):\n        for maker in MAKERS:\n            with self.subTest(maker=maker.__name__):\n                factors = [1, 2, 3]\n                multipliers = maker(factors)\n                factors[0] = 99\n                self.assertEqual([multiply(10) for multiply in multipliers], [10, 20, 30])\n\n    def test_three_strategies_capture_in_three_places(self):\n        self.assertEqual(make_with_factory([7])[0].__code__.co_freevars, (\"factor\",))\n        self.assertEqual(make_with_partial([7])[0].args, (7,))\n        self.assertEqual(make_with_default([7])[0].__defaults__, (7,))\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
       },
       "pitfalls": [
         "以为每次循环迭代会创建新的作用域（循环本身不会，只有函数和推导式才有自己的作用域）",
@@ -650,8 +647,7 @@
         "prompt": "找出下面代码的问题，说明根因并给出修法",
         "code": "def make_counter():\n    state = {\"count\": 0}\n\n    def increment():\n        state[\"count\"] += 1\n        return state[\"count\"]\n\n    def snapshot():\n        return state[\"count\"]\n\n    def reset():\n        state = {\"count\": 0}\n        return state[\"count\"]\n\n    return increment, snapshot, reset\n\n\nincrement, snapshot, reset = make_counter()\nprint(increment())\nprint(snapshot())\nprint(reset())\nprint(snapshot())\nprint(increment())\n",
         "rootCause": "reset 里写了 state = {\"count\": 0}，函数内对 state 赋值让 state 变成 reset 的局部变量，不再是自由变量。于是 reset 每次新建一个只属于它自己的字典并返回 0，外层的共享细胞完全没被碰到；increment 继续在旧字典上自增，snapshot() 又读到旧值，输出是 1、1、0、1、2。reset 看起来返回了 0，实际只是把一个局部变量清零，共享状态从未被重置。",
-        "fix": "原地修改共享的那个可变对象，让所有闭包看到同一份变化：\n\ndef reset():\n    state[\"count\"] = 0\n    return state[\"count\"]\n\n如果要重置的是不可变值（int、str），就必须在 reset 里声明 nonlocal count 并重新绑定：\n\ndef reset():\n    nonlocal count\n    count = 0\n    return count\n\n修好后依次得到 1、1、0、0、1，reset 之后的 snapshot() 确实变成 0。",
-        "fixed_code": "def make_counter():\n    state = {\"count\": 0}\n\n    def increment():\n        state[\"count\"] += 1\n        return state[\"count\"]\n\n    def snapshot():\n        return state[\"count\"]\n\n    def reset():\n        state[\"count\"] = 0\n        return state[\"count\"]\n\n    return increment, snapshot, reset\n\n\nincrement, snapshot, reset = make_counter()\nprint(increment())\nprint(snapshot())\nprint(reset())\nprint(snapshot())\nprint(increment())\n"
+        "fix": "原地修改共享的那个可变对象，让所有闭包看到同一份变化：\n\ndef reset():\n    state[\"count\"] = 0\n    return state[\"count\"]\n\n如果要重置的是不可变值（int、str），就必须在 reset 里声明 nonlocal count 并重新绑定：\n\ndef reset():\n    nonlocal count\n    count = 0\n    return count\n\n修好后依次得到 1、1、0、0、1，reset 之后的 snapshot() 确实变成 0。"
       },
       "code_task": {
         "prompt": "实现 (increment, snapshot, reset) 三个闭包，共享同一份计数状态：increment() 计数加一并返回新值，snapshot() 返回当前值且不改变状态，reset() 清零后返回 0。另外实现 make_accumulator()，用 nonlocal 重绑定实现 (add, read)，add(amount) 累加并返回总和。",
@@ -711,8 +707,7 @@
         "prompt": "找出下面代码的问题，说明根因并给出修法",
         "code": "def make_retry(fn, limit):\n    attempts = 0\n\n    def call(value):\n        attempts = attempts + 1\n        outcome = fn(value)\n        if outcome is not None:\n            return outcome\n        return \"give-up\"\n\n    def attempts_used():\n        return attempts\n\n    return call, attempts_used\n\n\ndef always_fails(value):\n    return None\n\n\ncall, attempts_used = make_retry(always_fails, 3)\nprint(call(\"job\"), attempts_used())\n",
         "rootCause": "call 里写了 attempts = attempts + 1，赋值让 attempts 成为 call 的局部变量，右侧读取时这个局部名字还没绑定，所以第一次调用就抛 UnboundLocalError: cannot access local variable 'attempts' where it is not associated with a value。attempts_used 虽然能读外层的 attempts（它是自由变量），但根本走不到那一步；工厂的“带状态重试”因为这一行彻底不可用。",
-        "fix": "在 call 里声明 nonlocal attempts，让累加作用到工厂的细胞上；同时把“真正重试”做出来，在 limit 次内循环调用直到拿到非 None：\n\ndef call(value):\n    nonlocal attempts\n    for _ in range(limit):\n        attempts += 1\n        outcome = fn(value)\n        if outcome is not None:\n            return outcome\n    return \"give-up\"\n\n修好后 always_fails 在 limit=2 时返回 give-up 且 attempts_used() 是 2；换成第三次才成功的函数则返回转换后的结果、attempts_used() 是 3。注意复习题里不要用 sleep 或真实耗时来做重试判断。",
-        "fixed_code": "def make_retry(fn, limit):\n    attempts = 0\n\n    def call(value):\n        nonlocal attempts\n        for _ in range(limit):\n            attempts += 1\n            outcome = fn(value)\n            if outcome is not None:\n                return outcome\n        return \"give-up\"\n\n    def attempts_used():\n        return attempts\n\n    return call, attempts_used\n\n\ndef always_fails(value):\n    return None\n\n\ndef succeeds_on_third(value):\n    if attempts_holder[0] < 3:\n        attempts_holder[0] += 1\n        return None\n    return value.upper()\n\n\nattempts_holder = [0]\ncall, attempts_used = make_retry(always_fails, 2)\nprint(call(\"job\"), attempts_used())\nattempts_holder[0] = 0\ncall, attempts_used = make_retry(succeeds_on_third, 5)\nprint(call(\"job\"), attempts_used())\n"
+        "fix": "在 call 里声明 nonlocal attempts，让累加作用到工厂的细胞上；同时把“真正重试”做出来，在 limit 次内循环调用直到拿到非 None：\n\ndef call(value):\n    nonlocal attempts\n    for _ in range(limit):\n        attempts += 1\n        outcome = fn(value)\n        if outcome is not None:\n            return outcome\n    return \"give-up\"\n\n修好后 always_fails 在 limit=2 时返回 give-up 且 attempts_used() 是 2；换成第三次才成功的函数则返回转换后的结果、attempts_used() 是 3。注意复习题里不要用 sleep 或真实耗时来做重试判断。"
       },
       "code_task": {
         "prompt": "实现三个工厂：make_counter(start=0) 返回 (bump, reset)，bump(step=1) 累加并返回新值、reset() 拨回 start；make_quota(limit) 返回 (check, used_count)，check(amount) 在额度足够时累加并返回 True、否则返回 False 且不改变已用量；make_retry(callable_, limit) 返回 (call, attempts_used)，call 最多尝试 limit 次直到拿到非 None 结果，否则返回 'give-up after <limit>'。",
@@ -771,8 +766,7 @@
         "prompt": "找出下面代码的问题，说明根因并给出修法",
         "code": "from functools import partial\n\n\ndef send(channel, message):\n    return f\"[{channel}] {message}\"\n\n\nslack = partial(send, \"slack\")\nprint(slack(\"hi\"))\nprint(slack(\"bye\", \"again\"))\n",
         "rootCause": "slack 已经把 message 之外的位置参数固定成 'slack'（对应参数 channel），调用时再传两个位置参数就变成 send('slack', 'bye', 'again')，send 只接受两个位置参数，于是抛 TypeError: send() takes 2 positional arguments but 3 were given。把 partial 预绑定的位置参数误当成可以随意追加的默认参数，就会在调用处多塞一个实参。",
-        "fix": "调用 partial 时只补齐尚未绑定的参数：slack('bye')。要固定住某个关键字参数就在创建时写 partial(send, message='hi')，之后按位置传 channel；如果确实想让调用方可以覆盖绑定的参数，就再传同名关键字（重复给同一位置参数会抛 TypeError: got multiple values for argument）。用 print(slack.args) 能看到已绑定的位置参数，用 slack.keywords 能看到关键字参数，便于确认签名。",
-        "fixed_code": "from functools import partial\n\n\ndef send(channel, message):\n    return f\"[{channel}] {message}\"\n\n\nslack = partial(send, \"slack\")\nprint(slack(\"hi\"))\nprint(slack(\"bye\"))\nprint([slack(value) for value in [\"one\", \"two\"]])\nprint(slack.func is send, slack.args)\n"
+        "fix": "调用 partial 时只补齐尚未绑定的参数：slack('bye')。要固定住某个关键字参数就在创建时写 partial(send, message='hi')，之后按位置传 channel；如果确实想让调用方可以覆盖绑定的参数，就再传同名关键字（重复给同一位置参数会抛 TypeError: got multiple values for argument）。用 print(slack.args) 能看到已绑定的位置参数，用 slack.keywords 能看到关键字参数，便于确认签名。"
       },
       "code_task": {
         "prompt": "实现 sort_records(records, key, reverse=False) 返回排序后的新列表；再用 partial 基于它构造只差一个 key 的可调用对象；实现 describe_partial(callable_)，返回 {'name': 原函数名, 'args': 归一化后的绑定位置参数元组, 'keywords': 排序后的绑定关键字字典}，其中参数里的可调用对象用它的 __name__ 表示、其他值原样保留。",
@@ -1046,7 +1040,7 @@
         },
         {
           "taskId": "3403",
-          "relation": "exercises"
+          "relation": "introduces"
         },
         {
           "taskId": "3504",
@@ -1078,9 +1072,9 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "def tag(fn):\n    def wrapper(*args, **kwargs):\n        return \"[[\" + str(fn(*args, **kwargs)) + \"]]\"\n    return wrapper\n\n\n@tag\ndef upper(text):\n    return text.upper()\n\n\nprint(upper(\"a\"))\n",
-        "rootCause": "@tag 写在 def upper 上面，装饰一结束 upper 这个名字指向的就是 tag 的 wrapper；wrapper 返回的是加工过的字符串 '[[' + ... + ']]'，所以 upper(\"a\") 得到 '[[A]]'。原本“先转大写、后打标签”的两步流程，因为函数名被替换而再也拿不到中间的纯大写结果；在返回值上继续链式调用字符串方法，拿到的也是带标签的结果。",
-        "fix": "保留原函数并显式命名装饰结果：def upper(text): return text.upper() 之后写 tagged_upper = tag(upper)，于是 upper(\"a\") 仍是 'A'，tagged_upper(\"a\") 是 '[[A]]'。若整条流水线本来就要标签在后，就用叠加顺序表达（把 @tag 放在 @upper 上面，让标签最后加工），或用显式的组合函数，别让一个名字同时承担两个角色。"
+        "code": "def as_list(fn):\n    def wrapper(*args, **kwargs):\n        return [fn(*args, **kwargs)]\n    return wrapper\n\n\ndef shouted(fn):\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs).upper()\n    return wrapper\n\n\n@shouted\n@as_list\ndef label(text):\n    return text\n\n\nprint(label(\"hi\"))",
+        "rootCause": "两层装饰器的顺序写反了。@shouted 写在 @as_list 上面，展开是 label = shouted(as_list(label))：应用顺序自下而上，先套 as_list、再套 shouted。调用 label(\"hi\") 时从最外层进入，shouted 的 wrapper 先跑，它拿到的已经是 as_list 返回的列表 [\"hi\"]，却对列表调用 .upper()，于是抛 AttributeError: 'list' object has no attribute 'upper'。根因是 as_list 改变了返回类型，它必须待在装饰栈最外层（@as_list 写在上面），让 shouted 先处理字符串——谁在外面，谁就接住内层已经加工好的返回值。",
+        "fix": "交换两层装饰器的书写顺序，让 as_list 在最外层：\n\n    @as_list\n    @shouted\n    def label(text):\n        return text\n\n\n    print(label(\"hi\"))      # ['HI']\n\n展开成 label = as_list(shouted(label))：调用时 as_list 的 wrapper 先进入，它调用 shouted 的 wrapper 拿到 \"HI\"，再包成 [\"HI\"]；离开顺序与进入相反，shouted 先返回、as_list 最后收尾。记住 @ 自下而上应用、调用自上而下进入，外层装饰器面对的是内层装饰器加工后的返回值。"
       },
       "code_task": {
         "prompt": "实现装饰器工厂 note(label)：每次调用按顺序把 '进入 <label>' 与 '离开 <label>' 追加到模块级 trace 列表，并转发参数与返回值。用 top = note('top')、bottom = note('bottom') 验证叠加顺序：@top 在 @bottom 上面时进入自上而下、离开自下而上；交换后顺序相反。",
@@ -1194,9 +1188,9 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "def counted(fn):\n    def wrapper(*args, **kwargs):\n        wrapper.calls = 0\n        wrapper.calls += 1\n        return fn(*args, **kwargs)\n    return wrapper\n\n\n@counted\ndef add(a, b):\n    return a + b\n\n\n@counted\ndef mul(a, b):\n    return a * b\n\n\nadd(1, 2)\nadd(1, 2)\nmul(3, 4)\nprint(add.calls)\nprint(mul.calls)\n",
-        "rootCause": "wrapper.calls = 0 写在 wrapper 函数体里，于是每次调用先把计数清零再 +1：add 调用两次仍打印 1，mul 调用一次也打印 1，累计语义被清零覆盖。这不是共享问题，而是初始化时机放错——重置状态属于装饰阶段的一次性动作，不该出现在每次调用都会执行的路径上。",
-        "fix": "把初始化移到 wrapper 定义之后、返回之前：wrapper.calls = 0 放在装饰器函数体里。这样每个被装饰函数在装饰时各得到一份独立计数，wrapper.calls += 1 才能累加出 2 与 1。如果确实需要每次调用都从零开始（比如记录本次调用的分段次数），就把状态放进局部变量而不是函数属性，别把“累计值”和“本次调用值”混用同一个名字。"
+        "code": "STATE = {\"calls\": 0}\n\n\ndef counted(fn):\n    def wrapper(*args, **kwargs):\n        STATE[\"calls\"] += 1\n        return fn(*args, **kwargs)\n    wrapper.counter = STATE\n    return wrapper\n\n\n@counted\ndef add(a, b):\n    return a + b\n\n\n@counted\ndef mul(a, b):\n    return a * b\n\n\nadd(1, 2)\nadd(3, 4)\nmul(2, 3)\nprint(add.counter[\"calls\"])\nprint(mul.counter[\"calls\"])\nprint(add.counter is mul.counter)",
+        "rootCause": "想要“每个被装饰函数各有一份调用计数”，却把状态放进了模块级字典 STATE。装饰器 counted 每次执行时都只是把同一个 STATE 挂到各自 wrapper 的 counter 属性上，于是 add 与 mul 的计数其实是同一份：add 调两次、mul 调一次之后 STATE[\"calls\"] 是 3，两行都打印 3，add.counter is mul.counter 为 True。这正是“装饰器共享状态”的坑——状态建在哪一层，决定了它被谁共享：建在模块级或装饰器实例上会被所有被装饰函数共用；建在装饰器函数体里（每装饰一次执行一次、各新建一份闭包）才会各自独立。",
+        "fix": "把状态移到装饰器函数体里：每装饰一个函数就执行一次 counted，各自新建一份 counter 闭包，再挂到自己的 wrapper 上。修好后 add 是 2、mul 是 1，两个 counter 也不再是同一个对象：\n\n    def counted(fn):\n        counter = {\"calls\": 0}\n\n        def wrapper(*args, **kwargs):\n            counter[\"calls\"] += 1\n            return fn(*args, **kwargs)\n\n        wrapper.counter = counter\n        return wrapper\n\n若确实要让多个函数共享同一份计数（例如全局限流），那就把 STATE 显式命名成共享对象、在命名上体现共享语义，别让“独立计数”的期望落在共享容器上。"
       },
       "code_task": {
         "prompt": "实现基于类实例的可调用装饰器 Counter：每个实例维护自己的 calls 计数，__call__(func) 返回包装函数并把该实例挂到 wrapper.counter 上，使不同被装饰函数互不影响。",
@@ -1287,7 +1281,7 @@
         },
         {
           "taskId": "3503",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -1406,11 +1400,11 @@
         },
         {
           "taskId": "3403",
-          "relation": "exercises"
+          "relation": "introduces"
         },
         {
           "taskId": "3503",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
@@ -1592,7 +1586,7 @@
       "taskRefs": [
         {
           "taskId": "3404",
-          "relation": "introduces"
+          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1736,9 +1730,9 @@
       },
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
-        "code": "import inspect\nfrom types import MappingProxyType\n\nREGISTRY = {}\nHANDLERS = MappingProxyType(REGISTRY)\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\ndef to_upper(source, options):\n    return source.upper()\n\n\n@register(\"upper\")\ndef read_upper(source):\n    return to_upper(source)\n\n\n@register(\"upper\")\ndef read_upper_again(source):\n    return source.upper()\n\n\nprint(list(HANDLERS))\nprint(HANDLERS[\"upper\"].__name__)\nprint(read_upper is read_upper_again)\ntry:\n    print(read_upper(\"a\"))\nexcept TypeError as exc:\n    print(type(exc).__name__)\ntry:\n    print(HANDLERS[\"xml\"](\"a\"))\nexcept KeyError as exc:\n    print(type(exc).__name__)",
-        "rootCause": "三处都缺失。其一，两次 @register(\"upper\") 没有任何重复检查，read_upper 被 read_upper_again 静默覆盖，HANDLERS[\"upper\"].__name__ 变成 read_upper_again、read_upper is read_upper_again 为 False；其二，to_upper(source, options) 的签名在注册时根本没被检查，直到调用 read_upper(\"a\") 才抛 TypeError（missing 1 required positional argument: 'options'），把错误推迟到运行时；其三，查表 HANDLERS[\"xml\"] 抛 KeyError 时没有补充可用名字。",
-        "fix": "注册时同时做签名校验与重复检查，并且先校验后写表：\n\n    def _check_signature(name, handler):\n        parameters = [\n            p for p in inspect.signature(handler).parameters.values()\n            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)\n        ]\n        if len(parameters) != 1:\n            raise RegistryError(\n                f\"处理器 {name!r} 需要恰好一个位置参数，实际签名是 {inspect.signature(handler)}\"\n            )\n\n    def register(name):\n        def decorator(handler):\n            _check_signature(name, handler)\n            if name in REGISTRY:\n                raise RegistryError(f\"重复注册的任务名：{name!r}\")\n            REGISTRY[name] = handler\n            return handler\n        return decorator\n\n修复后：第二次注册抛 RegistryError 且 first 处理器保留，签名不符的处理器在注册时就被拒绝，未知任务仍抛 KeyError，只读视图的赋值依旧抛 TypeError，合规的 read_upper(\"abc\") 正常返回 ABC。"
+        "code": "import inspect\nfrom types import MappingProxyType\n\nREGISTRY = {}\nHANDLERS = MappingProxyType(REGISTRY)\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\ndef to_upper(source, options):\n    return source.upper()\n\n\n@register(\"upper\")\ndef read_upper(source):\n    return to_upper(source)\n\n\n@register(\"upper\")\ndef read_upper_again(source):\n    return source.upper()\n\n\n@register(\"number\")\ndef read_number(source, base):\n    return int(source, base)\n\n\nprint(list(HANDLERS))\nprint(HANDLERS[\"upper\"].__name__)\nprint(read_upper is read_upper_again)\ntry:\n    print(read_upper(\"a\"))\nexcept TypeError as exc:\n    print(type(exc).__name__)\ntry:\n    print(HANDLERS[\"xml\"](\"a\"))\nexcept KeyError as exc:\n    print(type(exc).__name__)",
+        "rootCause": "四处问题叠加。其一，两次 @register(\"upper\") 没有任何重复检查，后注册的 read_upper_again 静默覆盖 read_upper：HANDLERS[\"upper\"].__name__ 变成 read_upper_again，read_upper is read_upper_again 为 False。其二，注册阶段不校验 handler 签名，read_number(source, base) 这种要两个位置参数的处理器也被照单收下、留在注册表里，坏签名要等到真正调用才可能暴露。注意注册进来的是 read_upper，签名校验只能管住 read_upper 这一层；to_upper 是它内部调用的 helper，两者失配必须在调用侧修，注册校验拦不住。其三，read_upper 内部写的是 to_upper(source)，而 to_upper 需要 (source, options)，所以 read_upper(\"a\") 抛 TypeError: to_upper() missing 1 required positional argument: 'options'，错误被推迟到运行时。其四，查表 HANDLERS[\"xml\"] 抛的是裸 KeyError，消息里没有可用名字。",
+        "fix": "注册时先做签名校验、再查重复、最后才写表；同时补上调用侧缺的参数；未知任务包一层带可用名字的 KeyError。修复后的完整程序：\n\n    import inspect\n    from types import MappingProxyType\n\n    REGISTRY = {}\n    HANDLERS = MappingProxyType(REGISTRY)\n\n\n    class RegistryError(ValueError):\n        \"\"\"注册表相关错误：继承 ValueError，方便调用方统一捕获。\"\"\"\n\n\n    def _check_signature(name, handler):\n        parameters = [\n            p for p in inspect.signature(handler).parameters.values()\n            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)\n        ]\n        if len(parameters) != 1 or parameters[0].name != \"source\":\n            raise RegistryError(\n                f\"处理器 {name!r} 的签名必须是 (source)，实际是 {inspect.signature(handler)}\"\n            )\n\n\n    def register(name):\n        def decorator(handler):\n            _check_signature(name, handler)\n            if name in REGISTRY:\n                raise RegistryError(f\"重复注册的任务名：{name!r}\")\n            REGISTRY[name] = handler\n            return handler\n        return decorator\n\n\n    def to_upper(source, options):\n        return source.upper()\n\n\n    def execute(name, source):\n        try:\n            handler = REGISTRY[name]\n        except KeyError:\n            raise KeyError(f\"未知任务 {name!r}，可用：{sorted(REGISTRY)}\") from None\n        return handler(source)\n\n\n    @register(\"upper\")\n    def read_upper(source):\n        return to_upper(source, {})\n\n\n    print(execute(\"upper\", \"abc\"))                      # ABC：调用侧补上 options，TypeError 消失\n\n    try:\n        @register(\"upper\")\n        def read_upper_again(source):\n            return source.upper()\n    except RegistryError as exc:\n        print(type(exc).__name__, \"upper\" in str(exc))  # RegistryError True：重复注册被拒，原处理器保留\n\n    try:\n        @register(\"number\")\n        def read_number(source, base):\n            return int(source, base)\n    except RegistryError as exc:\n        print(type(exc).__name__, \"base\" in str(exc))   # RegistryError True：签名不符在注册阶段被拒\n\n    try:\n        execute(\"xml\", \"a\")\n    except KeyError as exc:\n        print(\"xml\" in str(exc), \"upper\" in str(exc))   # True True：未知任务带可用名字\n\n要点：`_check_signature` 只负责拦住注册进来的 handler；`read_upper` 与 `to_upper` 的调用侧失配（漏传 options）必须在源码里改成 `to_upper(source, {})`，单靠注册校验拦不住——这正是原来那份 fix 没有消除 TypeError 的原因。`RegistryError` 也必须显式定义（继承 ValueError），原片段里它从未出现。"
       },
       "code_task": {
         "prompt": "实现注册表错误处理：register(name) 装饰器在写入前先用 inspect.signature 校验处理器必须是恰好一个名为 source 的位置参数，不符抛自定义 RegistryError；重复名称抛 RegistryError；execute(handlers, name) 查表失败时抛 KeyError 且消息里含未知名字与可用名字列表。用 unittest 覆盖每条验收。",
@@ -1773,13 +1767,13 @@
         },
         {
           "taskId": "3503",
-          "relation": "exercises"
+          "relation": "introduces"
         }
       ],
       "concept": {
         "prompt": "为什么围绕模块级注册表写测试容易互相串状态？怎样让每个测试干净开始？核心处理函数为什么不该依赖注册表？用 unittest 怎么测重复注册、未知任务与只读视图？",
         "answer": [
-          "模块级 REGISTRY 在同一个进程里只创建一次，所有测试方法共享它：前一个测试注册的名字会留给后一个，重复注册是否报错、len(HANDLERS) 是多少都取决于测试执行顺序",
+          "模块级 REGISTRY 在同一个进程里只创建一次，所有测试方法共享它：模块 import 时执行的 @register 会先写进去，之后前一个测试注册的名字也会留给后一个，重复注册是否报错、len(HANDLERS) 是多少都取决于测试执行顺序",
           "用工厂 make_registry() 返回 (register, handlers)：底层 dict 与装饰器闭包在同一作用域创建，在 setUp 里重建，每个测试拿到全新注册表；不要只把 REGISTRY 换成新的而让装饰器仍闭包旧 dict",
           "注册表装饰器只负责登记，核心处理逻辑写成模块级普通函数（如 count_lines(source)），处理器只调用它；这样 count_lines 可以完全脱离注册表单测",
           "用 self.assertRaises 测重复注册（DuplicateTask/ValueError）与未知任务（KeyError），并用 assertIn(名字, str(ctx.exception)) 断言消息里带可用名字（注意 KeyError 的 str 是参数的 repr）",
@@ -1799,7 +1793,7 @@
       "debug": {
         "prompt": "找出下面代码的问题，说明根因并给出修法",
         "code": "import io\nimport unittest\n\nREGISTRY = {}\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\ndef count_lines(source):\n    return len(source.splitlines())\n\n\n@register(\"lines\")\ndef handler(source):\n    return count_lines(source)\n\n\ndef execute(name, source):\n    return REGISTRY[name](source)\n\n\nclass RegistryTest(unittest.TestCase):\n    def test_handler_works(self):\n        @register(\"lines\")\n        def handler(source):\n            return count_lines(source)\n        self.assertEqual(execute(\"lines\", \"a\\nb\"), 2)\n\n    def test_same_thing_again(self):\n        @register(\"lines\")\n        def handler(source):\n            return count_lines(source)\n        self.assertEqual(execute(\"lines\", \"a\\nb\"), 2)\n\n    def test_each_test_starts_empty(self):\n        self.assertEqual(sorted(REGISTRY), [])\n\n\nbuffer = io.StringIO()\nrunner = unittest.TextTestRunner(stream=buffer, verbosity=0)\nresult = runner.run(unittest.defaultTestLoader.loadTestsFromTestCase(RegistryTest))\nprint(\"failures:\", len(result.failures), \"errors:\", len(result.errors))\nprint(buffer.getvalue().strip().splitlines()[-1])",
-        "rootCause": "REGISTRY 是模块级全局 dict，register 闭包写死它，测试类里既不重建也不清理，于是测试之间串状态：test_handler_works 注册的 \"lines\" 一直留到 test_each_test_starts_empty，后者断言 sorted(REGISTRY) == [] 直接失败。同时处理逻辑 count_lines 被包在装饰出来的 handler 里，只能通过注册表间接触发，第一个测试等于重复验证同一件事，没有对核心逻辑做独立单测。",
+        "rootCause": "REGISTRY 是模块级全局 dict，register 闭包写死它；测试类既不重建也不隔离。unittest 按方法名字母序执行，test_each_test_starts_empty 排在第一位，可它一上来就失败：原因不是别的测试串进来的，而是模块级 @register(\"lines\") 在 import 阶段就执行了装饰器、已经把 \"lines\" 写进 REGISTRY，于是 sorted(REGISTRY) 拿到 ['lines']，断言 == [] 直接失败。也就是说，注册表在任何一个测试方法运行之前就被污染，测试根本没有干净起点；后面的 test_handler_works、test_same_thing_again 又各自覆盖同名 \"lines\"，把“测试之间串状态”这件事继续掩盖下去。同时处理逻辑 count_lines 被包在装饰出来的 handler 里，只能通过注册表间接触发，两个测试等于重复验证同一件事，没有对核心逻辑做独立单测。",
         "fix": "把注册表改成工厂内建、由 setUp 重建，并把核心逻辑抽成模块级函数：\n\n    def make_registry():\n        table = {}\n        handlers = MappingProxyType(table)\n\n        def register(name):\n            def decorator(handler):\n                if name in table:\n                    raise ValueError(f\"重复注册：{name}\")\n                table[name] = handler\n                return handler\n            return decorator\n\n        return register, handlers\n\n    def count_lines(source):\n        return len(source.splitlines())\n\n    class RegistryTest(unittest.TestCase):\n        def setUp(self):\n            self.register, self.handlers = make_registry()\n\n修复后每个测试从空表开始（test_each_test_starts_empty 通过），重复注册会报错而不是静默覆盖，并且可以直接断言 count_lines(\"a\\nb\\nc\") == 3，核心处理函数不再依赖注册表。"
       },
       "code_task": {
