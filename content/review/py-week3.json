@@ -1,0 +1,1948 @@
+{
+  "schemaVersion": 1,
+  "week": 3,
+  "level": "实用",
+  "points": [
+    {
+      "code": "py.func.first-class",
+      "title": "高阶函数：把函数当值传递、存储、返回",
+      "minutes": 20,
+      "module": "函数",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3101",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "Python 里的函数为什么能当普通值用？把函数存进字典再取出来调用，中间到底发生了什么？",
+        "answer": [
+          "def 语句执行的唯一结果是创建一个 function 对象再绑定名字，函数是普通对象，可以赋值、放进 list/dict、当参数传、当返回值返回",
+          "从容器里取值不会调用函数：handlers[\"greet\"] 只是取出那个函数对象，再写 (...) 才是调用，漏写括号拿到的是函数而不是结果",
+          "高阶函数就是接收函数或返回函数的函数：把步骤作为参数传进去，能把做什么与怎么组合分开",
+          "字典分派表用字符串名映射到函数对象，替代一长串 if/elif，因此表里存的必须是函数本身，不能是调用结果",
+          "table[\"double\"] is double 为 True，说明容器里保存的是同一个函数对象而不是副本，取出后调用与直接调用完全等价"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每一行里的名字是函数对象还是调用结果",
+        "code": "def double(x):\n    return x * 2\n\n\ndef negate(x):\n    return -x\n\n\ndef apply_twice(func, value):\n    return func(func(value))\n\n\ndef pick(name):\n    return {\"double\": double, \"negate\": negate}[name]\n\n\ntable = {\"double\": double, \"negate\": negate}\nprint(sorted(table))\nprint([table[name](3) for name in (\"double\", \"negate\")])\nprint(apply_twice(double, 3))\nprint(pick(\"negate\")(5))\nprint(double.__name__, table[\"double\"] is double)\nprint([func.__name__ for func in (double, negate)])",
+        "expected": [
+          "['double', 'negate']",
+          "[6, -3]",
+          "12",
+          "-5",
+          "double True",
+          "['double', 'negate']"
+        ],
+        "explain": "table 是把名字映射到函数对象的字典，sorted(table) 只排序键，得到 ['double', 'negate']。table[name](3) 先取出函数对象再调用，double 给 6、negate 给 -3。apply_twice 把函数当参数收下并调用两次，double(double(3)) 是 12。pick 返回函数对象本身，pick('negate')(5) 取出 negate 再调用得到 -5。table['double'] is double 为 True，说明容器里存的是同一个函数对象，不是它的副本。最后一行把两个函数放进元组遍历，读的是各自的 __name__。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def greet(name):\n    return \"hello \" + name\n\n\ndef shout(name):\n    return name.upper()\n\n\nhandlers = {\"greet\": greet(\"amy\"), \"shout\": shout(\"amy\")}\nprint(\"table:\", sorted(handlers))\nprint(handlers[\"greet\"](\"bob\"))",
+        "rootCause": "字典字面量里写的是 greet(\"amy\") 和 shout(\"amy\")，这对括号立刻把函数调用了，存进 handlers 的是返回的字符串 \"hello amy\" 和 \"AMY\"。函数对象在注册那一刻就被丢掉，所以 handlers[\"greet\"](\"bob\") 变成对字符串的调用，抛 TypeError: 'str' object is not callable。分派表要存的是函数本身，调用必须发生在取出之后。",
+        "fix": "去掉注册时的括号，让表里保存函数对象：handlers = {\"greet\": greet, \"shout\": shout}，真正的调用放到分派处 handlers[name](...)。如果注册时确实需要一次预处理的结果，就把它存到另外的字段，不要用它顶替可调用的入口。"
+      },
+      "code_task": {
+        "prompt": "实现三个工具：make_table(pairs) 把 (名字, 函数) 序列收成 {名字: 函数} 字典（同名时后者覆盖前者）；apply_all(funcs, value) 把同一个原始 value 依次交给每个函数并返回结果列表；resolve(table, name) 返回表里的函数对象本身（不调用它），名字不存在时抛 KeyError。",
+        "acceptance": [
+          "make_table 返回的字典里存的是函数对象本身：table[\"double\"] is double 为 True",
+          "同名条目后来者覆盖：make_table([(\"op\", double), (\"op\", negate)])[\"op\"] is negate，调用它得到 -3",
+          "apply_all([double, negate], 3) 返回 [6, -3]，每个函数收到的都是原始值 3 而不是上一步结果",
+          "resolve(table, \"negate\") 返回函数本身，因此 resolve(table, \"negate\")(5) 等于 -5",
+          "resolve 一个不存在的名字抛 KeyError"
+        ],
+        "reference": "import unittest\n\n\ndef double(value):\n    return value * 2\n\n\ndef negate(value):\n    return -value\n\n\ndef make_table(pairs):\n    table = {}\n    for name, func in pairs:\n        table[name] = func\n    return table\n\n\ndef apply_all(funcs, value):\n    return [func(value) for func in funcs]\n\n\ndef resolve(table, name):\n    return table[name]\n\n\nclass DispatchTest(unittest.TestCase):\n    def test_table_stores_function_objects(self):\n        table = make_table([(\"double\", double), (\"negate\", negate)])\n        self.assertIs(table[\"double\"], double)\n        self.assertIs(table[\"negate\"], negate)\n\n    def test_later_pair_overwrites(self):\n        table = make_table([(\"op\", double), (\"op\", negate)])\n        self.assertIs(table[\"op\"], negate)\n        self.assertEqual(table[\"op\"](3), -3)\n\n    def test_apply_all_uses_original_value(self):\n        self.assertEqual(apply_all([double, negate], 3), [6, -3])\n\n    def test_resolve_returns_callable_itself(self):\n        table = make_table([(\"negate\", negate)])\n        func = resolve(table, \"negate\")\n        self.assertIs(func, negate)\n        self.assertEqual(func(5), -5)\n\n    def test_resolve_unknown_name_raises(self):\n        with self.assertRaises(KeyError):\n            resolve({}, \"missing\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "注册表里写成 handlers[\"greet\"] = greet(\"amy\")，存进去的是调用结果而不是函数",
+        "从字典取出函数后忘了写调用括号，把函数对象当成结果打印",
+        "以为函数名不加括号也会执行，或在赋值右边多写了一对括号",
+        "用一长串 if/elif 做分派，而不是把函数存进字典按名字取"
+      ]
+    },
+    {
+      "code": "py.func.callable-protocol",
+      "title": "可调用对象协议 `__call__`",
+      "minutes": 20,
+      "module": "函数",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3101",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "什么样的对象算可调用？在类里定义 __call__ 和不定义有什么差别？实例状态与闭包状态分别放在哪里？",
+        "answer": [
+          "可调用性由类型上有没有 __call__ 决定：callable(x) 检查的就是 type(x) 能否找到名为 __call__ 的属性",
+          "普通函数、lambda、类本身、内建函数都可调用；函数对象自身也带 __call__，inc.__call__(1) 与 inc(1) 等价",
+          "类里定义 __call__ 之后实例也变成可调用对象：adder(5) 被解释成 type(adder).__call__(adder, 5)，第一个参数仍是 self",
+          "只有名字精确写成 __call__（前后各两个下划线）才生效，_call_ 或 __call 只是普通方法，实例依旧不可调用",
+          "与闭包的差别在状态位置：闭包把自由变量存在 __closure__ 单元里、vars() 看不到；__call__ 实例把状态存成普通实例属性，vars(x) 可见且每个实例一份"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每次调用里哪个对象真正被执行",
+        "code": "class Adder:\n    def __init__(self, n):\n        self.n = n\n\n    def __call__(self, value):\n        return value + self.n\n\n\ndef inc(value):\n    return value + 1\n\n\nadder = Adder(10)\nprint(callable(inc), callable(adder))\nprint(callable(Adder), callable(42))\nprint(adder(5), adder.__call__(5))\nprint(hasattr(inc, \"__call__\"), hasattr(adder, \"__call__\"))\nprint(type(inc).__name__, type(adder).__name__)\nprint(sorted(vars(adder)))",
+        "expected": [
+          "True True",
+          "True False",
+          "15 15",
+          "True True",
+          "function Adder",
+          "['n']"
+        ],
+        "explain": "callable 判断类型上有没有 __call__：inc 是函数，天然可调用；adder 的类型 Adder 定义了 __call__，所以实例也可调用；类 Adder 本身可调用（调用它得到实例）；整数 42 没有 __call__，为 False。adder(5) 被解释成 Adder.__call__(adder, 5)，与显式写 adder.__call__(5) 一样返回 15。函数对象自己也有 __call__，所以两个 hasattr 都是 True。type(inc).__name__ 是 function，type(adder).__name__ 是 Adder。状态存在实例属性里，vars(adder) 只有 ['n']，这也是它与闭包最直观的区别。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Validator:\n    def __init__(self, limit):\n        self.limit = limit\n\n    def _call_(self, value):\n        return value <= self.limit\n\n\ncheck = Validator(10)\nprint(callable(check))\nprint(check(5))",
+        "rootCause": "__call__ 前后各需要两个下划线，代码里写成了 _call_，它只是名为 _call_ 的普通实例方法，不会进入可调用协议。Validator 类型上没有 __call__，callable(check) 为 False，check(5) 于是抛 TypeError: 'Validator' object is not callable。名字拼写差一个下划线，行为就从可调用变成不可调用。",
+        "fix": "把方法名改成 __call__（前后各两个下划线）：def __call__(self, value): return value <= self.limit。改完后 callable(check) 为 True，check(5) 返回 True。也可以顺手确认类型上确实存在该属性：\"__call__\" in vars(Validator)。"
+      },
+      "code_task": {
+        "prompt": "实现 Accumulator 和 Negated 两个类：Accumulator(start) 把累计值保存在实例属性 total 里，调用实例 acc(v) 时累加 v 并把调用次数记在 calls 上，返回新的 total；Negated(func) 包装一个单参数函数，调用实例时返回 func 结果的相反数。",
+        "acceptance": [
+          "callable(Accumulator()) 为 True（类里定义了 __call__），而没有任何 __call__ 的实例 callable 为 False",
+          "状态存在实例属性里：Accumulator(10) 连续调用 (5) 两次得到 15 与 20，calls 等于 2，vars(acc) 只含 calls 与 total",
+          "Negated(inc)(4) 等于 -5，即实例调用把参数转发给被包装的函数并取负",
+          "Negated 的实例可反复调用，普通函数对象自身也能用 inc.__call__(1) 得到与 inc(1) 相同的结果",
+          "callable(42)、callable(\"text\") 为 False，说明不可调用对象的判定同样由 __call__ 决定"
+        ],
+        "reference": "import unittest\n\n\nclass Accumulator:\n    def __init__(self, start=0):\n        self.total = start\n        self.calls = 0\n\n    def __call__(self, value):\n        self.total += value\n        self.calls += 1\n        return self.total\n\n\nclass Negated:\n    def __init__(self, func):\n        self.func = func\n\n    def __call__(self, value):\n        return -self.func(value)\n\n\nclass Plain:\n    pass\n\n\nclass CallableProtocolTest(unittest.TestCase):\n    def test_instance_with_dunder_call_is_callable(self):\n        self.assertTrue(callable(Accumulator()))\n        self.assertFalse(callable(Plain()))\n\n    def test_state_lives_on_the_instance(self):\n        acc = Accumulator(10)\n        self.assertEqual(acc(5), 15)\n        self.assertEqual(acc(5), 20)\n        self.assertEqual(acc.calls, 2)\n        self.assertEqual(sorted(vars(acc)), [\"calls\", \"total\"])\n\n    def test_call_forwards_to_given_function(self):\n        wrapped = Negated(lambda value: value + 1)\n        self.assertEqual(wrapped(4), -5)\n\n    def test_plain_values_are_not_callable(self):\n        self.assertFalse(callable(42))\n        self.assertFalse(callable(\"text\"))\n\n    def test_function_object_has_dunder_call(self):\n        def inc(value):\n            return value + 1\n\n        self.assertTrue(hasattr(inc, \"__call__\"))\n        self.assertEqual(inc.__call__(1), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "把 __call__ 写成 _call_ 或 __call，实例仍不可调用并报 TypeError: 'X' object is not callable",
+        "以为实例能不能调用只看有没有 __init__，忽略 __call__ 必须定义在类上",
+        "在 __call__ 里把状态存成局部变量，以为能跨调用保留（应写 self 属性）",
+        "用一个带 __call__ 的实例去做 isinstance(x, types.FunctionType) 判断，结果失败（那是 function 类型才满足的检查）"
+      ]
+    },
+    {
+      "code": "py.signature.inspect",
+      "title": "inspect.signature 检查参数绑定",
+      "minutes": 25,
+      "module": "参数",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3102",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "inspect.signature 能读到哪些信息？bind 与 bind_partial 差在哪？默认值什么时候才会出现在绑定结果里？",
+        "answer": [
+          "signature(func) 返回 Signature 对象，parameters 是按定义顺序排列的有序映射，每个 Parameter 带 name、kind、default、annotation",
+          "kind 的取值包括 POSITIONAL_ONLY、POSITIONAL_OR_KEYWORD、VAR_POSITIONAL、KEYWORD_ONLY、VAR_KEYWORD，分别对应仅位置参数、普通参数、*args、仅关键字参数、**kwargs",
+          "bind(*args, **kwargs) 按真实调用规则做完整校验并返回 BoundArguments，缺必填参数立刻抛 TypeError；bind_partial 允许先绑一部分，只记录已提供的实参",
+          "BoundArguments.arguments 是按参数顺序排列的字典，但不含未提供的默认值：要调用 apply_defaults() 才会补齐，变长参数补成 () 与 {}",
+          "没有默认值用 parameter.default is inspect.Parameter.empty 判断，不要拿 None 或 0 当哨兵"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每一行里 arguments 到底包含哪些参数",
+        "code": "import inspect\n\n\ndef connect(host, port=5432, *, timeout=30, retries):\n    return (host, port, timeout, retries)\n\n\nsig = inspect.signature(connect)\nprint(list(sig.parameters))\nprint([p.kind.name for p in sig.parameters.values()])\nprint(sig.bind(\"db\", 5433, timeout=5, retries=2).arguments)\nprint(sig.bind_partial(\"db\").arguments)\ntry:\n    sig.bind(\"db\")\nexcept TypeError:\n    print(\"bind 缺少必填参数 TypeError\")\npartial = sig.bind(\"db\", retries=1)\nprint(partial.arguments)\npartial.apply_defaults()\nprint(partial.arguments)\nprint(sig.parameters[\"retries\"].default is inspect.Parameter.empty)",
+        "expected": [
+          "['host', 'port', 'timeout', 'retries']",
+          "['POSITIONAL_OR_KEYWORD', 'POSITIONAL_OR_KEYWORD', 'KEYWORD_ONLY', 'KEYWORD_ONLY']",
+          "{'host': 'db', 'port': 5433, 'timeout': 5, 'retries': 2}",
+          "{'host': 'db'}",
+          "bind 缺少必填参数 TypeError",
+          "{'host': 'db', 'retries': 1}",
+          "{'host': 'db', 'port': 5432, 'timeout': 30, 'retries': 1}",
+          "True"
+        ],
+        "explain": "parameters 按定义顺序迭代，所以第一行给出四个参数名。kind 反映参数形态：host 与 port 在 * 之前是 POSITIONAL_OR_KEYWORD，timeout 与 retries 在 * 之后是 KEYWORD_ONLY。bind 做完整绑定，arguments 里是本次调用涉及的四个参数，顺序与定义一致；bind_partial('db') 只绑了 host，arguments 就只有 host。第五行说明 bind 遇到缺失的必填 retries 会立即抛 TypeError，被 try 捕获后打印一行；bind_partial 不校验完整性，所以只给 host 与 retries 也能成功，此时 arguments 里没有 port 与 timeout。apply_defaults() 之后默认值才补进来：port=5432、timeout=30，已提供的 retries=1 保持不变。最后一行用 is inspect.Parameter.empty 判断 retries 没有默认值。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import inspect\n\n\ndef render(text, prefix=\"> \", *, upper=False):\n    return prefix + (text.upper() if upper else text)\n\n\ndef collect(func, **kwargs):\n    sig = inspect.signature(func)\n    bound = sig.bind_partial(**kwargs)\n    return [bound.arguments[name] for name in sig.parameters]\n\n\nprint(list(inspect.signature(render).parameters))\nprint(collect(render, text=\"hi\"))",
+        "rootCause": "bind_partial 只把调用方提供的实参记录进 BoundArguments.arguments，它不会套用默认值，所以 collect(render, text=\"hi\") 得到的是 {'text': 'hi'}。代码却按 sig.parameters 的全部名字去 bound.arguments[name] 取值，轮到 prefix 时字典里没有这个键，抛 KeyError: 'prefix'。第一行正常打印参数名列表，说明签名本身没问题，错在把绑定结果当成了已填充默认值的完整参数字典。",
+        "fix": "在索引之前调用 bound.apply_defaults()，让未提供的参数补上默认值：bound = sig.bind_partial(**kwargs); bound.apply_defaults(); return [bound.arguments[name] for name in sig.parameters]。如果只想在缺省时回退，也可以写 bound.arguments.get(name, sig.parameters[name].default)，但要注意空默认值仍然需要 empty 判断。"
+      },
+      "code_task": {
+        "prompt": "实现两个工具：signature_report(func) 返回 {\"names\": 参数名列表, \"kinds\": kind.name 列表, \"required\": 无默认值的非变长参数名列表}；bind_call(func, *args, **kwargs) 用 inspect.signature(func).bind 做完整校验，apply_defaults 之后返回按参数顺序的参数字典。",
+        "acceptance": [
+          "signature_report(connect)[\"names\"] 等于 [\"host\", \"port\", \"timeout\", \"retries\"]，顺序与定义一致",
+          "signature_report(connect)[\"kinds\"] 依次是 POSITIONAL_OR_KEYWORD、POSITIONAL_OR_KEYWORD、KEYWORD_ONLY、KEYWORD_ONLY",
+          "required 只列出没有默认值的非变长参数：connect 的是 [\"host\", \"retries\"]，默认值等于 None 或 0 的参数不算必填",
+          "bind_call(connect, \"db\", 5433, timeout=5, retries=2) 返回实际传入的四个值；bind_call(connect, \"db\", retries=1) 补齐默认值得到 port=5432、timeout=30",
+          "缺必填参数时 bind_call(connect, \"db\") 抛 TypeError；对只含 *items 与 **meta 的函数，apply_defaults 后得到 {\"items\": (), \"meta\": {}}"
+        ],
+        "reference": "import inspect\nimport unittest\n\n\ndef connect(host, port=5432, *, timeout=30, retries):\n    return (host, port, timeout, retries)\n\n\ndef tagged(*items, **meta):\n    return (items, meta)\n\n\ndef signature_report(func):\n    sig = inspect.signature(func)\n    required = [\n        parameter.name\n        for parameter in sig.parameters.values()\n        if parameter.default is inspect.Parameter.empty\n        and parameter.kind\n        in (\n            inspect.Parameter.POSITIONAL_ONLY,\n            inspect.Parameter.POSITIONAL_OR_KEYWORD,\n            inspect.Parameter.KEYWORD_ONLY,\n        )\n    ]\n    return {\n        \"names\": list(sig.parameters),\n        \"kinds\": [parameter.kind.name for parameter in sig.parameters.values()],\n        \"required\": required,\n    }\n\n\ndef bind_call(func, *args, **kwargs):\n    bound = inspect.signature(func).bind(*args, **kwargs)\n    bound.apply_defaults()\n    return dict(bound.arguments)\n\n\nclass SignatureTest(unittest.TestCase):\n    def test_names_in_order(self):\n        self.assertEqual(\n            signature_report(connect)[\"names\"],\n            [\"host\", \"port\", \"timeout\", \"retries\"],\n        )\n\n    def test_kinds_in_order(self):\n        self.assertEqual(\n            signature_report(connect)[\"kinds\"],\n            [\n                \"POSITIONAL_OR_KEYWORD\",\n                \"POSITIONAL_OR_KEYWORD\",\n                \"KEYWORD_ONLY\",\n                \"KEYWORD_ONLY\",\n            ],\n        )\n\n    def test_required_names(self):\n        self.assertEqual(signature_report(connect)[\"required\"], [\"host\", \"retries\"])\n\n    def test_bound_values_and_defaults(self):\n        self.assertEqual(\n            bind_call(connect, \"db\", 5433, timeout=5, retries=2),\n            {\"host\": \"db\", \"port\": 5433, \"timeout\": 5, \"retries\": 2},\n        )\n        self.assertEqual(\n            bind_call(connect, \"db\", retries=1),\n            {\"host\": \"db\", \"port\": 5432, \"timeout\": 30, \"retries\": 1},\n        )\n\n    def test_binding_failure_and_variadic_defaults(self):\n        with self.assertRaises(TypeError):\n            bind_call(connect, \"db\")\n        self.assertEqual(bind_call(tagged), {\"items\": (), \"meta\": {}})\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为 bind_partial 会填充默认值，直接 bound.arguments[name] 取值导致 KeyError",
+        "需要完整校验时误用 bind_partial，缺参数不报错，直到真正调用才炸",
+        "用 parameter.default == None 判断有没有默认值，与真的默认值是 None 的参数混淆（应比较 inspect.Parameter.empty）",
+        "把 kind 当成 '*args' 这样的字符串来比较，而不是 inspect.Parameter.VAR_POSITIONAL"
+      ]
+    },
+    {
+      "code": "py.signature.wrapped",
+      "title": "包装前后的签名保持",
+      "minutes": 20,
+      "module": "参数",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3102",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "装饰器多包了一层，为什么 signature() 还能看到原函数的签名？什么情况下看到的是 (*args, **kwargs)？",
+        "answer": [
+          "functools.wraps 把 __module__、__name__、__qualname__、__doc__、__dict__ 复制到包装函数上，并设置 __wrapped__ 指向原函数",
+          "signature() 默认 follow_wrapped=True，会沿 __wrapped__ 链回到最内层原函数，所以包装前后的签名保持一致",
+          "inspect.signature(func, follow_wrapped=False) 只看包装器本身，不做别的处理时就是 (*args, **kwargs)",
+          "不用 @functools.wraps 时 wrapper 只保留自己的 (*args, **kwargs)，__name__ 变成 wrapper，__wrapped__ 不存在，signature 也就无从回退",
+          "signature 只描述参数结构与默认值，不做类型校验：注解挂在 Parameter.annotation 上供静态工具使用，传错类型不会因为签名而报错"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每一行读到的是包装器还是被包装函数",
+        "code": "import functools\nimport inspect\n\ndef traced(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        return func(*args, **kwargs)\n    return wrapper\n\ndef bare(func):\n    def wrapper(*args, **kwargs):\n        return func(*args, **kwargs)\n    return wrapper\n\n@traced\ndef add(a, b=1):\n    return a + b\n\n@bare\ndef mul(a, b=1):\n    return a * b\n\nprint(inspect.signature(add), inspect.signature(add, follow_wrapped=False))\nprint(inspect.signature(mul), add.__name__, mul.__name__)\nprint(add.__wrapped__(3) == add(3), inspect.signature(add).parameters[\"b\"].default)",
+        "expected": [
+          "(a, b=1) (*args, **kwargs)",
+          "(*args, **kwargs) add wrapper",
+          "True 1"
+        ],
+        "explain": "traced 用 @functools.wraps 复制元数据并设好 __wrapped__，所以第一行里 signature(add) 沿链回到原函数读到 (a, b=1)，而同一个对象加 follow_wrapped=False 就只有包装器自身的 (*args, **kwargs)。bare 没有用 wraps，__wrapped__ 不存在，第二行里 signature(mul) 只能读到包装器签名 (*args, **kwargs)，__name__ 也随之一分为二：add 被 wraps 复制成原名 add，mul 仍是 wrapper。第三行 add.__wrapped__(3) 直接调用原函数得到 4，与包装器转发得到的 add(3) 相同，所以是 True；同一行读到的 b 默认值 1 也是从原函数参数上取的。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import inspect\n\n\ndef logged(func):\n    def wrapper(*args, **kwargs):\n        return func(*args, **kwargs)\n\n    return wrapper\n\n\n@logged\ndef area(width, height):\n    return width * height\n\n\nprint(area(3, 4))\nprint(area.__name__)\nprint(inspect.signature(area))",
+        "rootCause": "logged 里的 wrapper 没有用 functools.wraps(func) 装饰，__name__ 仍是 'wrapper'，__wrapped__ 也没有建立。inspect.signature 默认沿 __wrapped__ 链回退，链断了就只能读 wrapper 自己的 (*args, **kwargs)，于是真实签名 width、height 被包装器的变长签名顶掉。调用本身没问题（wrapper 照常转发并返回 12），损失的是元数据与可自省的签名，依赖签名做参数注入或文档生成的代码会读错。",
+        "fix": "给 wrapper 加上 @functools.wraps(func)，它会一次复制 __name__、__doc__、__dict__ 并设置 __wrapped__，signature(area) 随即回到 (width, height)。若要显式控制回退，可用 inspect.signature(area, follow_wrapped=False) 观察包装器签名，或用 inspect.unwrap 取回原函数。"
+      },
+      "code_task": {
+        "prompt": "实现 trace 装饰器与 public_signature 工具：trace 用 functools.wraps 保留元数据，把每次调用的 (args, kwargs) 记录到包装函数的 calls 列表里并转发返回值；public_signature(func, follow_wrapped=True) 返回 inspect.signature 的字符串形式，便于比较包装前后。",
+        "acceptance": [
+          "trace(add) 得到的包装器 public_signature 为 \"(a, b=1)\"，与原函数签名一致",
+          "public_signature(traced, follow_wrapped=False) 为 \"(*args, **kwargs)\"，即包装器自身的真实签名",
+          "元数据被保留：traced.__name__ 等于 \"add\"，traced.__wrapped__ is add 为 True",
+          "转发正确且调用被记录：traced(2) 等于 3、traced(2, 5) 等于 7，traced.calls 长度为 2 且第一项是 ((2,), {})",
+          "inspect.unwrap(traced) is add 为 True，说明可以沿 __wrapped__ 回到原函数"
+        ],
+        "reference": "import functools\nimport inspect\nimport unittest\n\n\ndef trace(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        wrapper.calls.append((args, kwargs))\n        return func(*args, **kwargs)\n\n    wrapper.calls = []\n    return wrapper\n\n\ndef public_signature(func, follow_wrapped=True):\n    return str(inspect.signature(func, follow_wrapped=follow_wrapped))\n\n\ndef add(a, b=1):\n    return a + b\n\n\nclass TraceTest(unittest.TestCase):\n    def test_signature_follows_wrapped(self):\n        traced = trace(add)\n        self.assertEqual(public_signature(traced), \"(a, b=1)\")\n\n    def test_signature_without_follow_wrapped(self):\n        traced = trace(add)\n        self.assertEqual(\n            public_signature(traced, follow_wrapped=False),\n            \"(*args, **kwargs)\",\n        )\n\n    def test_metadata_preserved(self):\n        traced = trace(add)\n        self.assertEqual(traced.__name__, \"add\")\n        self.assertIs(traced.__wrapped__, add)\n\n    def test_forwarding_and_call_log(self):\n        traced = trace(add)\n        self.assertEqual(traced(2), 3)\n        self.assertEqual(traced(2, 5), 7)\n        self.assertEqual(len(traced.calls), 2)\n        self.assertEqual(traced.calls[0], ((2,), {}))\n\n    def test_unwrap_returns_original(self):\n        traced = trace(add)\n        self.assertIs(inspect.unwrap(traced), add)\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "自己写装饰器忘记 @functools.wraps，__name__ 变成 wrapper、signature 退化成 (*args, **kwargs)",
+        "以为 signature() 会按注解做类型校验，因此传错类型也照跑",
+        "手工复制了 __name__ 却没设置 __wrapped__，signature 仍然无法回退到原函数",
+        "用 follow_wrapped=False 后又奇怪为什么看到 *args 与 **kwargs，那正是包装器的真实签名"
+      ]
+    },
+    {
+      "code": "py.typing.callable-protocol",
+      "title": "Callable、Protocol 描述处理函数接口",
+      "minutes": 20,
+      "module": "类型标注",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3103",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "typing.Callable[[int], str] 表达了什么？运行期能用它做 isinstance 吗？Protocol 怎样描述回调接口？",
+        "answer": [
+          "Callable[[int], str] 是给静态检查器的标注：下标列表写参数类型、第二个元素写返回类型，表示接收一个 int 并返回 str 的可调用对象",
+          "运行期 isinstance 只接受不带下标的 Callable：isinstance(obj, Callable) 检查类型上有没有 __call__；写成 Callable[[int], str] 会抛 TypeError: isinstance() argument 2 cannot be a parameterized generic",
+          "Protocol 用结构化类型描述接口：只要对象具备协议声明的成员就算符合，不需要显式继承，是鸭子类型的显式化",
+          "只有标了 @runtime_checkable 的 Protocol 才能用于 isinstance；不带这个装饰器会抛 TypeError: Instance and class checks can only be used with @runtime_checkable protocols",
+          "运行期不校验标注：类型提示只服务静态工具与文档，isinstance 与 Protocol 检查依据的是成员是否存在，参数个数与类型都不会被检查"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每一行的 True 或 False 依据是什么",
+        "code": "from collections.abc import Callable\nfrom typing import Callable as TypingCallable\nfrom typing import Protocol, runtime_checkable\n\n@runtime_checkable\nclass Handler(Protocol):\n    def __call__(self, value: int) -> str: ...\n\ndef render(value):\n    return \"<\" + str(value) + \">\"\n\nclass Wrapper:\n    def __call__(self, value):\n        return \"[\" + str(value) + \"]\"\n\nprint(isinstance(render, Callable))\nprint(isinstance(42, Callable))\nprint(isinstance(render, Handler))\nprint(isinstance(Wrapper(), Handler))\nprint(isinstance(\"text\", Handler))\nprint(TypingCallable[[int], str])\nprint(Callable[[int], str])",
+        "expected": [
+          "True",
+          "False",
+          "True",
+          "True",
+          "False",
+          "typing.Callable[[int], str]",
+          "collections.abc.Callable[[int], str]"
+        ],
+        "explain": "isinstance(x, Callable) 检查 x 的类型上有没有 __call__：普通函数 render 有，整数 42 没有，所以前两行是 True 与 False。Handler 是 runtime_checkable 的 Protocol，只声明了 __call__，isinstance 会做结构检查：函数 render 有 __call__，为 True；定义了 __call__ 的 Wrapper 实例也有，为 True；字符串 \"text\" 没有，为 False。最后两行打印两种标注对象本身：typing.Callable[[int], str] 是给静态检查器的形式，collections.abc.Callable[[int], str] 是运行期的下标形式，它们都不参与实例检查。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from collections.abc import Callable\nfrom typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\nclass Handler(Protocol):\n    def __call__(self, value: int) -> str: ...\n\n\ndef render(value: int) -> str:\n    return str(value)\n\n\nprint(isinstance(render, Callable))\nprint(isinstance(render, Handler))\nprint(isinstance(render, Callable[[int], str]))",
+        "rootCause": "Callable[[int], str] 是带参数的下标泛型，只用于类型标注，运行期不能拿来做实例检查。前两行 isinstance(render, Callable) 与 isinstance(render, Handler) 都正常返回 True，第三行 isinstance(render, Callable[[int], str]) 抛 TypeError: isinstance() argument 2 cannot be a parameterized generic。参数类型与返回类型属于静态检查范畴，运行期没有它们的位置。",
+        "fix": "运行期检查改用不带下标的 collections.abc.Callable，或用 runtime_checkable 的 Protocol 表达接口：isinstance(render, Callable)、isinstance(render, Handler)。带下标的写法只留在注解里（例如 Annotation = Callable[[int], str]），参数类型是否匹配交给静态检查器，必要时再加显式的运行期校验。"
+      },
+      "code_task": {
+        "prompt": "实现一个运行期可检查的回调接口：用 @runtime_checkable 的 Handler(Protocol) 声明 __call__(self, text: str) -> str；register(handlers, name, func) 在 isinstance(func, Handler) 不成立时抛 TypeError 且不写入字典，成立时登记并返回该函数；apply_handler(func, text) 转发调用并返回结果。",
+        "acceptance": [
+          "普通函数 render 满足接口：isinstance(render, Handler) 与 isinstance(render, Callable) 都为 True",
+          "不可调用值不满足接口：isinstance(42, Handler) 与 isinstance(\"render\", Callable) 都为 False",
+          "只定义了 __call__ 的实例无需继承也满足接口：isinstance(Bracket(), Handler) 为 True",
+          "register 对非可调用对象抛 TypeError 且字典保持为空，对合格函数登记后原样返回该函数",
+          "apply_handler 正确转发：apply_handler(render, \"x\") 等于 \"<x>\"，apply_handler(Bracket(), \"x\") 等于 \"[x]\""
+        ],
+        "reference": "import unittest\nfrom collections.abc import Callable\nfrom typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\nclass Handler(Protocol):\n    def __call__(self, text: str) -> str: ...\n\n\nclass Bracket:\n    def __call__(self, text):\n        return \"[\" + text + \"]\"\n\n\ndef render(text):\n    return \"<\" + text + \">\"\n\n\ndef register(handlers, name, func):\n    if not isinstance(func, Handler):\n        raise TypeError(\"handler 必须可调用\")\n    handlers[name] = func\n    return func\n\n\ndef apply_handler(func, text):\n    return func(text)\n\n\nclass CallableProtocolTest(unittest.TestCase):\n    def test_plain_function_matches_interface(self):\n        self.assertTrue(isinstance(render, Handler))\n        self.assertTrue(isinstance(render, Callable))\n\n    def test_plain_values_do_not_match(self):\n        self.assertFalse(isinstance(42, Handler))\n        self.assertFalse(isinstance(\"render\", Callable))\n\n    def test_instance_with_dunder_call_matches(self):\n        self.assertTrue(isinstance(Bracket(), Handler))\n        self.assertTrue(isinstance(Bracket(), Callable))\n\n    def test_register_rejects_non_callable(self):\n        handlers = {}\n        with self.assertRaises(TypeError):\n            register(handlers, \"bad\", 42)\n        self.assertEqual(handlers, {})\n        self.assertIs(register(handlers, \"ok\", render), render)\n\n    def test_apply_handler_forwards(self):\n        self.assertEqual(apply_handler(render, \"x\"), \"<x>\")\n        self.assertEqual(apply_handler(Bracket(), \"x\"), \"[x]\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "对带下标的 Callable[[int], str] 做 isinstance，运行期抛 TypeError",
+        "以为没标 @runtime_checkable 的 Protocol 也能 isinstance，实际会抛 TypeError",
+        "以为 Protocol 会检查参数个数与类型，其实只检查成员是否存在",
+        "以为运行期会按注解校验实参类型，于是完全不做显式校验"
+      ]
+    },
+    {
+      "code": "py.func.pipeline",
+      "title": "可组合的函数序列",
+      "minutes": 25,
+      "module": "函数",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3104",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "怎样把一串处理步骤组织成可组合的函数序列？reduce 在这里起什么作用？compose 与 pipe 差在哪？",
+        "answer": [
+          "把每个步骤写成文本进、文本出的纯函数，再放进 list 或 tuple，就能被同一段驱动代码按顺序应用，步骤之间互不知情",
+          "依次应用可以写成显式循环 result = step(result)，也可以写成 functools.reduce(lambda acc, step: step(acc), steps, text)",
+          "reduce 的第三个参数 initializer 是累加器初值，不能省：省略时会把 steps 的第一个元素当成 acc，等于把函数当数据传给下一步",
+          "pipe(*steps) 返回新函数，按书写顺序从左到右应用；compose(*steps) 返回新函数，按数学复合从右到左应用，对 strip 与包裹符号这类不可交换的步骤结果不同",
+          "组合只产生新函数、不改动传入的序列：追加步骤返回新的 tuple 或 list，原序列保持不变，同一条流水线才能被多方安全复用"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每一行的应用顺序",
+        "code": "import functools\n\ndef strip(text):\n    return text.strip()\n\ndef upper(text):\n    return text.upper()\n\ndef exclaim(text):\n    return text + \"!\"\n\ndef apply_all(steps, text):\n    return functools.reduce(lambda acc, step: step(acc), steps, text)\n\ndef pipe(*steps):\n    return lambda text: apply_all(steps, text)\n\ndef compose(*steps):\n    return lambda text: apply_all(tuple(reversed(steps)), text)\n\nsteps = [strip, upper, exclaim]\nprint(apply_all(steps, \"  hi  \"))\nprint(pipe(strip, upper)(\"  hi  \"))\nprint(compose(exclaim, upper, strip)(\"  hi  \"), apply_all([], \"hi\"))\nprint([step.__name__ for step in steps])",
+        "expected": [
+          "HI!",
+          "HI",
+          "HI! hi",
+          "['strip', 'upper', 'exclaim']"
+        ],
+        "explain": "apply_all 用 reduce 从初值 '  hi  ' 出发，依次把 strip、upper、exclaim 应用上去：strip 去掉两端空白得到 'hi'，upper 变成 'HI'，exclaim 补上感叹号得到 'HI!'。pipe(strip, upper) 按书写顺序从左到右，先 strip 再 upper，得到 'HI'。第三行打印两个结果：compose(exclaim, upper, strip) 按数学复合从右到左，先 strip 再 upper 再 exclaim，同样得到 'HI!'；apply_all([], 'hi') 说明步骤序列为空时 reduce 返回初值，文本原样保留为 'hi'。最后一行只是遍历步骤列表读 __name__，没有调用任何函数。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import functools\n\n\ndef strip(text):\n    return text.strip()\n\n\ndef upper(text):\n    return text.upper()\n\n\nsteps = [strip, upper]\ntext = \"  hi  \"\nresult = functools.reduce(lambda acc, step: step(acc), steps)\nprint(result)",
+        "rootCause": "functools.reduce 的调用少了 initializer。没有初值时 reduce 会把 steps 的第一个元素 strip 当成累加器 acc，再从第二个元素开始迭代：第一次执行 step(acc) 就是 upper(strip)，也就是把函数对象 strip 当成文本传进 upper，于是 text.upper() 作用在函数上，抛 AttributeError: 'function' object has no attribute 'upper'。原始文本 text 从头到尾没进入流水线，说明初始值缺失让第一个函数被当成了数据。",
+        "fix": "把待处理文本作为 reduce 的第三个参数传进去：functools.reduce(lambda acc, step: step(acc), steps, text)。这样 acc 从一开始就是字符串 '  hi  '，strip 与 upper 依次作用得到 'HI'。若改用显式循环，写法是 result = text; for step in steps: result = step(result)，同样把初值显式放好。"
+      },
+      "code_task": {
+        "prompt": "实现一组可组合的文本处理工具：apply_pipeline(text, steps) 按序列顺序依次应用并返回结果；pipe(*steps) 返回一个从左到右应用的新函数；compose(*steps) 返回一个从右到左应用的新函数（compose(a, b)(x) 等于 a(b(x))）；add_step(steps, func) 返回追加了 func 的新元组且不修改入参。",
+        "acceptance": [
+          "apply_pipeline(\"  hi  \", [strip, exclaim]) 等于 \"<hi>\"，步骤按序列顺序从左到右应用",
+          "pipe(strip, exclaim)(\"  hi  \") 等于 \"<hi>\"，返回的新函数可重复调用",
+          "compose(strip, exclaim)(\"  hi  \") 等于 \"<  hi  >\"，即 strip(exclaim(text))，与 pipe 的顺序相反",
+          "add_step((strip,), exclaim) 返回长度 2 的新序列、末尾元素是 exclaim，而原序列仍等于 (strip,)",
+          "步骤序列为空时 apply_pipeline(\"hi\", []) 与 pipe()(\"hi\") 都返回原字符串 \"hi\""
+        ],
+        "reference": "import unittest\n\n\ndef strip(text):\n    return text.strip()\n\n\ndef exclaim(text):\n    return \"<\" + text + \">\"\n\n\ndef apply_pipeline(text, steps):\n    result = text\n    for step in steps:\n        result = step(result)\n    return result\n\n\ndef pipe(*steps):\n    return lambda text: apply_pipeline(text, steps)\n\n\ndef compose(*steps):\n    return lambda text: apply_pipeline(text, tuple(reversed(steps)))\n\n\ndef add_step(steps, func):\n    return tuple(steps) + (func,)\n\n\nclass PipelineTest(unittest.TestCase):\n    def test_apply_pipeline_runs_in_order(self):\n        self.assertEqual(apply_pipeline(\"  hi  \", [strip, exclaim]), \"<hi>\")\n\n    def test_pipe_is_left_to_right(self):\n        self.assertEqual(pipe(strip, exclaim)(\"  hi  \"), \"<hi>\")\n\n    def test_compose_is_right_to_left(self):\n        self.assertEqual(compose(strip, exclaim)(\"  hi  \"), \"<  hi  >\")\n        self.assertEqual(compose(exclaim, strip)(\"  hi  \"), \"<hi>\")\n\n    def test_add_step_returns_new_sequence(self):\n        steps = (strip,)\n        extended = add_step(steps, exclaim)\n        self.assertEqual(steps, (strip,))\n        self.assertEqual(len(extended), 2)\n        self.assertIs(extended[-1], exclaim)\n\n    def test_empty_pipeline_returns_input(self):\n        self.assertEqual(apply_pipeline(\"hi\", []), \"hi\")\n        self.assertEqual(pipe()(\"hi\"), \"hi\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "省略 reduce 的 initializer，把第一个函数当成初始累加值使用",
+        "在步骤函数里做原地修改（例如向共享 list 追加），让本应互相独立的步骤串味",
+        "把 compose 与 pipe 的顺序记反，导致 strip 与包裹符号这类不可交换的步骤结果不同",
+        "把组合函数写成立即执行并返回结果，丢掉了再组合、再复用的能力"
+      ]
+    },
+    {
+      "code": "py.closure.free-vars",
+      "title": "自由变量、细胞对象、闭包单元",
+      "minutes": 25,
+      "module": "闭包",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3201",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "3504",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "内层函数引用的外层局部变量叫什么？闭包单元（cell）是什么？它保存的是变量的值还是变量本身？",
+        "answer": [
+          "内层函数里引用、但既不是自己的局部变量也不是全局变量的名字是自由变量，它来自外层函数的局部作用域",
+          "编译器把这种名字登记在内层函数的 __code__.co_freevars 里，因此自由变量在编译期就确定，和运行时是否真的读到值无关",
+          "外层函数的这个局部变量不再是普通栈上槽位，而是提升为细胞对象（cell）；内层函数的 __closure__ 是按 co_freevars 顺序排列的细胞元组",
+          "细胞保存的是变量的绑定位置，值用 cell.cell_contents 读取；闭包共享这一个细胞，外层后续的重新赋值或原地修改内层都能看到",
+          "闭包不是复制值：只在函数定义时复制一份值的写法是默认参数（def f(x=x)），而不是闭包"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并指出哪些名字是 greet 的自由变量",
+        "code": "def make_greeter(prefix):\n    count = 0\n\n    def greet(name):\n        seen = count\n        return f\"{prefix} {name} {seen}\"\n\n    return greet\n\n\ngreet = make_greeter(\"hi\")\nprint(greet.__code__.co_freevars)\nprint(greet.__code__.co_varnames)\nprint(sorted(make_greeter.__code__.co_varnames))\nprint(greet(\"ann\"))\nprint([cell.cell_contents for cell in greet.__closure__])\nprint(len(greet.__closure__), type(greet.__closure__[0]).__name__)\n",
+        "expected": [
+          "('count', 'prefix')",
+          "('name', 'seen')",
+          "['greet', 'prefix']",
+          "hi ann 0",
+          "[0, 'hi']",
+          "2 cell"
+        ],
+        "explain": "greet 引用了外层的 count 与 prefix，这两个名字既不在 greet 的参数里也不在它的局部赋值里，所以是自由变量，按字母序登记在 co_freevars 里，得到 ('count', 'prefix')；name 是参数、seen 是局部变量，都在 co_varnames 里，得到 ('name', 'seen')。make_greeter 自己的 co_varnames 是 ['greet', 'prefix']：函数名 greet 作为局部定义留在里面，外层局部名字 count 被提升为细胞而不在其中，参数 prefix 在，所以过滤 count 得到空列表（这是 CPython 3.14 的实际输出，别按“外层局部变量一定出现在 co_varnames 里”去猜）。greet('ann') 读到的 count 仍是 0。__closure__ 是两个细胞，顺序与 co_freevars 一致，cell_contents 分别是 0 和 'hi'，列表推导把它们放回 co_freevars 的顺序。两个细胞的类型都是 cell。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Counter:\n    def __init__(self, start):\n        self.value = start\n\n    def bump(self):\n        self.value += 1\n        return self.value\n\n\ndef make_bumper(start):\n    counter = Counter(start)\n\n    def bump():\n        return counter.bump()\n\n    return bump\n\n\ndef run_twice(bump):\n    return bump(), bump()\n\n\nprint(run_twice(make_bumper(10)))\n",
+        "rootCause": "闭包捕获的是变量而不是值：bump 的 __closure__ 里那个细胞持有的是 Counter 对象本身。bump() 调用 counter.bump() 时，被改的是细胞里那个对象的属性 value，而不是把新值重新绑给 counter；细胞从创建到调用一直指向同一个对象，所以每次调用都继续累加同一个计数器，bump() 的两次输出是 11、12 而不是 11、11。误以为闭包在定义时把 counter 的初始值（10）复制了一份，才会以为同一个 bump 反复调用都从 10 开始；实际是那一个细胞里的同一个实例被反复推进。",
+        "fix": "先想清楚要的是同一个闭包累加，还是每次拿到一份新状态。要累加就保留现在共享细胞对象的写法，这就是闭包的用途：同一个 bump 连续调用得到 11、12 是正确行为，调用方不该假设它每次返回初值。要每次从同一起点重来，就不要跨调用共享同一个可变对象：让调用方按需调用工厂（每次 make_bumper(10) 都是一份新细胞），或在参数里传初始值而不在细胞内累加，例如 def bump(start): return start + 1。定位问题看细胞保存的是引用：print(bump.__code__.co_freevars) 打印 ('counter',)，print(bump.__closure__[0].cell_contents.value) 会随调用从 10 变成 11、12。",
+        "fixed_code": "class Counter:\n    def __init__(self, start):\n        self.value = start\n\n    def bump(self):\n        self.value += 1\n        return self.value\n\n\ndef make_bumper(start):\n    counter = Counter(start)\n\n    def bump():\n        return counter.bump()\n\n    return bump\n\n\ndef run_once(bump):\n    return bump()\n\n\nprint(run_once(make_bumper(10)), run_once(make_bumper(10)))\nbump = make_bumper(10)\nprint(bump.__code__.co_freevars)\nbump()\nprint(bump.__closure__[0].cell_contents.value)\n"
+      },
+      "code_task": {
+        "prompt": "实现 make_bumper(start)：内部创建一个 Counter 实例（有 value 属性和 bump() 方法），返回一个闭包 bump()，每次调用转发到该实例的 bump() 并返回新的 value。要求闭包通过细胞持有这个实例，而不是把初始值复制进参数。",
+        "acceptance": [
+          "make_bumper(0).__code__.co_freevars 等于 ('counter',)，说明外层局部变量被提升为细胞",
+          "co_varnames 里不出现 'counter'，它没有被当成内层局部变量",
+          "bump.__closure__[0].cell_contents 是 Counter 实例，初始 value 等于 start",
+          "同一个 bump 连续调用返回值递增（10 起手依次得到 11、12）",
+          "两次 make_bumper 调用互相独立，各自从自己的 start 开始累加"
+        ],
+        "reference": "import unittest\n\n\nclass Counter:\n    def __init__(self, start):\n        self.value = start\n\n    def bump(self):\n        self.value += 1\n        return self.value\n\n\ndef make_bumper(start):\n    counter = Counter(start)\n\n    def bump():\n        return counter.bump()\n\n    return bump\n\n\nclass ClosureTest(unittest.TestCase):\n    def test_freevars_lists_captured_names(self):\n        self.assertEqual(make_bumper(0).__code__.co_freevars, (\"counter\",))\n\n    def test_value_is_in_a_cell_not_a_local(self):\n        bump = make_bumper(10)\n        self.assertNotIn(\"counter\", bump.__code__.co_varnames)\n        self.assertEqual([cell.cell_contents.value for cell in bump.__closure__], [10])\n\n    def test_calls_mutate_the_shared_object(self):\n        bump = make_bumper(10)\n        self.assertEqual(bump(), 11)\n        self.assertEqual(bump(), 12)\n\n    def test_two_factory_calls_are_independent(self):\n        first = make_bumper(0)\n        second = make_bumper(100)\n        first()\n        self.assertEqual(first(), 2)\n        self.assertEqual(second(), 101)\n\n    def test_cell_keeps_the_reference(self):\n        bump = make_bumper(5)\n        bump()\n        self.assertEqual(bump.__closure__[0].cell_contents.value, 6)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为闭包保存的是变量在定义时的值（其实保存的是变量本身，后续赋值可见）",
+        "把 co_freevars 和 co_varnames 混为一谈，以为自由变量也算局部变量",
+        "以为外层函数返回后局部变量立刻被回收，闭包读不到",
+        "把 __closure__ 的顺序想成随机的（它与 co_freevars 顺序一致）"
+      ]
+    },
+    {
+      "code": "py.closure.nonlocal",
+      "title": "nonlocal 重绑定外层变量",
+      "minutes": 20,
+      "module": "闭包",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3201",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "内层函数给外层的局部变量赋值为什么报 UnboundLocalError？nonlocal 做了什么？只读外层变量需要声明吗？",
+        "answer": [
+          "函数体里只要出现对某个名字的赋值（含 +=、for 目标、with ... as），该名字在整个函数里就是局部变量，编译期定死，与函数外有没有同名变量无关",
+          "count = count + 1 因此先读一个尚未绑定的局部 count，抛 UnboundLocalError: cannot access local variable 'count' where it is not associated with a value",
+          "nonlocal count 声明该名字属于最近的一层已存在该绑定的外层函数作用域，此后对内层而言它就是细胞变量，赋值改的是外层那个绑定",
+          "nonlocal 只能指向函数局部作用域，找不到会直接 SyntaxError: no binding for nonlocal 'x' found；指向模块全局要写 global，读全局则完全不用声明",
+          "只读取外层变量（不赋值）不需要任何声明，编译器会自动把它登记为自由变量"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 naive 版为什么抛异常",
+        "code": "def make_counter_naive(start):\n    count = start\n\n    def bump():\n        count = count + 1\n        return count\n\n    return bump\n\n\ndef make_counter(start):\n    count = start\n\n    def bump():\n        nonlocal count\n        count += 1\n        return count\n\n    return bump\n\n\ndef make_reader(start):\n    count = start\n\n    def read():\n        return count\n\n    return read\n\n\ntry:\n    make_counter_naive(0)()\nexcept UnboundLocalError as error:\n    print(\"naive:\", type(error).__name__)\n\ncounter = make_counter(0)\nprint(\"bump:\", counter(), counter())\nprint(\"read:\", make_reader(9)())\n",
+        "expected": [
+          "naive: UnboundLocalError",
+          "bump: 1 2",
+          "read: 9"
+        ],
+        "explain": "make_counter_naive 里的 bump 有语句 count = count + 1，赋值让 count 在整个 bump 里成为局部变量，右侧的 count 在局部命名空间里还没有绑定，于是抛 UnboundLocalError，捕获后打印类名。make_counter 里 bump 声明了 nonlocal count，赋值改的是外层 make_counter 的细胞，两次调用得到 1 和 2。make_reader 的 read 只读 count、不赋值，编译器直接把它当自由变量，不需要 nonlocal，调用返回 9。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def make_counter_naive(start):\n    count = start\n\n    def bump():\n        count = count + 1\n        return count\n\n    return bump\n\n\ndef make_counter(start):\n    count = start\n\n    def bump():\n        nonlocal count\n        count += 1\n        return count\n\n    return bump\n\n\nnaive = make_counter_naive(0)\nprint(naive())\ncounter = make_counter(0)\nprint(counter(), counter())\n",
+        "rootCause": "make_counter_naive 的 bump 里写了 count = count + 1。函数内的赋值让 count 成为 bump 的局部变量，右侧读取时这个局部名字还没有绑定，于是抛 UnboundLocalError: cannot access local variable 'count' where it is not associated with a value。外层函数确实有 count，但那不影响编译期的判断：赋值语句一出现，这个名字就被划进内层局部作用域了，闭包细胞根本没建立起来。",
+        "fix": "在内层函数里声明 nonlocal count，让赋值落到外层那个绑定上：\n\ndef bump():\n    nonlocal count\n    count += 1\n    return count\n\nnonlocal 必须写在函数体最前面、任何使用该名字的语句之前，而且它要求外层函数作用域里已经存在 count，否则直接 SyntaxError: no binding for nonlocal 'count' found。若目标其实是模块全局变量就改用 global；若只是读取外层变量，则什么声明都不需要。",
+        "fixed_code": "def make_counter(start):\n    count = start\n\n    def bump():\n        nonlocal count\n        count += 1\n        return count\n\n    def read():\n        return count\n\n    return bump, read\n\n\nbump, read = make_counter(0)\nprint(bump(), bump())\nprint(read())\n"
+      },
+      "code_task": {
+        "prompt": "实现 make_counter(start)：返回 (bump, read) 两个闭包，bump(step=1) 把外层计数加上 step 后返回新值，read() 只读当前值。要求 bump 里用 nonlocal 重绑定外层变量，read 里不出现 nonlocal。",
+        "acceptance": [
+          "bump() 返回 start + 1，bump(5) 返回当前值加 5",
+          "bump 连续调用时累加，例如 make_counter(0) 之后 bump(5) 得 5、再 bump() 得 6",
+          "read() 不加任何声明也能读到 bump 改过的最新值（make_counter(100) 之后 bump() 再 read() 得 101）",
+          "两次 make_counter 调用互不影响，一个累加到 2 时另一个仍是 0",
+          "make_counter(1) 的 bump() 正常返回 2，不抛 UnboundLocalError"
+        ],
+        "reference": "import unittest\n\n\ndef make_counter(start):\n    count = start\n\n    def bump(step=1):\n        nonlocal count\n        count += step\n        return count\n\n    def read():\n        return count\n\n    return bump, read\n\n\nclass NonlocalTest(unittest.TestCase):\n    def test_bump_rebinds_enclosing_variable(self):\n        bump, _ = make_counter(10)\n        self.assertEqual(bump(), 11)\n\n    def test_step_argument_accumulates(self):\n        bump, _ = make_counter(0)\n        self.assertEqual(bump(5), 5)\n        self.assertEqual(bump(), 6)\n\n    def test_read_sees_the_new_value_without_declaration(self):\n        bump, read = make_counter(100)\n        bump()\n        self.assertEqual(read(), 101)\n\n    def test_two_counters_are_independent(self):\n        first_bump, first_read = make_counter(0)\n        second_bump, second_read = make_counter(0)\n        first_bump()\n        first_bump()\n        self.assertEqual(first_read(), 2)\n        self.assertEqual(second_read(), 0)\n\n    def test_declaration_avoids_unbound_local_error(self):\n        bump, _ = make_counter(1)\n        self.assertEqual(bump(), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为外层有同名变量，内层赋值就会改它（赋值让名字变成内层局部变量）",
+        "在 +1 累加时不写 nonlocal，然后被 UnboundLocalError 的报错信息误导去查变量名拼写",
+        "把 nonlocal 写到使用该名字的语句之后（SyntaxError）",
+        "想用 nonlocal 改模块级变量（应改用 global），或以为 nonlocal 能跨多层随意跳到最外层"
+      ]
+    },
+    {
+      "code": "py.closure.lifecycle",
+      "title": "闭包延长变量生命周期",
+      "minutes": 20,
+      "module": "闭包",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3201",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "外层函数返回后它的局部变量会消失吗？同一外层调用产生的多个闭包共享状态吗？闭包持有大对象会怎样？",
+        "answer": [
+          "普通局部变量在外层函数返回时随栈帧失去引用，但只要被内层函数引用，它就被提升为细胞，引用计数由闭包持有，函数返回后依然存活",
+          "活着的证据是可观察行为：外层函数已经返回，闭包仍然能 append、读到之前写进去的数据，计数持续增长",
+          "同一次外层调用返回的多个闭包按 co_freevars 顺序共享同一组细胞，因此它们看到并修改的是同一份状态；两次外层调用各自建立新细胞，互不影响",
+          "细胞只要还被闭包引用就不会释放，闭包又持有它引用的所有对象，因此让长生命周期的闭包捕获大列表、大文件句柄会造成内存滞留，要先断开引用",
+          "想观察是否释放可以看 gc 计数，但那不是确定值；复习时用可观察状态变化（长度、内容）而不是 id、地址或计时"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明第二次 make_reader 调用有没有改动第一份状态",
+        "code": "def make_reader(seed):\n    data = [seed]\n\n    def read():\n        return len(data)\n\n    def add(item):\n        data.append(item)\n        return len(data)\n\n    return read, add\n\n\nread, add = make_reader(10)\nprint(read())\nprint(add(\"a\"))\nprint(add(\"b\"))\nprint(read())\nother_read, other_add = make_reader(99)\nprint(other_add(\"z\"))\nprint(other_read())\nprint(read())\n",
+        "expected": [
+          "1",
+          "2",
+          "3",
+          "3",
+          "2",
+          "2",
+          "3"
+        ],
+        "explain": "data 被 read 与 add 同时引用，提升为一个细胞，make_reader 返回后它照样存活。第一组闭包里 data 初始是 [10]：read() 得长度 1，add('a') 变 2，add('b') 变 3，再 read() 还是 3。第二次调用 make_reader(99) 建立的是新的细胞，other_add('z') 只改那份新数据得 2，other_read() 是 2，第一组的 read() 仍然是 3；两次外层调用的状态完全独立。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def make_logger():\n    def log(entry):\n        history.append(entry)\n        return len(history)\n\n    return log\n\n\nhistory = []\n\nfirst = make_logger()\nsecond = make_logger()\nprint(first(\"a\"))\nprint(second(\"b\"))\nprint(len(history))\n",
+        "rootCause": "history 定义在模块层，是全局变量而不是外层函数的局部变量。make_logger 里的 log 引用它得到的是全局查找，根本没有建立闭包细胞，两次 make_logger() 返回的 log 都写同一个全局列表，所以是 1、2、len(history) 也是 2——两个独立的 logger 共享了同一份状态，第一条日志也没有随“独立的一个 logger”隔离。把状态放在模块层，就等于让所有实例共享。",
+        "fix": "把状态移进工厂函数的局部作用域，让它被提升为细胞，随每次 make_logger() 调用新建一份：\n\ndef make_logger():\n    history = []\n\n    def log(entry):\n        history.append(entry)\n        return len(history)\n\n    def count():\n        return len(history)\n\n    return log, count\n\n这样两个 logger 的 count() 分别是 1 和 1，互不干扰。若确实需要共享全局历史，就由调用方显式传入同一个列表作为参数，把共享写成看得见的依赖，而不是藏在模块作用域里。",
+        "fixed_code": "def make_logger():\n    history = []\n\n    def log(entry):\n        history.append(entry)\n        return len(history)\n\n    def count():\n        return len(history)\n\n    return log, count\n\n\nfirst_log, first_count = make_logger()\nsecond_log, second_count = make_logger()\nprint(first_log(\"a\"))\nprint(second_log(\"b\"))\nprint(first_count(), second_count())\n"
+      },
+      "code_task": {
+        "prompt": "实现 make_logger(prefix)：每次调用创建一份独立的日志状态，返回 (log, count)。log(message) 追加 \"prefix:message\" 并返回当前条数；count() 返回条数。要求两份日志状态互不影响，且外层函数返回之后状态继续可用。",
+        "acceptance": [
+          "make_logger('app') 返回的 log('one')、log('two') 之后 count() 等于 2",
+          "刚拿到闭包、还没调用时第一次 log('boot') 返回 1",
+          "两次 make_logger 调用互相独立：一个 log 之后它的 count() 是 1，另一个的 count() 仍是 0",
+          "prefix 被闭包捕获，log 的返回值随调用次数递增（第二次 log('slow') 返回 2）",
+          "同一个 log 连续调用三次后 count() 等于 3，说明细胞在外层返回后继续存活"
+        ],
+        "reference": "import unittest\n\n\ndef make_logger(prefix):\n    entries = []\n\n    def log(message):\n        entries.append(f\"{prefix}:{message}\")\n        return len(entries)\n\n    def count():\n        return len(entries)\n\n    return log, count\n\n\nclass LifecycleTest(unittest.TestCase):\n    def test_state_survives_after_factory_returns(self):\n        log, count = make_logger(\"app\")\n        log(\"one\")\n        log(\"two\")\n        self.assertEqual(count(), 2)\n\n    def test_first_call_after_return_works(self):\n        log, _ = make_logger(\"app\")\n        self.assertEqual(log(\"boot\"), 1)\n\n    def test_two_calls_have_independent_state(self):\n        first_log, first_count = make_logger(\"a\")\n        second_log, second_count = make_logger(\"b\")\n        first_log(\"x\")\n        self.assertEqual(first_count(), 1)\n        self.assertEqual(second_count(), 0)\n\n    def test_prefix_is_captured(self):\n        log, _ = make_logger(\"db\")\n        log(\"slow\")\n        self.assertEqual(log(\"slow\"), 2)\n\n    def test_same_closure_keeps_growing(self):\n        log, count = make_logger(\"tmp\")\n        log(\"kept\")\n        log(\"again\")\n        log(\"third\")\n        self.assertEqual(count(), 3)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "把状态写在模块级变量里，然后以为每个工厂返回的闭包各自独立",
+        "以为外层函数返回后局部变量已经回收，闭包不能再改它",
+        "忘记同一次外层调用返回的多个闭包共享细胞，误以为它们在调用时各自复制一份",
+        "让长生命周期的闭包捕获大对象，直到内存吃紧才发现引用没断"
+      ]
+    },
+    {
+      "code": "py.closure.late-binding",
+      "title": "循环闭包的晚绑定",
+      "minutes": 20,
+      "module": "闭包",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3202",
+          "relation": "exercises"
+        },
+        {
+          "taskId": "3204",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "循环里创建的闭包为什么全用同一个值？三种常见修法分别怎么做到即时捕获？",
+        "answer": [
+          "循环不会为每次迭代新建作用域，同一个变量（细胞）被所有闭包共享，闭包里读到的值要等调用时才去细胞取，所以全部取到循环结束后的最后一个值",
+          "修法一是默认参数 def f(i=i)：在定义函数那一刻把当前值复制进参数默认值，调用时不再看细胞，属于即时捕获",
+          "修法二是工厂函数：外层每次调用建立新的局部变量细胞，内层函数引用它，每次迭代得到各自的细胞",
+          "修法三是 functools.partial：partial(fn, i) 在创建对象时就把 i 的当前对象存进 .args，调用时再作为参数传入，同样是即时捕获",
+          "三种修法都把“取值时刻”提前到定义或创建对象的那一刻，输出应为 0、1、2，同一个循环变量细胞仍然活到循环之后"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明四种写法取值时刻的差别",
+        "code": "from functools import partial\n\n\ndef make_literal():\n    return [lambda: i for i in range(3)]\n\n\ndef make_default():\n    return [lambda i=i: i for i in range(3)]\n\n\ndef make_factory():\n    def build(value):\n        return lambda: value\n    return [build(i) for i in range(3)]\n\n\ndef show(value):\n    return value\n\n\ndef make_partial():\n    return [partial(show, i) for i in range(3)]\n\n\nprint(\"literal:\", [f() for f in make_literal()])\nprint(\"default:\", [f() for f in make_default()])\nprint(\"factory:\", [f() for f in make_factory()])\nprint(\"partial:\", [f() for f in make_partial()])\n",
+        "expected": [
+          "literal: [2, 2, 2]",
+          "default: [0, 1, 2]",
+          "factory: [0, 1, 2]",
+          "partial: [0, 1, 2]"
+        ],
+        "explain": "make_literal 的每个 lambda 都闭包了推导式里同一个循环变量 i，调用发生在推导式结束之后，那时 i 已经绑定到最后一个值 2，所以三个都返回 2，这是晚绑定。make_default 用默认参数 i=i 在定义每个 lambda 时就把当时的 i 复制进参数，调用时读参数不复读细胞，得到 0、1、2。make_factory 让外层 build(value) 的每次调用建立独立细胞，lambda 引用的是各自的 value，同样得到 0、1、2。make_partial 用 partial(show, i) 在创建 partial 时把 i 的当前对象存进 .args，调用时作为位置参数传入，也得到 0、1、2——三种修法都是即时捕获。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def make_multipliers(factors):\n    return [lambda value: value * factor for factor in factors]\n\n\nmultipliers = make_multipliers([1, 2, 3])\nprint([multiply(10) for multiply in multipliers])\n",
+        "rootCause": "列表推导式里的 lambda 都闭包了同一个循环变量 factor，推导式本身不共享外层作用域但同一个推导式内只有一份 factor 细胞。推导式结束后 factor 绑定到最后一个元素 3，之后才调用这些 lambda，于是每个都算 value * 3，[10, 20, 30] 变成 [30, 30, 30]。问题不在 lambda 的写法，而在所有闭包共用一个变量细胞、取值被推迟到调用时。",
+        "fix": "让每次迭代产生一个新的绑定，再让闭包引用那个绑定。用工厂函数：\n\ndef make_multipliers(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n也可以保留闭包但改默认参数：lambda value, factor=factor: value * factor。若只是要固定一个实参，还可以用 partial(operator.mul, ...) 之类把参数在创建时绑定好。改完 [multiply(10) for multiply in make_multipliers([1, 2, 3])] 得到 [10, 20, 30]。",
+        "fixed_code": "def make_multipliers(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n\nmultipliers = make_multipliers([1, 2, 3])\nprint([multiply(10) for multiply in multipliers])\nprint([multiply(10) for multiply in make_multipliers([4, 5])])\n"
+      },
+      "code_task": {
+        "prompt": "实现 make_multipliers(factors)：返回与 factors 等长的函数列表，第 k 个函数是闭包，调用 multiply(value) 返回 value 乘 factors[k]。要求任意时刻调用结果都不受循环变量当前值影响。",
+        "acceptance": [
+          "make_multipliers([1, 2, 3]) 的三个函数调用 multiply(10) 分别得到 10、20、30",
+          "先调用这些函数再重复调用，结果不变，说明捕获的值没有被循环变量覆盖",
+          "make_multipliers([]) 返回空列表",
+          "返回列表长度等于输入长度，例如 5 个因子得到 5 个函数",
+          "make_multipliers([1, 2, 3, 4]) 的四个函数 multiply(1) 依次得到 1、2、3、4"
+        ],
+        "reference": "import unittest\n\n\ndef make_multipliers(factors):\n    def build(factor):\n        return lambda value: value * factor\n    return [build(factor) for factor in factors]\n\n\nclass LateBindingTest(unittest.TestCase):\n    def test_each_function_uses_its_own_factor(self):\n        multipliers = make_multipliers([1, 2, 3])\n        self.assertEqual([multiply(10) for multiply in multipliers], [10, 20, 30])\n\n    def test_calls_do_not_change_captured_values(self):\n        multipliers = make_multipliers([2, 4])\n        multipliers[0](1)\n        multipliers[1](1)\n        self.assertEqual(multipliers[0](5), 10)\n        self.assertEqual(multipliers[1](5), 20)\n\n    def test_empty_factors(self):\n        self.assertEqual(make_multipliers([]), [])\n\n    def test_function_count_matches_input(self):\n        self.assertEqual(len(make_multipliers([1, 2, 3, 4, 5])), 5)\n\n    def test_longer_input_still_maps_correctly(self):\n        multipliers = make_multipliers([1, 2, 3, 4])\n        self.assertEqual([multiply(1) for multiply in multipliers], [1, 2, 3, 4])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为每次循环迭代会创建新的作用域（循环本身不会，只有函数和推导式才有自己的作用域）",
+        "给 lambda 加默认参数时写成 lambda value, factor=factors 这种复制整个列表的笔误",
+        "用工厂函数修好了却没注意工厂参数名与闭包变量名不一致导致 NameError",
+        "以为 functools.partial 也会晚绑定（它在创建时就绑定参数）"
+      ]
+    },
+    {
+      "code": "py.closure.shared-state",
+      "title": "闭包共享状态",
+      "minutes": 20,
+      "module": "闭包",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3202",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "同一次外层调用返回的多个闭包如何共享状态？两次外层调用的状态为什么会隔开？不可变重绑定与可变对象原地修改有什么区别？",
+        "answer": [
+          "同一次外层调用返回的多个闭包按 co_freevars 顺序共享同一组细胞，一个闭包写入的值另一个立刻能读到，这正是实现累加器、查询器、重置器的常用手段",
+          "两次外层调用各自建立新的细胞，所以两个实例的状态互相独立；独立性来自“每次调用新建细胞”，而不是来自闭包本身的隔离",
+          "不可变值（int、str、tuple）只能用 nonlocal 重新绑定细胞，读取方在重绑定后能看到新绑定",
+          "可变对象（list、dict、自定义实例）可以原地修改（append、state[\"count\"] += 1），不需要 nonlocal；就地修改后所有共享该细胞的闭包都看到变化",
+          "同一个函数里对名字赋值会让它变成局部变量，例如在 reset 里写 state = {...} 只是让 state 变成 reset 的局部名，外层细胞并不会被重置，这是“看起来重置了其实没重置”的隐藏 bug"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明哪些行改的是同一份状态",
+        "code": "def make_account(balance):\n    history = []\n\n    def deposit(amount):\n        nonlocal balance\n        balance += amount\n        history.append(amount)\n        return balance\n\n    def withdraw(amount):\n        nonlocal balance\n        if amount > balance:\n            return None\n        balance -= amount\n        history.append(amount)\n        return balance\n\n    def state():\n        return (balance, len(history))\n\n    return deposit, withdraw, state\n\n\ndeposit, withdraw, state = make_account(100)\nprint(deposit(20))\nprint(withdraw(50))\nprint(withdraw(1000))\nprint(state())\nother_deposit, other_withdraw, other_state = make_account(5)\nprint(other_deposit(1))\nprint(other_state())\nprint(state())\n",
+        "expected": [
+          "120",
+          "70",
+          "None",
+          "(70, 2)",
+          "6",
+          "(6, 1)",
+          "(70, 2)"
+        ],
+        "explain": "deposit 与 withdraw 都声明 nonlocal balance，共享 make_account 的 balance 细胞；history 是同一个列表细胞，两者都 append。初始 100：deposit(20) 返回 120；withdraw(50) 返回 70；withdraw(1000) 因超过余额、在改动 balance 之前就返回 None，所以 history 没有增长；state() 读到的就是 (70, 2)。接着 make_account(5) 建立全新细胞，other_deposit(1) 返回 6，other_state() 是 (6, 1)；原先那份不受影响，state() 仍是 (70, 2)。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def make_counter():\n    state = {\"count\": 0}\n\n    def increment():\n        state[\"count\"] += 1\n        return state[\"count\"]\n\n    def snapshot():\n        return state[\"count\"]\n\n    def reset():\n        state = {\"count\": 0}\n        return state[\"count\"]\n\n    return increment, snapshot, reset\n\n\nincrement, snapshot, reset = make_counter()\nprint(increment())\nprint(snapshot())\nprint(reset())\nprint(snapshot())\nprint(increment())\n",
+        "rootCause": "reset 里写了 state = {\"count\": 0}，函数内对 state 赋值让 state 变成 reset 的局部变量，不再是自由变量。于是 reset 每次新建一个只属于它自己的字典并返回 0，外层的共享细胞完全没被碰到；increment 继续在旧字典上自增，snapshot() 又读到旧值，输出是 1、1、0、1、2。reset 看起来返回了 0，实际只是把一个局部变量清零，共享状态从未被重置。",
+        "fix": "原地修改共享的那个可变对象，让所有闭包看到同一份变化：\n\ndef reset():\n    state[\"count\"] = 0\n    return state[\"count\"]\n\n如果要重置的是不可变值（int、str），就必须在 reset 里声明 nonlocal count 并重新绑定：\n\ndef reset():\n    nonlocal count\n    count = 0\n    return count\n\n修好后依次得到 1、1、0、0、1，reset 之后的 snapshot() 确实变成 0。",
+        "fixed_code": "def make_counter():\n    state = {\"count\": 0}\n\n    def increment():\n        state[\"count\"] += 1\n        return state[\"count\"]\n\n    def snapshot():\n        return state[\"count\"]\n\n    def reset():\n        state[\"count\"] = 0\n        return state[\"count\"]\n\n    return increment, snapshot, reset\n\n\nincrement, snapshot, reset = make_counter()\nprint(increment())\nprint(snapshot())\nprint(reset())\nprint(snapshot())\nprint(increment())\n"
+      },
+      "code_task": {
+        "prompt": "实现 (increment, snapshot, reset) 三个闭包，共享同一份计数状态：increment() 计数加一并返回新值，snapshot() 返回当前值且不改变状态，reset() 清零后返回 0。另外实现 make_accumulator()，用 nonlocal 重绑定实现 (add, read)，add(amount) 累加并返回总和。",
+        "acceptance": [
+          "同一个 make_counter 返回的 increment 与 snapshot 共享状态：increment() 之后 snapshot() 立即返回同样的值",
+          "两次 make_counter 调用互相独立：第一个 increment 两次后 snapshot() 是 2，第二个的 snapshot() 仍是 0",
+          "reset() 之后 snapshot() 返回 0，说明重置作用在共享状态上",
+          "reset() 之后再 increment() 返回 1、snapshot() 返回 1，状态没有被破坏",
+          "make_accumulator 里 add(3) 返回 3、add(4) 返回 7，read() 返回 7（nonlocal 重绑定对同一组闭包可见）"
+        ],
+        "reference": "import unittest\n\n\ndef make_counter():\n    state = {\"count\": 0}\n\n    def increment():\n        state[\"count\"] += 1\n        return state[\"count\"]\n\n    def snapshot():\n        return state[\"count\"]\n\n    def reset():\n        state[\"count\"] = 0\n        return state[\"count\"]\n\n    return increment, snapshot, reset\n\n\ndef make_accumulator():\n    total = 0\n\n    def add(amount):\n        nonlocal total\n        total += amount\n        return total\n\n    def read():\n        return total\n\n    return add, read\n\n\nclass SharedStateTest(unittest.TestCase):\n    def test_two_references_share_one_cell(self):\n        increment, snapshot, _ = make_counter()\n        self.assertEqual(increment(), 1)\n        self.assertEqual(snapshot(), 1)\n\n    def test_two_factory_calls_are_independent(self):\n        first_increment, first_snapshot, _ = make_counter()\n        second_increment, second_snapshot, _ = make_counter()\n        first_increment()\n        first_increment()\n        self.assertEqual(first_snapshot(), 2)\n        self.assertEqual(second_snapshot(), 0)\n\n    def test_reset_is_visible_through_snapshot(self):\n        increment, snapshot, reset = make_counter()\n        increment()\n        increment()\n        self.assertEqual(reset(), 0)\n        self.assertEqual(snapshot(), 0)\n\n    def test_state_keeps_working_after_reset(self):\n        increment, snapshot, reset = make_counter()\n        increment()\n        reset()\n        self.assertEqual(increment(), 1)\n        self.assertEqual(snapshot(), 1)\n\n    def test_nonlocal_rebinding_is_shared_inside_one_factory_call(self):\n        add, read = make_accumulator()\n        self.assertEqual(add(3), 3)\n        self.assertEqual(add(4), 7)\n        self.assertEqual(read(), 7)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在 reset() 里写 state = {}（或 count = 0）却没有 nonlocal，结果只改了局部名字",
+        "以为同一次工厂调用返回的多个闭包各有一份状态",
+        "把不可变值的累加写成 count += 1 却漏了 nonlocal，触发 UnboundLocalError",
+        "看到 reset() 返回 0 就以为共享状态已被清空，没有用 snapshot() 复核"
+      ]
+    },
+    {
+      "code": "py.closure.factory",
+      "title": "闭包工厂：计数器、配置捕获器、带状态重试",
+      "minutes": 25,
+      "module": "闭包",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3203",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "3504",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "怎么用工厂函数做出带私有状态的函数？计数器、配置捕获器、可重置状态、带状态重试分别怎么写？",
+        "answer": [
+          "工厂函数把状态放进自己的局部作用域，返回的内层函数引用它形成细胞；每次调用工厂都得到一份新状态，状态对外不可见，只能通过返回的函数访问",
+          "计数器用 nonlocal 重绑定一个不可变计数：bump(step=1) 里 nonlocal count 后 count += step；reset() 里同样 nonlocal 后把 count 拨回起始值",
+          "配置捕获器把配置参数（limit、prefix、format 串）当普通自由变量读，不需要 nonlocal；把配置存进字典再读取，可以在调用时看到后续变化",
+          "可重置、可查询的状态需要把多个闭包从同一次工厂调用返回，让它们共享同一组细胞：一个改、一个查、一个重置",
+          "带状态重试只是一个纯调用计数：在循环里反复调用被包装的函数直到返回非 None，attempts 用 nonlocal 累加，达到 limit 就返回失败文案；不要在复习题里 sleep 或依赖真实时间"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 bump 与 check 各自的状态存在哪里",
+        "code": "def make_counter(start=0):\n    count = start\n\n    def bump(step=1):\n        nonlocal count\n        count += step\n        return count\n\n    return bump\n\n\ndef make_quota(limit):\n    used = 0\n\n    def check(amount):\n        nonlocal used\n        if used + amount > limit:\n            return False\n        used += amount\n        return True\n\n    def used_count():\n        return used\n\n    return check, used_count\n\n\nbump = make_counter()\nprint(bump(), bump(5), bump())\ncheck, used_count = make_quota(10)\nprint(check(4), check(8), check(6), used_count())\n",
+        "expected": [
+          "1 6 7",
+          "True False True 10"
+        ],
+        "explain": "bump = make_counter() 把 count 初始化为默认的 0，并且 bump 用 nonlocal 改它：bump() 返回 1，bump(5) 返回 1+5=6，再 bump() 返回 7。check 与 used_count 来自同一次 make_quota(10) 调用，共享 used 与参数 limit 两个细胞。check(4) 时 used+4<=10，used 变成 4 返回 True；check(8) 时 4+8>10，直接返回 False 且 used 不变；check(6) 时 4+6<=10，used 变成 10 返回 True；最后 used_count() 读到 10。两份状态彼此无关。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def make_retry(fn, limit):\n    attempts = 0\n\n    def call(value):\n        attempts = attempts + 1\n        outcome = fn(value)\n        if outcome is not None:\n            return outcome\n        return \"give-up\"\n\n    def attempts_used():\n        return attempts\n\n    return call, attempts_used\n\n\ndef always_fails(value):\n    return None\n\n\ncall, attempts_used = make_retry(always_fails, 3)\nprint(call(\"job\"), attempts_used())\n",
+        "rootCause": "call 里写了 attempts = attempts + 1，赋值让 attempts 成为 call 的局部变量，右侧读取时这个局部名字还没绑定，所以第一次调用就抛 UnboundLocalError: cannot access local variable 'attempts' where it is not associated with a value。attempts_used 虽然能读外层的 attempts（它是自由变量），但根本走不到那一步；工厂的“带状态重试”因为这一行彻底不可用。",
+        "fix": "在 call 里声明 nonlocal attempts，让累加作用到工厂的细胞上；同时把“真正重试”做出来，在 limit 次内循环调用直到拿到非 None：\n\ndef call(value):\n    nonlocal attempts\n    for _ in range(limit):\n        attempts += 1\n        outcome = fn(value)\n        if outcome is not None:\n            return outcome\n    return \"give-up\"\n\n修好后 always_fails 在 limit=2 时返回 give-up 且 attempts_used() 是 2；换成第三次才成功的函数则返回转换后的结果、attempts_used() 是 3。注意复习题里不要用 sleep 或真实耗时来做重试判断。",
+        "fixed_code": "def make_retry(fn, limit):\n    attempts = 0\n\n    def call(value):\n        nonlocal attempts\n        for _ in range(limit):\n            attempts += 1\n            outcome = fn(value)\n            if outcome is not None:\n                return outcome\n        return \"give-up\"\n\n    def attempts_used():\n        return attempts\n\n    return call, attempts_used\n\n\ndef always_fails(value):\n    return None\n\n\ndef succeeds_on_third(value):\n    if attempts_holder[0] < 3:\n        attempts_holder[0] += 1\n        return None\n    return value.upper()\n\n\nattempts_holder = [0]\ncall, attempts_used = make_retry(always_fails, 2)\nprint(call(\"job\"), attempts_used())\nattempts_holder[0] = 0\ncall, attempts_used = make_retry(succeeds_on_third, 5)\nprint(call(\"job\"), attempts_used())\n"
+      },
+      "code_task": {
+        "prompt": "实现三个工厂：make_counter(start=0) 返回 (bump, reset)，bump(step=1) 累加并返回新值、reset() 拨回 start；make_quota(limit) 返回 (check, used_count)，check(amount) 在额度足够时累加并返回 True、否则返回 False 且不改变已用量；make_retry(callable_, limit) 返回 (call, attempts_used)，call 最多尝试 limit 次直到拿到非 None 结果，否则返回 'give-up after <limit>'。",
+        "acceptance": [
+          "make_counter(10) 的 bump(5) 返回 15、再 bump() 返回 16、reset() 返回 10、再 bump() 返回 11",
+          "两次 make_counter 的状态互不影响：第一个 bump 两次后 reset() 得 0，第二个 bump() 得 1",
+          "make_quota(10) 的 check(4) 为 True、check(8) 为 False、check(6) 为 True、used_count() 为 10",
+          "make_retry 包装第三次才成功的函数时 call('job') 返回 'JOB' 且 attempts_used() 为 3",
+          "make_retry 在 limit=2 且始终失败时 call('job') 返回 'give-up after 2'，两次调用后 attempts_used() 为 4"
+        ],
+        "reference": "import unittest\n\n\ndef make_counter(start=0):\n    count = start\n\n    def bump(step=1):\n        nonlocal count\n        count += step\n        return count\n\n    def reset():\n        nonlocal count\n        count = start\n        return count\n\n    return bump, reset\n\n\ndef make_quota(limit):\n    used = 0\n\n    def check(amount):\n        nonlocal used\n        if used + amount > limit:\n            return False\n        used += amount\n        return True\n\n    def used_count():\n        return used\n\n    return check, used_count\n\n\ndef make_retry(callable_, limit):\n    attempts = 0\n\n    def call(*args, **kwargs):\n        nonlocal attempts\n        for _ in range(limit):\n            attempts += 1\n            outcome = callable_(*args, **kwargs)\n            if outcome is not None:\n                return outcome\n        return f\"give-up after {limit}\"\n\n    def attempts_used():\n        return attempts\n\n    return call, attempts_used\n\n\ndef take_until(needed):\n    seen = 0\n\n    def step(value):\n        nonlocal seen\n        seen += 1\n        if seen >= needed:\n            return value.upper()\n        return None\n\n    return step\n\n\nclass FactoryTest(unittest.TestCase):\n    def test_counter_and_reset_are_independent(self):\n        bump, reset = make_counter(10)\n        self.assertEqual(bump(5), 15)\n        self.assertEqual(bump(), 16)\n        self.assertEqual(reset(), 10)\n        self.assertEqual(bump(), 11)\n\n    def test_counter_state_is_private(self):\n        first_bump, first_reset = make_counter(0)\n        second_bump, second_reset = make_counter(0)\n        first_bump()\n        first_bump()\n        self.assertEqual(first_reset(), 0)\n        self.assertEqual(second_bump(), 1)\n\n    def test_quota_rejects_over_limit_without_using_state(self):\n        check, used_count = make_quota(10)\n        self.assertTrue(check(4))\n        self.assertFalse(check(8))\n        self.assertTrue(check(6))\n        self.assertEqual(used_count(), 10)\n\n    def test_retry_returns_result_after_failures(self):\n        call, attempts_used = make_retry(take_until(3), 5)\n        self.assertEqual(call(\"job\"), \"JOB\")\n        self.assertEqual(attempts_used(), 3)\n\n    def test_retry_gives_up_at_limit(self):\n        call, attempts_used = make_retry(lambda value: None, 2)\n        self.assertEqual(call(\"job\"), \"give-up after 2\")\n        self.assertEqual(call(\"job\"), \"give-up after 2\")\n        self.assertEqual(attempts_used(), 4)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "工厂里写 attempts += 1 却漏了 nonlocal",
+        "配置捕获器每次调用都重新读外部变量，误以为捕获的是快照",
+        "把状态放在模块级变量上，导致两个工厂实例串数据",
+        "重试逻辑里用 sleep 或真实耗时做判断，让复习题失去确定性且变慢"
+      ]
+    },
+    {
+      "code": "py.functools.partial",
+      "title": "functools.partial 偏函数",
+      "minutes": 20,
+      "module": "functools",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3204",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "partial 预先绑定参数是怎么回事？它和闭包、lambda 有什么关系？什么时候该用它？",
+        "answer": [
+          "partial(func, *args, **keywords) 返回一个可调用对象，调用它时把预先绑定的位置参数放在前面、预先绑定的关键字参数并入调用参数，再一起交给 func",
+          "绑定发生在创建 partial 的那一刻：存下来的是实参的当前对象，之后修改变量名不影响已创建的对象，所以它和默认参数、工厂闭包一样属于即时捕获",
+          "partial 对象不是函数、也不创建闭包：它没有 __closure__，但语义上与“把参数固定住的 lambda”等价，两者都可以把带参函数变成符合回调签名的可调用对象",
+          "可观察属性是 .func（原始函数）、.args（已绑定的位置参数元组）、.keywords（已绑定的关键字参数字典）",
+          "典型用法是 sorted(key=...) 的可复用键、回调注册、把带参函数适配成无参或单参接口；只是想写一个短的一次性匿名函数时，lambda 更直观"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明循环里的 partial 绑定了什么",
+        "code": "from functools import partial\n\n\ndef label(prefix, name):\n    return f\"{prefix}:{name}\"\n\n\nnames = [\"ann\", \"bob\"]\nhandlers = []\nfor prefix in [\"a\", \"b\"]:\n    handlers.append(partial(label, prefix))\n\nprint([handlers[index](names[index]) for index in range(2)])\nprint(len(handlers[0].args), handlers[0].args[0])\nprint(handlers[0].func is label)\nprint(sorted(handlers[0].keywords))\nprint(hasattr(handlers[0], \"__closure__\"))\n",
+        "expected": [
+          "['a:ann', 'b:bob']",
+          "1 a",
+          "True",
+          "[]",
+          "False"
+        ],
+        "explain": "循环每次创建 partial(label, prefix)，把当时 prefix 的对象存进 .args，所以第一个 handler 的 args 是 ('a',)、第二个是 ('b',)，调用时再补上调用方给的 name，得到 'a:ann' 与 'b:bob'。handlers[0].args 长度是 1，第一个元素是 'a'。.func 就是原函数 label，所以 is 判断为 True。这里绑定的是位置参数，.keywords 是空字典，排序后打印 []。partial 对象没有 __closure__，hasattr 返回 False——它靠保存的参数而不是细胞来固定实参。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from functools import partial\n\n\ndef send(channel, message):\n    return f\"[{channel}] {message}\"\n\n\nslack = partial(send, \"slack\")\nprint(slack(\"hi\"))\nprint(slack(\"bye\", \"again\"))\n",
+        "rootCause": "slack 已经把 message 之外的位置参数固定成 'slack'（对应参数 channel），调用时再传两个位置参数就变成 send('slack', 'bye', 'again')，send 只接受两个位置参数，于是抛 TypeError: send() takes 2 positional arguments but 3 were given。把 partial 预绑定的位置参数误当成可以随意追加的默认参数，就会在调用处多塞一个实参。",
+        "fix": "调用 partial 时只补齐尚未绑定的参数：slack('bye')。要固定住某个关键字参数就在创建时写 partial(send, message='hi')，之后按位置传 channel；如果确实想让调用方可以覆盖绑定的参数，就再传同名关键字（重复给同一位置参数会抛 TypeError: got multiple values for argument）。用 print(slack.args) 能看到已绑定的位置参数，用 slack.keywords 能看到关键字参数，便于确认签名。",
+        "fixed_code": "from functools import partial\n\n\ndef send(channel, message):\n    return f\"[{channel}] {message}\"\n\n\nslack = partial(send, \"slack\")\nprint(slack(\"hi\"))\nprint(slack(\"bye\"))\nprint([slack(value) for value in [\"one\", \"two\"]])\nprint(slack.func is send, slack.args)\n"
+      },
+      "code_task": {
+        "prompt": "实现 sort_records(records, key, reverse=False) 返回排序后的新列表；再用 partial 基于它构造只差一个 key 的可调用对象；实现 describe_partial(callable_)，返回 {'name': 原函数名, 'args': 归一化后的绑定位置参数元组, 'keywords': 排序后的绑定关键字字典}，其中参数里的可调用对象用它的 __name__ 表示、其他值原样保留。",
+        "acceptance": [
+          "用 partial(sort_records, key=...) 创建的对象，describe_partial 的 keywords 键只有 ['key']、args 为空元组",
+          "describe_partial 的 name 等于原函数名，且 partial 对象的 .func is sort_records",
+          "partial(sort_records, PEOPLE, lambda record: record['name']) 的 args 归一化后是 (PEOPLE, '<lambda>')",
+          "偏函数调用时补齐剩余参数：BY_AGE(PEOPLE) 得到按 age 升序的 ['bob', 'ann', 'cid']",
+          "调用时可以覆盖已绑定的关键字：BY_AGE(PEOPLE, reverse=True) 得到 ['cid', 'ann', 'bob']，而 BY_AGE(PEOPLE) 仍是升序"
+        ],
+        "reference": "import unittest\nfrom functools import partial\n\n\ndef sort_records(records, key, reverse=False):\n    return sorted(records, key=key, reverse=reverse)\n\n\ndef describe_partial(callable_):\n    def describe(value):\n        name = getattr(value, \"__name__\", None)\n        return name if name is not None else value\n    return {\n        \"name\": callable_.func.__name__,\n        \"args\": tuple(describe(value) for value in callable_.args),\n        \"keywords\": dict(sorted(callable_.keywords.items())),\n    }\n\n\nPEOPLE = [\n    {\"name\": \"ann\", \"age\": 31},\n    {\"name\": \"bob\", \"age\": 25},\n    {\"name\": \"cid\", \"age\": 40},\n]\n\nBY_AGE = partial(sort_records, key=lambda record: record[\"age\"])\n\n\nclass PartialTest(unittest.TestCase):\n    def test_partial_binds_keyword_arguments(self):\n        described = describe_partial(BY_AGE)\n        self.assertEqual(list(described[\"keywords\"]), [\"key\"])\n        self.assertEqual(described[\"args\"], ())\n\n    def test_partial_keeps_the_underlying_function(self):\n        self.assertIs(BY_AGE.func, sort_records)\n        self.assertEqual(describe_partial(BY_AGE)[\"name\"], \"sort_records\")\n\n    def test_bound_positional_arguments_are_reused(self):\n        first = partial(sort_records, PEOPLE, lambda record: record[\"name\"])\n        self.assertEqual(describe_partial(first)[\"args\"], (PEOPLE, \"<lambda>\"))\n\n    def test_call_supplies_the_arguments_left_over(self):\n        records = BY_AGE(PEOPLE)\n        self.assertEqual([record[\"name\"] for record in records], [\"bob\", \"ann\", \"cid\"])\n\n    def test_bound_keyword_can_be_overridden_per_call(self):\n        records = BY_AGE(PEOPLE, reverse=True)\n        self.assertEqual([record[\"name\"] for record in records], [\"cid\", \"ann\", \"bob\"])\n        self.assertEqual([record[\"name\"] for record in BY_AGE(PEOPLE)],\n                         [\"bob\", \"ann\", \"cid\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为 partial 会创建闭包（它没有 __closure__，也不出现在 co_freevars 里）",
+        "调用时又传一遍 partial 已绑定的位置参数，触发 got multiple values / takes N positional arguments",
+        "把 partial 当成可以给同一参数重复赋值，忽略重复关键字会抛 TypeError",
+        "以为 partial 是晚绑定（它在创建那一刻就把当前对象存进 .args）"
+      ]
+    },
+    {
+      "code": "py.deco.syntax",
+      "title": "装饰器语法展开时机",
+      "minutes": 25,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "@deco 到底做了什么？装饰发生在什么时候，被包装的函数体又在什么时候执行？",
+        "answer": [
+          "@deco 写在 def 前，等价于 def 结束后立刻执行 greet = deco(greet)：这个名字被重新绑定到装饰器返回的对象，而不是原来的函数",
+          "整个替换发生在函数定义（模块导入）时，就在 def 语句执行完的那一刻；此时被装饰函数的函数体一行都还没跑",
+          "被包装函数体只在“调用时”执行：调用 greet(...) 先进入 wrapper，wrapper 再调用装饰器捕获的原函数",
+          "装饰器表达式（@factory(2) 里的 factory(2)、@ 后面的属性访问与调用）在 def 之前求值，求值结果再被拿去调用；@deco 本身只是名字查找加一次调用",
+          "被替换的是名字绑定，不是函数体：要改“调用时参数”必须写进 wrapper（闭包捕获），不能在装饰之后回来改函数的调用约定"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并指出哪些行是定义（装饰）阶段打印的、哪些行是调用阶段打印的",
+        "code": "def deco(fn):\n    print(\"deco 收到\", fn.__name__)\n    def wrapper(*args, **kwargs):\n        print(\"wrapper 执行\", fn.__name__)\n        return fn(*args, **kwargs)\n    return wrapper\n\n\nprint(\"1 定义前\")\n@deco\ndef greet(name):\n    print(\"greet 函数体执行\")\n    return \"hi \" + name\nprint(\"2 定义后\")\n\n\ndef other():\n    return \"其他函数\"\n\n\nother = deco(other)\nprint(\"3 装饰 other 后\")\nresult = greet(\"amy\")\nprint(\"4 greet 返回\", result)\n",
+        "explain": "装饰阶段只做替换名字的准备工作：@deco 让 deco(greet) 立刻执行，所以先打印 “deco 收到 greet”，此时 greet 这个全局名字已经指向 wrapper，而 greet 的函数体一行都没跑。随后 def other 之后的 other = deco(other) 是同一件事的手写形式，所以又打印一次 “deco 收到 other”。到 result = greet(\"amy\") 才真正进入调用阶段：wrapper 先打印 “wrapper 执行 greet”，再由它调用装饰时捕获的原函数，打印 “greet 函数体执行”，最后把返回值 hi amy 交回给 result。整个输出顺序就是先装饰、后调用。",
+        "expected": [
+          "1 定义前",
+          "deco 收到 greet",
+          "2 定义后",
+          "deco 收到 other",
+          "3 装饰 other 后",
+          "wrapper 执行 greet",
+          "greet 函数体执行",
+          "4 greet 返回 hi amy"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def with_units(fn):\n    def wrapper(text):\n        return fn(text + \" 元\")\n    return wrapper\n\n\n@with_units\ndef label(text):\n    return \"价格：\" + text\n\n\nlabel = lambda text: label(\"原价 \" + text)\n\n\ndef label_text(text):\n    return \"价格：\" + text\n\n\nprint(label_text(\"a\"))\nprint(label(\"a\"))\n",
+        "rootCause": "@with_units 已经把 label 这个名字重新绑定成 wrapper，代码却又执行 label = lambda text: label(\"原价 \" + text)：lambda 内部引用的 label 正是它自己被赋值后的名字，于是每次调用都先递归调用自己，永远进不到原函数，最终以 RecursionError: maximum recursion depth exceeded 结束。根因是把装饰误解成“延迟到调用时再包一层”，装饰在定义时就已结束，之后不该再对同名函数做包装。",
+        "fix": "保留原函数名给未装饰的版本，把装饰结果放到新名字上：def label(text): return \"价格：\" + text 之后写 wrapped_label = with_units(label)，调用 wrapped_label(\"a\") 得到 '价格：a 元'。若确实要在调用时给参数加前缀，就把前缀逻辑写进装饰器的 wrapper（那里的参数才是本次调用的实参），或写成带参数的装饰器工厂，不要用 lambda 重新赋值被装饰的名字。"
+      },
+      "code_task": {
+        "prompt": "描述一个手工装饰流程：先把被装饰函数原样保存下来，再用 deco 对其装饰，最后既调用原函数也调用装饰后的版本。要求装饰阶段只发生名字替换，调用阶段才执行函数体。",
+        "acceptance": [
+          "deco 对某个函数执行后返回的是新函数对象，不是原函数本身",
+          "被装饰后调用 f() 与原函数调用结果一致（这里是 'f'）",
+          "函数体只在调用时执行：调用之前不打印任何来自函数体的内容",
+          "手动装饰前后，原函数对象仍能独立调用并返回同样结果（体现装饰是加一层而不是改写本体）",
+          "每执行一次 f = deco(f) 都得到一份新的包装函数，重复装饰不会让结果变化"
+        ],
+        "reference": "import unittest\n\n\ndef make_deco(calls):\n    def deco(func):\n        calls.append(func.__name__)\n\n        def wrapper(*args, **kwargs):\n            return func(*args, **kwargs)\n\n        return wrapper\n\n    return deco\n\n\napplied = []\ndeco = make_deco(applied)\n\n\n@deco\ndef f():\n    return \"f\"\n\n\n@deco\ndef g():\n    return \"g\"\n\n\nclass DecoTest(unittest.TestCase):\n    def test_decorator_called_once_per_definition(self):\n        self.assertEqual(applied, [\"f\", \"g\"])\n\n    def test_returns_new_function_object(self):\n        def h():\n            return \"h\"\n\n        self.assertIsNot(deco(h), h)\n\n    def test_call_returns_original_result(self):\n        self.assertEqual(f(), \"f\")\n        self.assertEqual(g(), \"g\")\n\n    def test_calls_do_not_rerun_decorator(self):\n        before = list(applied)\n        self.assertEqual(f(), \"f\")\n        self.assertEqual(g(), \"g\")\n        self.assertEqual(applied, before)\n        self.assertEqual(applied, [\"f\", \"g\"])\n\n    def test_name_is_rebound_to_wrapper(self):\n        self.assertNotEqual(f.__name__, \"f\")\n        self.assertEqual(f(), \"f\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为 @deco 只是“标记一下”，函数体还会在定义时执行一遍",
+        "在装饰之后再写 f = some_wrapper(f)，让 f 递归调用自己",
+        "以为可以在调用时才决定怎么装饰，于是把参数改写写在装饰器外面",
+        "把 @deco 的替换理解成修改原函数的函数体，而不是重新绑定名字"
+      ]
+    },
+    {
+      "code": "py.deco.wrapper-forwarding",
+      "title": "装饰器透明转发参数",
+      "minutes": 25,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3302",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "wrapper 怎么写才能对位置参数、关键字参数和默认参数都透明？漏掉 return 会怎样？",
+        "answer": [
+          "签名写成 wrapper(*args, **kwargs)：args 把位置实参收成元组、kwargs 把关键字实参收成字典，再原样 fn(*args, **kwargs) 交给被包装函数",
+          "必须写 return fn(*args, **kwargs)：只调用不返回，wrapper 的返回值就是 None，所有调用方拿到的都会变成 None",
+          "默认参数由被包装函数自己处理：没传的关键字根本不进 kwargs，转发后仍套用它自己的默认值",
+          "args/kwargs 是每次调用新建的局部对象，不会在调用之间串数据；它们只反映“本次真正传了什么”，不做默认值填充",
+          "代价是 wrapper 的签名对静态工具不透明，参数错误要进到被包装函数才暴露，报错信息里的函数名也是被包装函数"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每条参数是怎么进入被包装函数的",
+        "code": "def trace(fn):\n    def wrapper(*args, **kwargs):\n        print(\"位置参数元组\", args)\n        print(\"关键字参数字典\", kwargs)\n        return fn(*args, **kwargs)\n    return wrapper\n\n\n@trace\ndef total(a, b, c=3):\n    return a + b + c\n\n\nprint(\"返回值\", total(1, 2))\nprint(\"返回值\", total(1, b=2, c=10))\n",
+        "explain": "total(1, 2) 只传了位置参数，wrapper 收到的 args 是 (1, 2)、kwargs 是空字典，转发给 total 后 c 用默认值 3，得到 6。total(1, b=2, c=10) 里 b、c 都是关键字实参，于是 args 只有 (1,)，kwargs 是 {'b': 2, 'c': 10}，转发后得到 13。两次调用中 wrapper 都显式 return 了 fn(...) 的结果，所以打印出来的不是 None。",
+        "expected": [
+          "位置参数元组 (1, 2)",
+          "关键字参数字典 {}",
+          "返回值 6",
+          "位置参数元组 (1,)",
+          "关键字参数字典 {'b': 2, 'c': 10}",
+          "返回值 13"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def trace(fn):\n    def wrapper(*args, **kwargs):\n        print(\"调用\", fn.__name__)\n        fn(*args, **kwargs)\n    return wrapper\n\n\n@trace\ndef total(a, b=10):\n    return a + b\n\n\nprint(total(1))\nprint(total(1, 2))\nprint(total(1, b=5))\n",
+        "rootCause": "wrapper 里只写了 fn(*args, **kwargs) 而没有 return，调用表达式 wrapper(...) 的求值结果就是 None，所以 total(1)、total(1, 2)、total(1, b=5) 三次都打印 None。参数转发本身没问题（日志也照常打印、函数体也执行了），丢掉的只有返回值。",
+        "fix": "在 wrapper 里写 return fn(*args, **kwargs)，把被包装函数的返回值原样交回调用方；如果 wrapper 需要在返回前做事，就先写 result = fn(*args, **kwargs)，处理完再 return result，不要写成一句只调用。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器 trace：给被包装函数套一层日志，并在 wrapper.seen 里按 (args, dict(kwargs)) 记录每次调用收到的原始参数，同时把被包装函数的返回值原样交回。被装饰函数 total(a, b=10, **extra) 返回 a + b + extra.get('c', 0)。",
+        "acceptance": [
+          "位置参数转发正确：total(1, 2) == 3",
+          "关键字参数转发正确：total(1, b=5) == 6，total(1, c=100) == 111",
+          "wrapper.seen 记录原始调用形态：total(1, 2) 追加 ((1, 2), {})，total(1, b=5, c=7) 追加 ((1,), {'b': 5, 'c': 7})",
+          "返回值原样交回：total(2, 3) == 5，且不是 None",
+          "默认值仍生效：total(1) == 11"
+        ],
+        "reference": "import unittest\n\n\ndef trace(fn):\n    def wrapper(*args, **kwargs):\n        wrapper.seen.append((args, dict(kwargs)))\n        return fn(*args, **kwargs)\n\n    wrapper.seen = []\n    return wrapper\n\n\n@trace\ndef total(a, b=10, **extra):\n    return a + b + extra.get(\"c\", 0)\n\n\nclass ArgsTest(unittest.TestCase):\n    def test_positional_arguments_forwarded(self):\n        self.assertEqual(total(1, 2), 3)\n\n    def test_keyword_arguments_forwarded(self):\n        self.assertEqual(total(1, b=5), 6)\n        self.assertEqual(total(1, c=100), 111)\n\n    def test_wrapper_records_raw_arguments(self):\n        total.seen.clear()\n        total(1, 2)\n        self.assertEqual(total.seen, [((1, 2), {})])\n        total(1, b=5, c=7)\n        self.assertEqual(total.seen[-1], ((1,), {\"b\": 5, \"c\": 7}))\n\n    def test_return_value_forwarded(self):\n        self.assertEqual(total(2, 3), 5)\n        self.assertIsNotNone(total(0, 0))\n\n    def test_default_values_still_apply(self):\n        self.assertEqual(total(1), 11)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "wrapper 里忘记 return fn(...)，所有返回值静默变成 None",
+        "把 *args 写成 args（漏星号），调用时直接报 TypeError",
+        "在 wrapper 里手动重排参数，破坏关键字调用与默认值语义",
+        "以为 wrapper.seen 这类属性会被每次调用重置，或在 wrapper 函数之外去读它"
+      ]
+    },
+    {
+      "code": "py.functools.wraps",
+      "title": "functools.wraps 保留元数据",
+      "minutes": 20,
+      "module": "functools",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3302",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "不加 functools.wraps 会丢哪些元数据？wraps 具体复制了什么，inspect.signature 又是怎么知道原签名的？",
+        "answer": [
+          "不加 wraps 时返回的是 wrapper 函数对象：__name__ 变成 'wrapper'、__qualname__ 变成装饰器内的名字、__doc__ 变成 wrapper 的文档（通常是 None）、__module__ 变成定义 wrapper 的模块",
+          "functools.wraps(fn) 是带参数的装饰器：把 fn 的 __module__/__name__/__qualname__/__doc__/__annotations__ 复制给 wrapper（WRAPPER_ASSIGNMENTS），并执行 wrapper.__dict__.update(fn.__dict__)",
+          "wraps 还会设置 wrapper.__wrapped__ = fn，这是指向原函数的链条，也是“解除包装”的入口",
+          "inspect.signature(wrapper) 先看 wrapper 自己的 __signature__，没有就顺着 __wrapped__ 找到原函数并返回它的签名，所以加了 wraps 才看得到 (x, y=1)",
+          "wraps 只复制元数据，不改变调用行为：参数与返回值仍需 wrapper 自己用 *args/**kwargs 转发"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并解释 plain 与 wrapped 两组结果为什么不同",
+        "code": "import functools\nimport inspect\n\n\ndef plain(fn):\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs)\n    return wrapper\n\n\ndef wrapped(fn):\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs)\n    return wrapper\n\n\ndef alpha(x: int, y: int = 1) -> int:\n    \"\"\"alpha 的文档\"\"\"\n    return x + y\n\n\np = plain(alpha)\nw = wrapped(alpha)\nprint(p.__name__, p.__doc__)\nprint(w.__name__, w.__doc__)\nprint(hasattr(p, \"__wrapped__\"))\nprint(w.__wrapped__ is alpha)\nprint(inspect.signature(p))\nprint(inspect.signature(w))\n",
+        "explain": "plain 只返回内层 wrapper，没有任何元数据复制：__name__ 是 'wrapper'、__doc__ 是 None（内层函数没写文档字符串）。wrapped 用 @functools.wraps(fn) 把 alpha 的 __name__ 与 __doc__ 复制到 wrapper 上，所以打印 'alpha alpha 的文档'。__wrapped__ 是 wraps 才会设置的属性：plain 的返回值没有这个属性（hasattr 为 False），wrapped 的 __wrapped__ 正好是原函数 alpha（is 为 True）。inspect.signature 对前者只能看到 wrapper 真实的 (*args, **kwargs)；对后者会顺着 __wrapped__ 找到 alpha，返回 (x: int, y: int = 1) -> int。",
+        "expected": [
+          "wrapper None",
+          "alpha alpha 的文档",
+          "False",
+          "True",
+          "(*args, **kwargs)",
+          "(x: int, y: int = 1) -> int"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def traced(fn):\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs)\n    return wrapper\n\n\ndef upper(fn):\n    def wrapper(*args, **kwargs):\n        return str(fn(*args, **kwargs)).upper()\n    return wrapper\n\n\n@traced\n@upper\ndef read_x(text):\n    \"\"\"读取 x 值\"\"\"\n    return text\n\n\nprint(read_x.__name__)\nprint(read_x.__doc__)\nprint(read_x(\"hello\"))\n",
+        "rootCause": "traced 与 upper 两个装饰器的 wrapper 都没有加 functools.wraps，函数名 read_x 最终绑定到最外层的 wrapper：__name__ 变成 'wrapper'、__doc__ 变成 None（wrapper 自己没有文档字符串），原来的 “读取 x 值” 在对象上已经查不到。被包装函数本身还在（HELLO 说明它确实被调用了），丢的只是对外可见的元数据。",
+        "fix": "在每个 wrapper 上加 @functools.wraps(fn)（fn 是该层收到的被包装函数），让 __name__/__doc__/__module__/__qualname__/__annotations__ 与 __dict__ 逐层复制，并自动设置 __wrapped__。修好后 read_x.__name__ 是 'read_x'、__doc__ 是 '读取 x 值'、inspect.signature(read_x) 是 (text)；read_x.__wrapped__ 指向 upper 的 wrapper，再取一层 __wrapped__ 才是原函数。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器 logged：透明转发调用，并用 functools.wraps 保留被包装函数的元数据。用它连续装饰 label(x)（文档字符串为 '标签'），验证两层装饰之后名字、文档、模块、签名与 __wrapped__ 链条都还能还原。",
+        "acceptance": [
+          "label.__name__ == 'label'",
+          "label.__doc__ == '标签'",
+          "label.__module__ 等于本模块的 __name__（即 '__main__'）",
+          "str(inspect.signature(label)) == '(x)'",
+          "label.__wrapped__ 的 __name__ 也是 'label'，且它自身还带 __wrapped__（两层链条可走通）"
+        ],
+        "reference": "import functools\nimport inspect\nimport unittest\n\n\ndef traced(fn):\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs)\n\n    return wrapper\n\n\n@traced\ndef alpha(x: int, y: int = 2) -> int:\n    \"\"\"alpha 的文档\"\"\"\n    return x + y\n\n\nclass WrapsTest(unittest.TestCase):\n    def test_name_preserved(self):\n        self.assertEqual(alpha.__name__, \"alpha\")\n\n    def test_doc_preserved(self):\n        self.assertEqual(alpha.__doc__, \"alpha 的文档\")\n\n    def test_module_and_qualname_preserved(self):\n        self.assertEqual(alpha.__module__, __name__)\n        self.assertTrue(alpha.__qualname__.endswith(\"alpha\"))\n\n    def test_wrapped_attribute_points_to_original(self):\n        self.assertTrue(hasattr(alpha, \"__wrapped__\"))\n        self.assertEqual(alpha.__wrapped__.__name__, \"alpha\")\n        self.assertEqual(alpha.__wrapped__(1, 2), 3)\n\n    def test_signature_follows_original(self):\n        self.assertEqual(str(inspect.signature(alpha)), \"(x: int, y: int = 2) -> int\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "只给最外层 wrapper 加 wraps，内层没加，__wrapped__ 链条里仍混着 'wrapper'",
+        "以为 wraps 会复制函数体或改变参数转发行为",
+        "写上 functools.wraps 却不带括号，或把参数写成 fn() 的调用结果",
+        "把 __wrapped__ 当成原函数直接判等：多层装饰时它可能还指向另一个 wrapper"
+      ]
+    },
+    {
+      "code": "py.deco.parametrized",
+      "title": "带参数装饰器（装饰器工厂）",
+      "minutes": 25,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3303",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "@repeat(2) 这种带参数的装饰器要写几层？求值顺序是什么？少写一层会报什么错？",
+        "answer": [
+          "三层结构：最外层是装饰器工厂 repeat(times)，接收装饰器自己的参数；它返回真正的装饰器 decorator(func)；decorator 再返回 wrapper，完成对函数的包装",
+          "@repeat(2) 的求值顺序是：先求值表达式 repeat(2) 得到 decorator，再在 def 完成后执行 ping = decorator(ping)，所以工厂先跑、装饰器函数随后跑、wrapper 最后在调用时跑",
+          "装饰器参数只在装饰时求值一次，被 wrapper 闭包捕获后固定；想按调用逐次改变，必须把参数放进 wrapper 的参数或每次调用时传入",
+          "少写一层（写成 @repeat 而不是 @repeat(2)）时，def 之后执行的是 ping = repeat(ping)：函数对象被当成 times，返回值 decorator 被绑到函数名上；真正调用时才报 TypeError: repeat.<locals>.decorator() missing 1 required positional argument: 'func'",
+          "functools.wraps 加在最内层 wrapper 上，参数用 decorator 收到的 func；工厂层与 decorator 层没有函数对象可复制，不该在那里加 wraps"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并指出工厂、装饰器、wrapper 三层分别在什么时候执行",
+        "code": "def repeat(times):\n    print(\"工厂收到参数\", times)\n    def decorator(func):\n        print(\"装饰器收到函数\", func.__name__)\n        def wrapper(*args, **kwargs):\n            print(\"wrapper 执行\")\n            return func(*args, **kwargs)\n        return wrapper\n    return decorator\n\n\n@repeat(2)\ndef ping():\n    return \"pong\"\n\n\nprint(\"调用结果\", ping())\n",
+        "explain": "@repeat(2) 先求值 repeat(2)，于是装饰阶段第一步打印 “工厂收到参数 2” 并返回 decorator；def ping 完成后立刻执行 decorator(ping)，打印 “装饰器收到函数 ping” 并返回 wrapper，ping 这个名字从此指向 wrapper。到 print(\"调用结果\", ping()) 时才进入调用阶段，wrapper 打印 “wrapper 执行” 后调用原函数，最终返回 'pong'。times = 2 这个值在装饰阶段就被闭包固定下来，调用时不用再传任何参数。",
+        "expected": [
+          "工厂收到参数 2",
+          "装饰器收到函数 ping",
+          "wrapper 执行",
+          "调用结果 pong"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def repeat(times):\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            last = None\n            for _ in range(times):\n                last = func(*args, **kwargs)\n            return last\n        return wrapper\n    return decorator\n\n\n@repeat\ndef ping():\n    return \"pong\"\n\n\nprint(\"调用结果\", ping())\n",
+        "rootCause": "repeat 是装饰器工厂，必须先用 @repeat(2) 调用一次拿到 decorator。写成 @repeat 时，装饰阶段执行 ping = repeat(ping)：times 被当成函数对象、func 没有实参，repeat 返回内部 decorator 函数，ping 因此变成“还没拿到被包装函数”的装饰器；等 ping() 真正被调用才抛出 TypeError: repeat.<locals>.decorator() missing 1 required positional argument: 'func'。",
+        "fix": "补上括号写 @repeat(2)，让工厂在装饰阶段先用参数换回 decorator，再由 decorator(ping) 生成 wrapper。若确实想同时支持两种写法，就让工厂的第一个参数带默认值并显式分派（例如 times=None 时把收到的函数当成待包装函数），不要指望 times 一定是整数。"
+      },
+      "code_task": {
+        "prompt": "实现带参数装饰器 repeat(times)：@repeat(3) 让被装饰函数每次调用执行 3 次并返回最后一次结果；wrapper 必须转发参数；用 functools.wraps 保留元数据；并用测试固定“漏写括号在装饰阶段就报 TypeError”这一事实。",
+        "acceptance": [
+          "repeat(3) 返回可调用对象（是装饰器工厂的返回值，不是包装结果）",
+          "@repeat(3) 装饰的 ping('a') 调用一次让底层函数执行 3 次（traced == ['a', 'a', 'a']）",
+          "返回最后一次调用的结果：ping('b') == 'pong-b'",
+          "再次调用 ping('c') 仍返回 'pong-c'，次数参数不随调用增加",
+          "漏写括号（直接写 @repeat 而不是 @repeat(2)）在装饰阶段抛 TypeError，而不是等到调用才报错"
+        ],
+        "reference": "import unittest\n\ntraced = []\n\n\ndef repeat(times):\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            last = None\n            for _ in range(times):\n                last = func(*args, **kwargs)\n            return last\n\n        return wrapper\n\n    return decorator\n\n\n@repeat(3)\ndef ping(tag):\n    traced.append(tag)\n    return \"pong-\" + tag\n\n\nclass RepeatTest(unittest.TestCase):\n    def test_runs_three_times(self):\n        traced.clear()\n        self.assertEqual(ping(\"a\"), \"pong-a\")\n        self.assertEqual(len(traced), 3)\n        self.assertEqual(traced, [\"a\", \"a\", \"a\"])\n\n    def test_returns_last_result(self):\n        self.assertEqual(ping(\"b\"), \"pong-b\")\n        self.assertEqual(ping(\"b\"), \"pong-b\")\n\n    def test_argument_forwarded(self):\n        self.assertEqual(ping(\"c\"), \"pong-c\")\n\n    def test_factory_takes_parameter(self):\n        self.assertTrue(callable(repeat(2)))\n\n    def test_parameter_controls_count(self):\n        traced.clear()\n\n        @repeat(1)\n        def once():\n            traced.append(\"once\")\n            return 1\n\n        once()\n        self.assertEqual(len(traced), 1)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "写成 @repeat(2) 但忘记让最外层 return decorator，函数名被绑成 None",
+        "在装饰器工厂里就调用被包装函数，导致导入时误执行",
+        "把 functools.wraps 加在工厂层（那时还没有 func 可复制）或忘记加在内层 wrapper",
+        "以为装饰器参数可以在调用时再传（例如 ping(3) 想让函数跑 3 次）"
+      ]
+    },
+    {
+      "code": "py.deco.stack-order",
+      "title": "多层装饰器的叠加顺序",
+      "minutes": 25,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3303",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "3403",
+          "relation": "exercises"
+        },
+        {
+          "taskId": "3504",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "多个装饰器叠在一起时，哪个先生效？进入和离开的顺序为什么相反？",
+        "answer": [
+          "@a 写在 @b 上面时展开式是 f = a(b(f))：b 先套在 f 上，a 再套在 b 的返回值上，所以应用顺序自下而上",
+          "调用 f() 时最外层 a 的 wrapper 先跑，它再调用 b 的 wrapper，最后才到原函数，所以进入顺序自上而下（与 @ 的书写顺序一致）",
+          "返回时逐层弹栈，离开与收尾顺序和进入相反：最外层的 a 最后收到结果、最后做收尾",
+          "每层装饰器返回的都是新函数对象，原函数躺在最内层；层数越多，__name__/__doc__ 之类的元数据越需要 functools.wraps 逐层复制",
+          "交换上下两层的顺序会改变结果与顺序：谁在外面谁决定对外表现（先记录还是先转换、先加头还是先加尾）"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明进入与离开的顺序为什么相反",
+        "code": "def a(fn):\n    def wrapper(*args, **kwargs):\n        print(\"a 进入\")\n        result = fn(*args, **kwargs)\n        print(\"a 离开\")\n        return result\n    return wrapper\n\n\ndef b(fn):\n    def wrapper(*args, **kwargs):\n        print(\"b 进入\")\n        result = fn(*args, **kwargs)\n        print(\"b 离开\")\n        return result\n    return wrapper\n\n\n@a\n@b\ndef work():\n    print(\"work 执行\")\n    return \"done\"\n\n\nprint(\"结果\", work())\n",
+        "explain": "@a 在 @b 上面，展开成 work = a(b(work))，所以先应用 b、后应用 a。调用 work() 时从最外层进入：先打印 'a 进入'，a 的 wrapper 调用 b 的 wrapper，打印 'b 进入'，再调用原函数打印 'work 执行'。原函数返回后按栈反序收尾：先 'b 离开'，最后 'a 离开'，再把 'done' 交给 print，所以最后一行是 '结果 done'。",
+        "expected": [
+          "a 进入",
+          "b 进入",
+          "work 执行",
+          "b 离开",
+          "a 离开",
+          "结果 done"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def tag(fn):\n    def wrapper(*args, **kwargs):\n        return \"[[\" + str(fn(*args, **kwargs)) + \"]]\"\n    return wrapper\n\n\n@tag\ndef upper(text):\n    return text.upper()\n\n\nprint(upper(\"a\"))\n",
+        "rootCause": "@tag 写在 def upper 上面，装饰一结束 upper 这个名字指向的就是 tag 的 wrapper；wrapper 返回的是加工过的字符串 '[[' + ... + ']]'，所以 upper(\"a\") 得到 '[[A]]'。原本“先转大写、后打标签”的两步流程，因为函数名被替换而再也拿不到中间的纯大写结果；在返回值上继续链式调用字符串方法，拿到的也是带标签的结果。",
+        "fix": "保留原函数并显式命名装饰结果：def upper(text): return text.upper() 之后写 tagged_upper = tag(upper)，于是 upper(\"a\") 仍是 'A'，tagged_upper(\"a\") 是 '[[A]]'。若整条流水线本来就要标签在后，就用叠加顺序表达（把 @tag 放在 @upper 上面，让标签最后加工），或用显式的组合函数，别让一个名字同时承担两个角色。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器工厂 note(label)：每次调用按顺序把 '进入 <label>' 与 '离开 <label>' 追加到模块级 trace 列表，并转发参数与返回值。用 top = note('top')、bottom = note('bottom') 验证叠加顺序：@top 在 @bottom 上面时进入自上而下、离开自下而上；交换后顺序相反。",
+        "acceptance": [
+          "进入顺序自上而下：value() 之后 trace 的前两项是 ['进入 top', '进入 bottom']",
+          "离开顺序自下而上：trace 的最后两项是 ['离开 bottom', '离开 top']",
+          "返回值原样交回：value() == 'done'",
+          "trace 中只出现一次 'value'，说明被包装函数只执行一次、装饰器没有重复调用它",
+          "交换装饰器顺序后进入顺序变为 ['进入 bottom', '进入 top']，离开顺序变为 ['离开 top', '离开 bottom']"
+        ],
+        "reference": "import unittest\n\ntrace = []\n\n\ndef note(label):\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            trace.append(\"进入 \" + label)\n            result = func(*args, **kwargs)\n            trace.append(\"离开 \" + label)\n            return result\n\n        return wrapper\n\n    return decorator\n\n\ntop = note(\"top\")\nbottom = note(\"bottom\")\n\n\n@top\n@bottom\ndef value():\n    trace.append(\"value\")\n    return \"done\"\n\n\n@bottom\n@top\ndef swapped():\n    trace.append(\"value\")\n    return \"done\"\n\n\nclass OrderTest(unittest.TestCase):\n    def test_bottom_decorates_first(self):\n        self.assertEqual(value.__name__, \"wrapper\")\n\n    def test_enter_order_top_to_bottom(self):\n        trace.clear()\n        value()\n        self.assertEqual(trace[0], \"进入 top\")\n        self.assertEqual(trace[1], \"进入 bottom\")\n\n    def test_exit_order_bottom_to_top(self):\n        trace.clear()\n        value()\n        self.assertEqual(trace[-1], \"离开 top\")\n        self.assertEqual(trace[-2], \"离开 bottom\")\n\n    def test_return_value_passes_through(self):\n        self.assertEqual(value(), \"done\")\n\n    def test_swapping_changes_order(self):\n        trace.clear()\n        swapped()\n        self.assertEqual(trace[0], \"进入 bottom\")\n        self.assertEqual(trace[-1], \"离开 bottom\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为 @ 写在上面就先被应用，把应用顺序与执行顺序弄反",
+        "以为下游装饰器能看到上游的返回类型，于是在返回值上链式调用类型专属方法",
+        "在 wrapper 里提前 return，导致更外层的收尾代码没有机会执行",
+        "装饰器重新绑定函数名后，还指望原名能拿到未装饰版本"
+      ]
+    },
+    {
+      "code": "py.deco.metadata-loss",
+      "title": "装饰器元数据丢失",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3304",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "不加 functools.wraps 的装饰器会让函数丢掉什么？哪些代码会因此坏掉，怎么修？",
+        "answer": [
+          "被装饰后的名字指向 wrapper：__name__ 变成 'wrapper'、__qualname__ 带上装饰器内的局部名字、__doc__ 通常是 None、__module__ 变成定义 wrapper 的模块",
+          "__dict__ 不再是被装饰函数的字典，__annotations__ 也换成 wrapper 的（多半为空），类型检查与文档工具因此拿到错误信息",
+          "help()、文档生成、pytest 用例名、按 __name__ 建立的注册表与日志都会看到 'wrapper'：多个被装饰函数在注册表里重名，日志分不清来源",
+          "inspect.signature 只看到 (*args, **kwargs)，因为缺少 __wrapped__，无法沿链条找到原签名",
+          "修法就是在每个 wrapper 上加 @functools.wraps(fn)：它会复制 WRAPPER_ASSIGNMENTS 并设置 __wrapped__，不必手写 fn.__name__ 之类的逐项赋值"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并指出第一行原本期望出现的名字是什么",
+        "code": "def logged(fn):\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs)\n    return wrapper\n\n\n@logged\ndef label(x):\n    \"\"\"标签\"\"\"\n    return x\n\n\nprint(label.__name__)\nprint(label.__doc__ is None)\nprint(label(\"a\"))\n",
+        "explain": "logged 返回的是内层 wrapper，没有做任何元数据复制，label 这个名字指向 wrapper：wrapper.__name__ 天生是 'wrapper'，而 wrapper 自己没有文档字符串，所以 label.__doc__ is None 为 True（原函数的 '标签' 已丢失）。第三行 label(\"a\") 仍返回 'a'，说明丢的只是对外可见的元数据，调用行为没变；要恢复就在 wrapper 上加 @functools.wraps(fn)。",
+        "expected": [
+          "wrapper",
+          "True",
+          "a"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def logged(fn):\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs)\n    return wrapper\n\n\n@logged\n@logged\ndef label(x):\n    \"\"\"标签\"\"\"\n    return x\n\n\nprint(label.__name__)\nprint(label.__module__ == \"builtins\")\nprint(label.__doc__ is None)\nprint(label(\"a\"))\n",
+        "rootCause": "logged 的 wrapper 没有加 functools.wraps。两层 @logged 叠加后 label 绑定到最外层 wrapper：__name__ 是 'wrapper'、__doc__ 是 None（原文档 '标签' 已丢）、__module__ 也变成 wrapper 所在模块的值；虽然 label(\"a\") 仍返回 'a'，但任何按 __name__/__doc__ 工作的注册、日志、文档工具都拿不到真实信息。",
+        "fix": "在每个 wrapper 上加 @functools.wraps(fn)：它会复制 __module__/__name__/__qualname__/__doc__/__annotations__ 与 __dict__ 并设置 __wrapped__。修好后 label.__name__ 是 'label'、__doc__ 是 '标签'、inspect.signature(label) 是 (x)；两层包装时最外层 wrapper 的 __wrapped__ 指向内层 wrapper，它的 __name__ 也被复制成 'label'。"
+      },
+      "code_task": {
+        "prompt": "把一段使用 @register 与 @logged 的代码修好：注册表收集到的应该是真实函数名 'load' 与文档字符串 '读取文件'，打印出来的 load.__name__/__doc__ 也必须保留原值；把同一个装饰器用到第二个函数上时，注册表两项都要正确。",
+        "acceptance": [
+          "修复后 registry == [('load', '读取文件'), ('load2', '读取文件2')]，注册表里不再出现 'wrapper'",
+          "修复后 load.__name__ == 'load' 且 load.__doc__ == '读取文件'",
+          "修复只改装饰器本身（给 wrapper 加 functools.wraps），被装饰函数的定义不变",
+          "第二个函数 load2 的元数据同样被保留：load2.__name__ == 'load2' 且 __doc__ == '读取文件2'",
+          "修复版脚本以退出码 0 运行，且调用 load('data.txt') 仍返回 'data.txt'"
+        ],
+        "reference": "import functools\nimport unittest\n\nregistry = []\n\n\ndef register(fn):\n    registry.append((fn.__name__, fn.__doc__))\n    return fn\n\n\ndef logged(fn):\n    @functools.wraps(fn)\n    def wrapper(*args, **kwargs):\n        return fn(*args, **kwargs)\n    return wrapper\n\n\n@register\n@logged\ndef load(path):\n    \"\"\"读取文件\"\"\"\n    return path\n\n\n@logged\ndef load2(path):\n    \"\"\"读取文件2\"\"\"\n    return path\n\n\nregistry.append((load2.__name__, load2.__doc__))\n\n\nclass MetadataFixTest(unittest.TestCase):\n    def test_registry_has_real_names(self):\n        self.assertEqual(registry, [(\"load\", \"读取文件\"), (\"load2\", \"读取文件2\")])\n\n    def test_no_wrapper_name(self):\n        self.assertNotIn(\"wrapper\", [name for name, _ in registry])\n\n    def test_name_preserved(self):\n        self.assertEqual(load.__name__, \"load\")\n\n    def test_doc_preserved(self):\n        self.assertEqual(load.__doc__, \"读取文件\")\n\n    def test_call_still_works(self):\n        self.assertEqual(load(\"data.txt\"), \"data.txt\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "只给一层装饰器加 wraps，多层叠加时链条里仍混着 'wrapper'",
+        "以为 __name__ 是普通实例属性，去改 wrapper.__dict__['__name__'] 而不是用 wraps",
+        "手写 fn.__name__ 复制两三个属性，漏掉 __qualname__/__annotations__/__wrapped__",
+        "把 functools.wraps 写在 wrapper 定义之后（忘了它是装饰器）"
+      ]
+    },
+    {
+      "code": "py.deco.state-sharing",
+      "title": "装饰器共享状态",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3304",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "wrapper 里的计数器为什么会被所有调用共享？同一个装饰器包装多个函数时会怎样？",
+        "answer": [
+          "装饰器只在定义（装饰）时执行一次，wrapper 与它的闭包对象也只有一份；wrapper 里的 counter 就是这份闭包里的同一个对象，所以同一函数的每次调用都在改同一个计数器",
+          "每次调用 wrapper 新建的是参数局部变量，不是闭包变量：把 counter 定义在 wrapper 内部，等于每次调用都从零开始，累计值永远是 1",
+          "状态放在模块级变量、装饰器实例属性、wrapper 属性、闭包变量里效果不同：前几种可能被多个被装饰函数共享，闭包变量的作用域限于这一次装饰",
+          "陷阱是“希望每个被装饰函数有自己的状态”却只准备了一份闭包变量：如果同一个 wrapper 实例服务多个函数，它们的计数会串在一起；反之，装饰器函数每次执行都新建闭包时状态才是独立的",
+          "要每函数独立就在装饰时（装饰器函数体里）新建容器，再挂到各自的 wrapper 上（wrapper.calls = 0），或把状态放进惰性初始化的属性里"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 first 与 second 的计数为什么互不影响",
+        "code": "def shared(func):\n    counter = {\"n\": 0}\n    def wrapper(*args, **kwargs):\n        counter[\"n\"] += 1\n        return func(*args, **kwargs)\n    wrapper.counter = counter\n    return wrapper\n\n\ndef make():\n    return shared\n\n\ncounted = make()\n\n\n@counted\ndef first():\n    return \"first\"\n\n\n@counted\ndef second():\n    return \"second\"\n\n\nprint(first())\nprint(second())\nprint(first())\nprint(first.counter is second.counter)\nprint(first.counter[\"n\"])\n",
+        "explain": "shared 每次被调用（也就是每装饰一个 def）都会重新执行函数体，新建一份 counter 字典并返回专属的 wrapper，所以 first 与 second 各自拿到一个闭包，first.counter is second.counter 为 False。调用序列 first → second → first 之后，first 的计数是 2、second 的计数是 1；最后一行打印 first.counter[\"n\"] 得到 2。若把 counter 挪到模块级或让同一个 wrapper 实例服务两个函数，计数才会串在一起。",
+        "expected": [
+          "first",
+          "second",
+          "first",
+          "False",
+          "2"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def counted(fn):\n    def wrapper(*args, **kwargs):\n        wrapper.calls = 0\n        wrapper.calls += 1\n        return fn(*args, **kwargs)\n    return wrapper\n\n\n@counted\ndef add(a, b):\n    return a + b\n\n\n@counted\ndef mul(a, b):\n    return a * b\n\n\nadd(1, 2)\nadd(1, 2)\nmul(3, 4)\nprint(add.calls)\nprint(mul.calls)\n",
+        "rootCause": "wrapper.calls = 0 写在 wrapper 函数体里，于是每次调用先把计数清零再 +1：add 调用两次仍打印 1，mul 调用一次也打印 1，累计语义被清零覆盖。这不是共享问题，而是初始化时机放错——重置状态属于装饰阶段的一次性动作，不该出现在每次调用都会执行的路径上。",
+        "fix": "把初始化移到 wrapper 定义之后、返回之前：wrapper.calls = 0 放在装饰器函数体里。这样每个被装饰函数在装饰时各得到一份独立计数，wrapper.calls += 1 才能累加出 2 与 1。如果确实需要每次调用都从零开始（比如记录本次调用的分段次数），就把状态放进局部变量而不是函数属性，别把“累计值”和“本次调用值”混用同一个名字。"
+      },
+      "code_task": {
+        "prompt": "实现基于类实例的可调用装饰器 Counter：每个实例维护自己的 calls 计数，__call__(func) 返回包装函数并把该实例挂到 wrapper.counter 上，使不同被装饰函数互不影响。",
+        "acceptance": [
+          "新建一个 Counter 实例装饰的新函数，其 counter.calls 初始为 0",
+          "调用 add 两次后 counter_for(add).calls 比调用前多 2",
+          "调用 add 不影响 mul 的计数（counter_for(mul).calls 保持不变）",
+          "counter_for(add) 与 counter_for(mul) 不是同一个对象（每个被装饰函数各有一份状态）",
+          "被包装函数的返回值不受影响：add(1, 2) == 3、mul(2, 3) == 6"
+        ],
+        "reference": "import unittest\n\n\nclass Counter:\n    def __init__(self):\n        self.calls = 0\n\n    def __call__(self, func):\n        def wrapper(*args, **kwargs):\n            self.calls += 1\n            return func(*args, **kwargs)\n\n        wrapper.counter = self\n        return wrapper\n\n\ndef counter_for(func):\n    return func.counter\n\n\n@Counter()\ndef add(a, b):\n    return a + b\n\n\n@Counter()\ndef mul(a, b):\n    return a * b\n\n\nclass StateTest(unittest.TestCase):\n    def test_new_counter_starts_at_zero(self):\n        @Counter()\n        def fresh():\n            return \"fresh\"\n\n        self.assertEqual(counter_for(fresh).calls, 0)\n\n    def test_calls_are_counted(self):\n        start = counter_for(add).calls\n        add(1, 2)\n        add(3, 4)\n        self.assertEqual(counter_for(add).calls, start + 2)\n\n    def test_counters_are_independent(self):\n        other_start = counter_for(mul).calls\n        add(1, 2)\n        self.assertEqual(counter_for(mul).calls, other_start)\n\n    def test_each_decorated_function_has_own_counter(self):\n        self.assertIsNot(counter_for(add), counter_for(mul))\n\n    def test_result_is_returned(self):\n        self.assertEqual(add(1, 2), 3)\n        self.assertEqual(mul(2, 3), 6)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在 wrapper 函数体里重置计数器，累计值永远停在 1",
+        "把状态放在模块级变量，多个被装饰函数互相污染计数",
+        "以为每次调用 wrapper 都会重新执行装饰器函数体、得到新闭包",
+        "用可变默认参数（def wrapper(*args, counter={})）当计数器，所有函数共用同一份"
+      ]
+    },
+    {
+      "code": "py.deco.exception",
+      "title": "装饰器里的异常处理",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3304",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "wrapper 里的 try/except/finally 怎么写才不改变被包装函数的异常语义？",
+        "answer": [
+          "只捕获真正能处理的异常类型（except ValueError 这类具体类型）；裸 except: 或 except Exception 会把 TypeError、KeyError 甚至程序缺陷一并吞掉，调用方再也看不到真实故障",
+          "捕获后要明确出口：要么原样 raise 重抛，要么用 raise 新异常 from exc 保留根因，要么按契约返回兜底值；不要既记录又默认返回，让调用方无法区分正常与故障",
+          "finally 里写 return 会吞掉正在传播的异常（try 中抛出的异常被丢弃，函数改用 finally 的返回值结束），finally 只该做清理，不要写 return/break/continue",
+          "装饰器不该顺手改异常类型：把 ValueError 包装成 RuntimeError 时必须写 raise ... from exc 建立 __cause__ 链，否则 traceback 只剩新异常，根因不可见",
+          "重抛时不要丢掉原异常对象：用 except Exception as exc 绑定它，日志里打印 type(exc).__name__ 观察类型，转换异常时把 exc 交给 from"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 abc 那次调用的异常为什么变成了 RuntimeError",
+        "code": "def convert(fn):\n    def wrapper(*args, **kwargs):\n        try:\n            return fn(*args, **kwargs)\n        except ValueError as exc:\n            raise RuntimeError(\"参数无法转换\") from exc\n    return wrapper\n\n\n@convert\ndef parse(text):\n    return int(text)\n\n\nprint(parse(\"42\"))\ntry:\n    parse(\"abc\")\nexcept Exception as exc:\n    print(type(exc).__name__, str(exc))\ntry:\n    parse(None)\nexcept Exception as exc:\n    print(type(exc).__name__, str(exc))\n",
+        "explain": "parse(\"42\") 正常返回 42。parse(\"abc\") 时 int 抛出 ValueError: invalid literal for int() ...，wrapper 的 except ValueError 接住后用 raise RuntimeError(\"参数无法转换\") from exc 换了类型与消息，所以外面打印 'RuntimeError 参数无法转换'；原异常仍挂在 __cause__ 上可供排查。parse(None) 抛出的是 TypeError，except ValueError 不匹配，wrapper 不拦截，异常照原样传播，所以打印 'TypeError int() argument must be a ...'。若把 except 写成裸 except:，TypeError 也会被换成 RuntimeError。",
+        "expected": [
+          "42",
+          "RuntimeError 参数无法转换",
+          "TypeError int() argument must be a string, a bytes-like object or a real number, not 'NoneType'"
+        ]
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def collect_errors(fn):\n    def wrapper(*args, **kwargs):\n        try:\n            return fn(*args, **kwargs)\n        except Exception as exc:\n            print(\"已捕获\", type(exc).__name__)\n            return \"default\"\n    return wrapper\n\n\n@collect_errors\ndef read_number(value):\n    return int(value)\n\n\nprint(read_number(\"42\"))\nprint(read_number(\"abc\"))\nprint(read_number(None))\n",
+        "rootCause": "wrapper 里写了 except Exception，把 read_number(None) 触发的 TypeError 也吞掉并返回 'default'。调用方看到的是“函数正常返回了默认值”，无法知道其实是参数类型用错了；真正的故障被兜底值掩盖，日志里的 '已捕获 TypeError' 是唯一线索。宽泛捕获把“预期的输入错误”和“不该发生的程序缺陷”混为一谈。",
+        "fix": "把 except 收窄到真正要处理的类型：except ValueError as exc 时返回兜底值；TypeError 之类的其他异常不要捕获，让它照常向外传播，于是 read_number(None) 会抛出 TypeError: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'。若确实需要在装饰器层转换异常，就用 raise 新异常 from exc 保留 __cause__，不要用裸 except 一律返回默认值。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器 convert_errors：把被包装函数抛出的 ValueError 转成 RuntimeError 并用 raise ... from exc 保留根因，其他异常原样传播，正常返回值原样交回。用它装饰 parse(text) -> int(text) 并测试。",
+        "acceptance": [
+          "正常输入原样返回：parse('42') == 42",
+          "ValueError 被转成 RuntimeError：parse('abc') 抛 RuntimeError",
+          "根因被保留：parse('abc') 抛出的 RuntimeError.__cause__ 是 ValueError 实例",
+          "无关异常原样传播：parse(None) 抛 TypeError（不是 RuntimeError）",
+          "装饰器源码里不出现裸 except:（用 inspect.getsource 检查）"
+        ],
+        "reference": "import unittest\n\n\ndef convert(fn):\n    def wrapper(*args, **kwargs):\n        try:\n            return fn(*args, **kwargs)\n        except ValueError as exc:\n            raise RuntimeError(\"参数无法转换\") from exc\n\n    return wrapper\n\n\n@convert\ndef parse(text):\n    return int(text)\n\n\nclass ExceptionTest(unittest.TestCase):\n    def test_success_passes_through(self):\n        self.assertEqual(parse(\"42\"), 42)\n\n    def test_raises_new_type(self):\n        with self.assertRaises(RuntimeError):\n            parse(\"abc\")\n\n    def test_cause_is_preserved(self):\n        try:\n            parse(\"abc\")\n        except RuntimeError as exc:\n            self.assertIsInstance(exc.__cause__, ValueError)\n        else:\n            self.fail(\"parse 未抛出 RuntimeError\")\n\n    def test_unrelated_error_propagates(self):\n        with self.assertRaises(TypeError):\n            parse(None)\n\n    def test_no_bare_except(self):\n        self.assertNotIn(\"except:\", __import__(\"inspect\").getsource(convert))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "用裸 except: 吞掉所有异常并返回默认值，掩盖真正的缺陷",
+        "在 finally 里写 return，把正在传播的异常一起吞掉",
+        "把被包装函数的 ValueError 悄悄换成自定义异常却不写 from exc",
+        "在 except 里 print 完就继续，既不重抛也不返回，调用方拿到 None"
+      ]
+    },
+    {
+      "code": "py.deco.timing",
+      "title": "耗时装饰器把耗时交给收集器",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3401",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "3503",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "耗时装饰器该把测量结果送到哪里？为什么不该在 wrapper 里直接 print？它对返回值和异常各负什么责任？",
+        "answer": [
+          "用 time.perf_counter() 在调用前后各读一次，两次读数之差就是这次调用的耗时；它是单调时钟，不受系统时间回拨影响，time.time() 会。",
+          "测量结果要交给注入的回调或收集器（sink.append、on_done(...)），不要直接 print：print 会混进业务输出、测试无法断言、调用方也换不了去处。",
+          "wrapper 必须 return func(*args, **kwargs) 的返回值；忘记写 return 会让被装饰函数全部返回 None，这是耗时装饰器最常见的 Bug。",
+          "用 try/finally 把记录耗时的代码放进 finally，异常路径也能测到耗时；同时不要捕获异常，异常照原类型传播给调用者。",
+          "职责单一：这个装饰器只测量与上报，不重试、不记参数、不写日志。时钟作为参数注入（假时钟），测试才能得到确定输出。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明耗时记录是怎么被读出来的",
+        "code": "import functools\n\n\ndef timed(clock, sink):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            start = clock()\n            try:\n                return func(*args, **kwargs)\n            finally:\n                sink.append(clock() - start)\n        return wrapper\n    return decorate\n\n\nticks = iter([0, 5])\n\n\ndef clock():\n    return next(ticks)\n\n\ndurations = []\n\n\n@timed(clock, durations)\ndef label(parts):\n    return \"-\".join(parts)\n\n\nprint(label([\"a\", \"b\"]))\nprint(durations)\nprint(label.__name__)\n",
+        "expected": [
+          "a-b",
+          "[5]",
+          "label"
+        ],
+        "explain": "ticks 是注入的假时钟读数序列 [0, 5]。label([\"a\", \"b\"]) 进入 wrapper 时先读 clock() 得到 0，然后调用原函数得到 \"a-b\" 并立刻 return；返回之前 finally 执行，再读一次 clock() 得到 5，把 5 - 0 = 5 追加进 durations。所以第一行是原函数的返回值 a-b，第二行是收集器里唯一一条耗时 [5]，第三行 label 说明 functools.wraps 把 __name__ 复制到了 wrapper 上，装饰器没有暴露 wrapper 这个名字。全程没有任何真实计时，输出完全确定。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import functools\n\n\ndef timed(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        start = clock()\n        try:\n            func(*args, **kwargs)\n        finally:\n            sink.append(clock() - start)\n    return wrapper\n\n\nticks = iter([0, 5])\nsink = []\n\n\ndef clock():\n    return next(ticks)\n\n\n@timed\ndef total(values):\n    return sum(values)\n\n\nprint(total([1, 2, 3]))\nprint(sink)\n",
+        "rootCause": "wrapper 调用了 func(*args, **kwargs) 却没有 return 它的结果，函数体执行完后隐式返回 None。finally 里的 sink.append 照常执行，所以耗时记录看起来完全正常，问题只表现为所有调用点拿到的返回值都变成了 None——测量代码正确，转发代码漏了一环。",
+        "fix": "把调用改成 return func(*args, **kwargs) 并放进 try 里，让 finally 在返回前记录耗时：\n\ntry:\n    return func(*args, **kwargs)\nfinally:\n    sink.append(clock() - start)\n\n另外注意别在 finally 里写 return：那会覆盖 try 里已经算好的返回值，把问题从漏 return 变成吃掉返回值。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器工厂 timed(clock, sink)：调用被装饰函数前先调一次 clock()，把返回值原样返回，并在 finally 里把两次 clock() 读数之差 append 进 sink（异常路径也要记录一次）；用 functools.wraps 保留元数据。clock 是注入的可调用对象，不要 import time 后在函数体里直接取真实时间。",
+        "acceptance": [
+          "被装饰函数的返回值不被改变：add(1, 2) 返回 3",
+          "注入假时钟 FakeClock(10, 17) 时，一次调用让 sink 恰好增加一条 7",
+          "被装饰函数抛 ValueError 时 assertRaises 仍能捕获，且 sink 仍记录当次耗时",
+          "元数据保留：__name__ 是原函数名，__doc__ 是原文档，且存在 __wrapped__",
+          "连续两次调用各记录一条，差值按每次注入的读数分别计算（FakeClock(0, 1, 100, 104) 得出 [1, 4]）"
+        ],
+        "reference": "import functools\nimport unittest\n\n\ndef timed(clock, sink):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            start = clock()\n            try:\n                return func(*args, **kwargs)\n            finally:\n                sink.append(clock() - start)\n        return wrapper\n    return decorate\n\n\nclass FakeClock:\n    def __init__(self, *ticks):\n        self.ticks = list(ticks)\n\n    def __call__(self):\n        return self.ticks.pop(0)\n\n\nclass TimedTest(unittest.TestCase):\n    def test_return_value_unchanged(self):\n        sink = []\n\n        @timed(FakeClock(0, 5), sink)\n        def add(a, b):\n            return a + b\n\n        self.assertEqual(add(1, 2), 3)\n\n    def test_duration_from_injected_clock(self):\n        sink = []\n\n        @timed(FakeClock(10, 17), sink)\n        def add(a, b):\n            return a + b\n\n        add(1, 2)\n        self.assertEqual(sink, [7])\n\n    def test_exception_propagates_and_is_recorded(self):\n        sink = []\n\n        @timed(FakeClock(0, 30), sink)\n        def boom():\n            raise ValueError(\"x\")\n\n        with self.assertRaises(ValueError):\n            boom()\n        self.assertEqual(sink, [30])\n\n    def test_metadata_preserved(self):\n        sink = []\n\n        @timed(FakeClock(0, 1), sink)\n        def add(a, b):\n            \"\"\"Add two numbers.\"\"\"\n            return a + b\n\n        self.assertEqual(add.__name__, \"add\")\n        self.assertTrue(hasattr(add, \"__wrapped__\"))\n        self.assertEqual(add.__doc__, \"Add two numbers.\")\n\n    def test_every_call_is_recorded(self):\n        sink = []\n\n        @timed(FakeClock(0, 1, 100, 104), sink)\n        def add(a, b):\n            return a + b\n\n        add(1, 2)\n        add(3, 4)\n        self.assertEqual(sink, [1, 4])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "wrapper 里忘了 return func(...)，被装饰函数悄悄全部返回 None",
+        "在装饰器里直接 print 耗时，业务输出被污染且测试没法断言",
+        "用 time.time() 而不是 time.perf_counter()，系统时间回拨时会算出负耗时",
+        "wrapper 里 except Exception 兜底，异常不再传播，调用方拿到 None 还以为成功"
+      ]
+    },
+    {
+      "code": "py.deco.logging",
+      "title": "日志装饰器保持语义透明",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3401",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "日志装饰器应该记录什么、记到哪里？为什么它绝不能改变被装饰函数的语义？库代码为什么不该动 root logger？",
+        "answer": [
+          "记录调用参数与返回值：把 (args, kwargs, result) 追加进传入的列表或回调，形成可断言的调用轨迹，测试不再需要截获标准输出。",
+          "记录只是观察，不是干预：返回值必须原样返回，异常必须原样抛出。为了\"记下失败\"而 except 后 return None，等于把失败伪装成成功。",
+          "functools.wraps 把 __module__/__name__/__qualname__/__doc__/__dict__/__wrapped__ 复制到 wrapper，日志、栈追踪、inspect 里才会显示真实的函数名与文档。",
+          "库代码不要调用 logging.basicConfig() 或往 root logger 加 handler：那等于替使用方决定全局日志的级别、格式与去向。需要 logger 时用 logging.getLogger(__name__) 只取自己的命名空间。",
+          "把\"往哪里写\"做成注入的收集器或 logger 对象，装饰器本身不假设输出目的地，生产换成真 logger、测试换成列表即可。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每条记录是在原函数返回前还是返回后追加的",
+        "code": "import functools\n\n\ndef traced(records):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            result = func(*args, **kwargs)\n            records.append((args, dict(kwargs), result))\n            return result\n        return wrapper\n    return decorate\n\n\nrecords = []\n\n\n@traced(records)\ndef scale(value, factor=1):\n    \"\"\"Return value scaled by factor.\"\"\"\n    return value * factor\n\n\nprint(scale(3, factor=4))\nprint(records)\nprint(scale.__name__)\nprint(scale.__doc__)\n",
+        "expected": [
+          "12",
+          "[((3,), {'factor': 4}, 12)]",
+          "scale",
+          "Return value scaled by factor."
+        ],
+        "explain": "scale(3, factor=4) 进入 wrapper：先把活干完得到 result=12，然后在 wrapper 返回前把 (args, kwargs, result) 追加进 records，再 return result。因此第一行是返回值 12，第二行是唯一一条记录 ((3,), {'factor': 4}, 12)——3 被 **kwargs 之外的调用方式放进了 args 元组，factor=4 留在 kwargs 字典里。第三、四行说明 functools.wraps 让 __name__ 和 __doc__ 仍指向原函数 scale，而不是 wrapper。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def traced(records):\n    def decorate(func):\n        def wrapper(*args, **kwargs):\n            try:\n                result = func(*args, **kwargs)\n            except ValueError:\n                records.append((\"error\", args))\n                return None\n            records.append((\"ok\", result))\n            return result\n        return wrapper\n    return decorate\n\n\nrecords = []\n\n\n@traced(records)\ndef parse(text):\n    return int(text)\n\n\nprint(parse(\"7\"))\nprint(parse(\"bad\"))\nprint(records)\n",
+        "rootCause": "这个日志装饰器把被装饰函数的 ValueError 捕获后返回 None，直接改变了原函数的语义：调用方既收不到异常、也拿不到有效结果，只会在不知情的情况下继续使用 None。记录日志是观察行为，捕获并吞掉异常是干预行为，两者混在了同一个 except 里。",
+        "fix": "记录完失败之后必须把原异常重新抛出，成功路径仍 return 原结果：\n\ntry:\n    result = func(*args, **kwargs)\nexcept ValueError:\n    records.append((\"error\", args))\n    raise\nrecords.append((\"ok\", result))\nreturn result\n\n如果确实希望调用方不要中断，那应该在调用点自己处理异常，而不是让日志装饰器替它决定。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器工厂 trace(records)：每次成功调用后向 records 追加一条 (args, kwargs, result)；返回值原样返回；异常原样传播且不追加记录；用 functools.wraps 保留元数据。records 由调用方注入。",
+        "acceptance": [
+          "成功调用返回原值，且 records 末尾恰为 ((3,), {\"factor\": 4}, 12)",
+          "位置参数出现在 args 元组、关键字参数出现在 kwargs 字典，两者分开记录",
+          "被装饰函数抛 ValueError 时 assertRaises 仍能捕获，且 records 不增加",
+          "元数据保留：__name__ 与 __doc__ 与原函数一致",
+          "两次调用按顺序累积两条记录，依次为返回值 2 与 4"
+        ],
+        "reference": "import functools\nimport unittest\n\n\ndef trace(records):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            result = func(*args, **kwargs)\n            records.append((args, kwargs, result))\n            return result\n        return wrapper\n    return decorate\n\n\nclass TraceTest(unittest.TestCase):\n    def test_return_value_and_record(self):\n        records = []\n\n        @trace(records)\n        def scale(value, factor=1):\n            return value * factor\n\n        self.assertEqual(scale(3, factor=4), 12)\n        self.assertEqual(records, [((3,), {\"factor\": 4}, 12)])\n\n    def test_args_and_kwargs_are_separate(self):\n        records = []\n\n        @trace(records)\n        def scale(value, factor=1):\n            return value * factor\n\n        scale(3, factor=4)\n        args, kwargs, result = records[0]\n        self.assertEqual(args, (3,))\n        self.assertEqual(kwargs, {\"factor\": 4})\n        self.assertEqual(result, 12)\n\n    def test_exception_propagates_without_record(self):\n        records = []\n\n        @trace(records)\n        def parse(text):\n            return int(text)\n\n        with self.assertRaises(ValueError):\n            parse(\"bad\")\n        self.assertEqual(records, [])\n\n    def test_metadata_preserved(self):\n        records = []\n\n        @trace(records)\n        def parse(text):\n            \"\"\"Parse an integer.\"\"\"\n            return int(text)\n\n        self.assertEqual(parse.__name__, \"parse\")\n        self.assertEqual(parse.__doc__, \"Parse an integer.\")\n\n    def test_records_accumulate_in_order(self):\n        records = []\n\n        @trace(records)\n        def double(value):\n            return value * 2\n\n        double(1)\n        double(2)\n        self.assertEqual([entry[2] for entry in records], [2, 4])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在装饰器里 print 调用信息，业务输出与日志混在一起，测试只能去截获 stdout",
+        "为了记录失败而 except Exception 后 return None，把异常吞掉",
+        "忘了 functools.wraps，日志与栈追踪里全是 wrapper，__doc__ 与 __wrapped__ 也没了",
+        "在模块顶层调用 logging.basicConfig()，替整个应用决定了 root logger 的级别与格式"
+      ]
+    },
+    {
+      "code": "py.deco.retry",
+      "title": "有限重试装饰器的次数边界",
+      "minutes": 25,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3401",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "3403",
+          "relation": "exercises"
+        },
+        {
+          "taskId": "3503",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "重试装饰器的次数上限写在哪里？哪些异常才该重试？次数用尽之后必须发生什么？",
+        "answer": [
+          "用 for attempt in range(1, attempts + 1) 把尝试次数封顶，attempts 是总尝试次数（不是\"额外重试次数\"）；绝不能写 while True，否则函数一直失败就永远不结束。",
+          "只捕获明确列出的异常（except (ValueError, TimeoutError)），让 TypeError、AttributeError、KeyboardInterrupt 等立即传播，否则会把编程错误当成网络抖动重试 N 次。",
+          "循环里一次调用成功就立刻 return，不再继续尝试；只有捕获到指定的异常才进入下一次循环。",
+          "最后一次尝试失败时把当前异常重新抛出（if attempt == attempts: raise），而不是返回 None 或包装成新异常，调用方看到的仍是原始异常类型。",
+          "真实重试需要退避等待，但等待必须可注入（delay 参数或注入的 sleep 函数），测试传 0；否则测试真的会 sleep，既慢又不确定。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 waits 里为什么恰好是两个值",
+        "code": "import functools\n\n\ndef retry(attempts, errors, on_retry):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            for attempt in range(1, attempts + 1):\n                try:\n                    return func(*args, **kwargs)\n                except errors:\n                    if attempt == attempts:\n                        raise\n                    on_retry(attempt)\n        return wrapper\n    return decorate\n\n\ncalls = []\nwaits = []\n\n\n@retry(3, ValueError, waits.append)\ndef flaky():\n    calls.append(len(calls) + 1)\n    if len(calls) < 3:\n        raise ValueError(\"boom\")\n    return \"ok\"\n\n\nprint(flaky())\nprint(calls)\nprint(waits)\n\n\n@retry(2, ValueError, waits.append)\ndef broken():\n    calls.append(\"x\")\n    raise ValueError(\"still bad\")\n\n\ntry:\n    broken()\nexcept ValueError as error:\n    print(type(error).__name__)\nprint(len(calls))\n",
+        "expected": [
+          "ok",
+          "[1, 2, 3]",
+          "[1, 2]",
+          "ValueError",
+          "5"
+        ],
+        "explain": "flaky 的前两次调用都抛 ValueError，被 except errors 接住：attempt 是 1 和 2 时都不等于 attempts=3，于是调用 on_retry(attempt) 把 1、2 记进 waits，再进入下一轮。第 3 次调用成功，直接 return \"ok\"，所以 calls 是 [1, 2, 3]、waits 是 [1, 2]（重试发生在两次尝试之间，比总尝试次数少一次）。broken 把上限设为 2，第一次抛 ValueError 后重试，第二次 attempt == attempts 时执行 raise，异常原样传给调用方，于是打印 ValueError；calls 先有 3 个数字，broken 又追加了两个 \"x\"，len(calls) 是 5。整个装饰器没有任何 sleep。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import functools\n\n\ndef retry(attempts, errors):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            while True:\n                try:\n                    return func(*args, **kwargs)\n                except errors:\n                    pass\n        return wrapper\n    return decorate\n\n\ncalls = []\n\n\n@retry(3, ValueError)\ndef flaky():\n    calls.append(len(calls) + 1)\n    if len(calls) < 7:\n        raise ValueError(\"boom\")\n    return \"ok\"\n\n\nprint(flaky())\nprint(len(calls))\n",
+        "rootCause": "装饰器收下了 attempts 参数却完全没用上，wrapper 里写的是 while True 加上一直捕获 errors：只要函数抛的是指定异常就永远重试，没有上限。示例里函数第 7 次才成功，于是它跑了 7 次并返回 ok，而上限本应是 3 次；把函数换成永远失败，这个 wrapper 就永远不会返回。",
+        "fix": "把 while True 换成有界循环，并在最后一次尝试失败时重抛：\n\nfor attempt in range(1, attempts + 1):\n    try:\n        return func(*args, **kwargs)\n    except errors:\n        if attempt == attempts:\n            raise\n\n如果确实需要退避等待，把等待放在两次尝试之间，并且用可注入的 delay（测试传 0），不要直接 time.sleep 固定时长。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器工厂 retry(attempts, errors)：最多尝试 attempts 次；只对 errors 里的异常重试；一旦成功立刻返回结果；attempts 次都失败则重抛最后一次的原异常类型；不得出现无界循环；不要调用 sleep。",
+        "acceptance": [
+          "第一次就成功时只调用一次，返回值原样返回",
+          "前两次失败、第三次成功时恰好调用 3 次并返回结果",
+          "一直失败时 assertRaises(ValueError) 能捕获，且调用次数恰好等于 attempts",
+          "errors 之外的异常（如 KeyError）立即传播，调用次数为 1，不重试",
+          "元数据保留：装饰后 __name__ 仍等于原函数名"
+        ],
+        "reference": "import functools\nimport unittest\n\n\ndef retry(attempts, errors):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            for attempt in range(1, attempts + 1):\n                try:\n                    return func(*args, **kwargs)\n                except errors:\n                    if attempt == attempts:\n                        raise\n        return wrapper\n    return decorate\n\n\nclass RetryTest(unittest.TestCase):\n    def test_success_on_first_attempt(self):\n        calls = []\n\n        @retry(3, ValueError)\n        def ok():\n            calls.append(1)\n            return \"done\"\n\n        self.assertEqual(ok(), \"done\")\n        self.assertEqual(len(calls), 1)\n\n    def test_success_after_two_failures(self):\n        calls = []\n\n        @retry(3, ValueError)\n        def flaky():\n            calls.append(1)\n            if len(calls) < 3:\n                raise ValueError(\"boom\")\n            return \"ok\"\n\n        self.assertEqual(flaky(), \"ok\")\n        self.assertEqual(len(calls), 3)\n\n    def test_exhausted_attempts_reraises_original_error(self):\n        calls = []\n\n        @retry(3, ValueError)\n        def always_bad():\n            calls.append(1)\n            raise ValueError(\"always\")\n\n        with self.assertRaises(ValueError):\n            always_bad()\n        self.assertEqual(len(calls), 3)\n\n    def test_other_errors_are_not_retried(self):\n        calls = []\n\n        @retry(3, ValueError)\n        def wrong_type():\n            calls.append(1)\n            raise KeyError(\"nope\")\n\n        with self.assertRaises(KeyError):\n            wrong_type()\n        self.assertEqual(len(calls), 1)\n\n    def test_metadata_preserved(self):\n        @retry(2, ValueError)\n        def named():\n            return 1\n\n        self.assertEqual(named.__name__, \"named\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "while True 重试：函数一直失败就永远不会结束",
+        "except Exception 兜底，把 TypeError 这类编程错误也重试 N 次",
+        "把 attempts 理解成\"重试次数\"，实际总调用次数多了一次",
+        "次数用尽后返回 None 或抛一个新异常，调用方拿不到原始错误类型"
+      ]
+    },
+    {
+      "code": "py.deco.methods",
+      "title": "装饰器作用在实例方法上的绑定",
+      "minutes": 25,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3402",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "3504",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "装饰器写在实例方法上时 wrapper 收到的第一个参数是什么？怎样让一个装饰器同时兼容方法与普通函数？装饰器与 @classmethod 的上下顺序会带来什么后果？",
+        "answer": [
+          "方法在类体里就是普通函数，装饰发生在类体执行时、实例绑定之前；之后实例访问 c.bump 时描述符协议把 wrapper 绑定成方法，所以 wrapper 的第一个位置参数收到的就是 self。",
+          "wrapper 写成 def wrapper(*args, **kwargs) 就能同时兼容方法与普通函数；写死 def wrapper(self, ...) 时装饰普通函数会报缺少位置参数 self。",
+          "wrapper 必须是函数（或至少实现了 __get__ 的可调用对象），描述符绑定才会发生；用没有 __get__ 的可调用对象做 wrapper，实例访问时 self 根本传不进去。",
+          "functools.wraps 设置 __wrapped__ 之后，inspect.signature(Counter.bump) 会沿 __wrapped__ 找到原函数，报告 (self, step) 而不是 (*args, **kwargs)。",
+          "@classmethod 要写在装饰器上面（装饰先作用于函数，classmethod 最后包住 wrapper）；反过来让装饰器包住 classmethod 对象，调用时会抛 TypeError: 'classmethod' object is not callable。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 wrapper 的第一个参数是什么",
+        "code": "import functools\nimport inspect\n\n\ndef logged(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        print(\"call\", args[0].__class__.__name__)\n        return func(*args, **kwargs)\n    return wrapper\n\n\nclass Counter:\n    def __init__(self):\n        self.value = 0\n\n    @logged\n    def bump(self, step):\n        self.value += step\n        return self.value\n\n\nc = Counter()\nprint(c.bump(2))\nprint(Counter.bump.__name__)\nprint(inspect.signature(Counter.bump))\nprint(c.bump.__self__ is c)\n",
+        "expected": [
+          "call Counter",
+          "2",
+          "bump",
+          "(self, step)",
+          "True"
+        ],
+        "explain": "c.bump 触发描述符绑定：wrapper 是从类里取出的普通函数，被绑定成方法后 args[0] 就是实例 c，所以 args[0].__class__.__name__ 打印 Counter，随后 func(*args) 把 c 原样转发给 bump，self.value 从 0 加到 2。第二行是方法的返回值。Counter.bump.__name__ 是 bump、inspect.signature(Counter.bump) 是 (self, step)，都说明 functools.wraps 的 __wrapped__ 让元数据与签名跟随原函数。c.bump.__self__ is c 为 True，说明绑定发生在 wrapper 上而不是原函数上。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import functools\n\n\ndef traced(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        print(\"traced\", func.__name__)\n        return func(*args, **kwargs)\n    return wrapper\n\n\nclass Service:\n    @traced\n    @classmethod\n    def make(cls, name):\n        return \"svc:\" + name\n\n\nprint(Service.make(\"a\"))\n",
+        "rootCause": "装饰器写在 @classmethod 上面，于是 traced 包住的是 classmethod 描述符对象而不是函数：wrapper 本身是普通函数，被访问时会按实例方法绑定，同时 func(*args, **kwargs) 调用的是一个 classmethod 对象，而 classmethod 对象不可调用，最终抛 TypeError: 'classmethod' object is not callable。顺序反了，等于把描述符当普通可调用对象使用。",
+        "fix": "把 @classmethod 放到装饰器上面，让装饰先作用在函数上、classmethod 最后包住 wrapper：\n\nclass Service:\n    @classmethod\n    @traced\n    def make(cls, name):\n        return \"svc:\" + name\n\n这样 Service.make(\"a\") 会以 cls=Service 调用 wrapper（wrapper 里的 func 是原始函数）。@staticmethod 同理：它是描述符对象，装饰器必须写在它下面先执行。"
+      },
+      "code_task": {
+        "prompt": "实现装饰器 counted：支持实例方法（self 要正确转发、方法能改实例状态）、也支持普通函数；用 functools.wraps 保留元数据与签名；并演示与 @classmethod 的正确叠加顺序。",
+        "acceptance": [
+          "装饰实例方法后 self 被正确转发：c.bump(2) 让 c.value 变成 2 并返回 2",
+          "同一个装饰器装饰普通函数也正常：plain(3) 返回 6",
+          "inspect.signature(Counter.bump) 等于 (self, step=1)，说明签名沿 __wrapped__ 跟随",
+          "Counter.bump.__name__ 是 bump，且 counter.bump.__self__ is counter",
+          "与 @classmethod 正确叠加：Counter.make(\"a\") 返回 \"Counter:a\""
+        ],
+        "reference": "import functools\nimport inspect\nimport unittest\n\n\ndef counted(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        wrapper.calls += 1\n        return func(*args, **kwargs)\n    wrapper.calls = 0\n    return wrapper\n\n\nclass Counter:\n    def __init__(self):\n        self.value = 0\n\n    @counted\n    def bump(self, step=1):\n        self.value += step\n        return self.value\n\n    @classmethod\n    @counted\n    def make(cls, name):\n        return cls.__name__ + \":\" + name\n\n\n@counted\ndef plain(value):\n    return value * 2\n\n\nclass MethodsTest(unittest.TestCase):\n    def test_self_is_forwarded(self):\n        counter = Counter()\n        self.assertEqual(counter.bump(2), 2)\n        self.assertEqual(counter.value, 2)\n        self.assertEqual(counter.bump(), 3)\n\n    def test_plain_function_still_works(self):\n        self.assertEqual(plain(3), 6)\n\n    def test_signature_follows_wrapped(self):\n        self.assertEqual(str(inspect.signature(Counter.bump)), \"(self, step=1)\")\n\n    def test_metadata_and_binding(self):\n        counter = Counter()\n        self.assertEqual(Counter.bump.__name__, \"bump\")\n        self.assertTrue(hasattr(Counter.bump, \"__wrapped__\"))\n        self.assertIs(counter.bump.__self__, counter)\n\n    def test_classmethod_stacking(self):\n        self.assertEqual(Counter.make(\"a\"), \"Counter:a\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "wrapper 写死 def wrapper(self, ...)，装饰普通函数时报缺少位置参数 self",
+        "以为装饰只发生在调用时，忽略实例访问时 wrapper 会先被绑定成方法",
+        "让装饰器包住 @classmethod（装饰器写在上面），调用时 TypeError: 'classmethod' object is not callable",
+        "忘了 functools.wraps，inspect.signature 只看到 (*args, **kwargs)，日志里函数名也变成 wrapper"
+      ]
+    },
+    {
+      "code": "py.deco.testing",
+      "title": "装饰器的测试观察面",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3403",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "测试一个装饰器要观察被装饰函数的哪些事实？为什么这些断言里不能依赖真实耗时？",
+        "answer": [
+          "先测返回值：被装饰函数的结果必须和未装饰时一致，这是\"透明转发\"的第一条验收，漏 return 的装饰器会在这里暴露。",
+          "用 assertRaises 测异常传播：装饰器不能吞异常，异常类型要原样传出；再断言异常路径下的副作用（计数或记录）是否符合预期。",
+          "用计数器或收集列表测次数：调用了几次、重试了几次、记录了几条，这些整数是唯一能证明\"有限重试\"\"只包裹一次\"的事实。",
+          "用 __name__、__doc__ 与 __wrapped__ 测元数据：wraps 是否生效、能不能绕过装饰器直接调用原函数。",
+          "用两层装饰器加一个记录列表测叠加顺序：外层 before → 内层 before → 函数体 → 内层 after → 外层 after；涉及耗时的装饰器要注入假时钟，绝不能断言真实秒数。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并指出哪几行是测试会去断言的事实",
+        "code": "import functools\n\n\ndef count_calls(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        wrapper.calls += 1\n        return func(*args, **kwargs)\n    wrapper.calls = 0\n    return wrapper\n\n\n@count_calls\ndef parse(text):\n    \"\"\"Parse an int.\"\"\"\n    return int(text)\n\n\nprint(parse(\"7\"))\ntry:\n    parse(\"nope\")\nexcept ValueError as error:\n    print(type(error).__name__)\nprint(parse.calls)\nprint(parse.__name__)\nprint(parse.__doc__)\nprint(parse.__wrapped__(\"8\"))\n",
+        "expected": [
+          "7",
+          "ValueError",
+          "2",
+          "parse",
+          "Parse an int.",
+          "8"
+        ],
+        "explain": "parse(\"7\") 正常返回 7，wrapper.calls 变成 1。parse(\"nope\") 让 int() 抛 ValueError，wrapper 没有捕获它，异常原样传播，所以 except 打印 ValueError；但计数已经在调用前加过，calls 变成 2。随后打印 calls=2 证明异常路径也计了数，__name__ 是 parse、__doc__ 是 Parse an int.，说明 functools.wraps 生效。最后 parse.__wrapped__(\"8\") 直接调用未被装饰的原函数，返回 8，且不会再把 calls 加一。整段没有真实计时。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def count_calls(func):\n    def wrapper(*args, **kwargs):\n        wrapper.calls += 1\n        return func(*args, **kwargs)\n    wrapper.calls = 0\n    return wrapper\n\n\n@count_calls\ndef double(value):\n    \"\"\"Return value doubled.\"\"\"\n    return value * 2\n\n\nprint(double(4))\nprint(double.calls)\nprint(double.__name__)\nprint(double.__doc__)\nprint(hasattr(double, \"__wrapped__\"))\n",
+        "rootCause": "装饰器没有用 functools.wraps，wrapper 只带自己的元数据：被装饰函数的 __name__ 变成 wrapper、__doc__ 变成 None、也不存在 __wrapped__。于是测试里按 __name__/__doc__/__wrapped__ 写的断言全部失败，日志与栈追踪里显示的函数名也全是 wrapper，排查时找不到真实函数。",
+        "fix": "在 wrapper 上加 @functools.wraps(func)：它会复制 __module__/__name__/__qualname__/__annotations__/__doc__，并把原函数挂到 wrapper.__wrapped__。片段：\n\nimport functools\n\n\ndef count_calls(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        wrapper.calls += 1\n        return func(*args, **kwargs)\n    wrapper.calls = 0\n    return wrapper\n\n自定义属性（如 wrapper.calls）仍写在 wrapper 定义之后、return wrapper 之前。"
+      },
+      "code_task": {
+        "prompt": "给一个 retry(attempts, errors) 装饰器写一套 unittest 测试，覆盖返回值、副作用计数、异常传播、元数据、叠加顺序五类事实。测试必须确定性：不许依赖真实耗时，也不许 sleep。",
+        "acceptance": [
+          "有一项测试用 assertEqual 校验被装饰函数的返回值是 6",
+          "有一项测试用计数器列表校验失败后重试的次数恰好等于 attempts（3 次）",
+          "有一项测试用 assertRaises(ValueError) 校验次数用尽后异常仍传播，并断言调用次数为 2",
+          "有一项测试断言 __name__、__doc__ 与 __wrapped__，证明元数据被保留且可绕过装饰器调用",
+          "有一项测试用 outer/inner 两层装饰器断言执行顺序列表为 outer-before, inner-before, body, inner-after, outer-after"
+        ],
+        "reference": "import functools\nimport unittest\n\n\ndef retry(attempts, errors):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            for attempt in range(1, attempts + 1):\n                try:\n                    return func(*args, **kwargs)\n                except errors:\n                    if attempt == attempts:\n                        raise\n        return wrapper\n    return decorate\n\n\norder = []\n\n\ndef outer(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        order.append(\"outer-before\")\n        result = func(*args, **kwargs)\n        order.append(\"outer-after\")\n        return result\n    return wrapper\n\n\ndef inner(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        order.append(\"inner-before\")\n        result = func(*args, **kwargs)\n        order.append(\"inner-after\")\n        return result\n    return wrapper\n\n\nclass RetryTest(unittest.TestCase):\n    def test_return_value(self):\n        @retry(3, ValueError)\n        def add(a, b):\n            return a + b\n\n        self.assertEqual(add(2, 4), 6)\n\n    def test_retry_count(self):\n        calls = []\n\n        @retry(3, ValueError)\n        def flaky():\n            calls.append(1)\n            if len(calls) < 3:\n                raise ValueError(\"boom\")\n            return \"ok\"\n\n        self.assertEqual(flaky(), \"ok\")\n        self.assertEqual(len(calls), 3)\n\n    def test_exception_still_propagates(self):\n        calls = []\n\n        @retry(2, ValueError)\n        def always_bad():\n            calls.append(1)\n            raise ValueError(\"always\")\n\n        with self.assertRaises(ValueError):\n            always_bad()\n        self.assertEqual(len(calls), 2)\n\n    def test_metadata_and_wrapped(self):\n        @retry(3, ValueError)\n        def parse(text):\n            \"\"\"Parse an integer.\"\"\"\n            return int(text)\n\n        self.assertEqual(parse.__name__, \"parse\")\n        self.assertEqual(parse.__doc__, \"Parse an integer.\")\n        self.assertEqual(parse.__wrapped__(\"9\"), 9)\n\n    def test_stacking_order(self):\n        order.clear()\n\n        @outer\n        @inner\n        def task():\n            order.append(\"body\")\n            return 1\n\n        self.assertEqual(task(), 1)\n        self.assertEqual(\n            order,\n            [\"outer-before\", \"inner-before\", \"body\", \"inner-after\", \"outer-after\"],\n        )\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "只测返回值，不测异常路径，装饰器吞掉异常也测不出来",
+        "断言真实耗时（assertLess(elapsed, 0.001)），测试在慢机器上随机变红",
+        "只用 hasattr(func, \"__name__\") 之类弱断言，wrapper 这个名字也能通过",
+        "测试之间共用被装饰函数上的计数器，不重置就互相污染"
+      ]
+    },
+    {
+      "code": "py.deco.alternatives",
+      "title": "装饰器、上下文管理器、显式调用的取舍",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3404",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "同一个横切需求，什么时候用装饰器、什么时候用上下文管理器或显式高阶函数？装饰器的代价是什么？",
+        "answer": [
+          "装饰器适合横切且不需要调用点传参的包装：定义时一次套上，调用点保持干净，例如默认的计时、调用计数、固定策略的日志。",
+          "需要环绕\"一段代码\"或成对资源（进入/退出必须配对、中间可能有多条语句）时用上下文管理器：with 块直接表达作用范围，finally 里保证清理。",
+          "需要按调用点取值配置、或想把策略当数据传递时用高阶函数或显式调用：策略作为参数传入，不必为了一个运行时才知道的上限去伪造装饰器。",
+          "装饰器的代价是控制流被藏起来：调用点只看得到名字，看不到重试、缓存、计时这些行为，栈追踪里多一层 wrapper，排查时要记得 __wrapped__。",
+          "计时与重试两种写法都能表达，差别在作用范围与可配置性：装饰器把范围固定成\"一次函数调用\"，上下文管理器的范围由调用点书写，显式调用把策略作为参数传入。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明两次记录的作用范围有什么不同",
+        "code": "import contextlib\nimport functools\n\n\ndef fake_clock(*ticks):\n    values = iter(ticks)\n    return lambda: next(values)\n\n\ndef measured(clock, sink):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            start = clock()\n            try:\n                return func(*args, **kwargs)\n            finally:\n                sink.append(clock() - start)\n        return wrapper\n    return decorate\n\n\n@contextlib.contextmanager\ndef measured_block(clock, sink):\n    start = clock()\n    try:\n        yield\n    finally:\n        sink.append(clock() - start)\n\n\ndef render(text):\n    return text.upper()\n\n\nspans = []\n\n\n@measured(fake_clock(0, 7), spans)\ndef timed_render(text):\n    return render(text)\n\n\nprint(timed_render(\"hi\"))\nprint(spans)\n\nwith measured_block(fake_clock(20, 23), spans):\n    print(render(\"bye\"))\nprint(spans)\n",
+        "expected": [
+          "HI",
+          "[7]",
+          "BYE",
+          "[7, 3]"
+        ],
+        "explain": "timed_render 在定义时就用假时钟 fake_clock(0, 7) 绑定了 clock 与 spans，调用 timed_render(\"hi\") 时 wrapper 读 0、调用原函数得到 HI 并返回，finally 里再读 7 记录差值 7，所以前两行是 HI 与 [7]。with measured_block(fake_clock(20, 23), spans) 的范围是调用点写的整个块：先打印 BYE，块结束时才读第二次读数 23，记录差值 3，所以第三行是块内打印的 BYE，第四行是累积后的 [7, 3]。装饰器只能包住一次函数调用，上下文管理器能包住块内的多条语句。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import functools\n\n\ndef with_retry(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        for _ in range(3):\n            try:\n                return func(*args, **kwargs)\n            except ValueError:\n                pass\n        raise ValueError(\"gave up\")\n    return wrapper\n\n\ncalls = []\n\n\n@with_retry\ndef fetch(name):\n    calls.append(name)\n    raise ValueError(\"down\")\n\n\nfor name in (\"a\", \"b\"):\n    try:\n        fetch(name)\n    except ValueError as error:\n        print(type(error).__name__)\nprint(len(calls))\n",
+        "rootCause": "重试上限 3 被写死在装饰器内部的循环里，而装饰器是在定义时套上去的，调用点没有任何位置能按次指定策略：两个需要不同上限的调用点都只能跑 3 次。\"每次调用自己决定上限\"是运行时数据，装饰器表达不了，硬塞进去只能复制多份装饰器或改装饰器源码。",
+        "fix": "把策略做成普通高阶函数，让调用点把上限当参数传进去：\n\ndef call_with_retry(func, *args, attempts=3, errors=(ValueError,), **kwargs):\n    for attempt in range(1, attempts + 1):\n        try:\n            return func(*args, **kwargs)\n        except errors:\n            if attempt == attempts:\n                raise\n\n调用点写 call_with_retry(fetch, \"b\", attempts=5)。如果同一个函数永远用同一个上限，装饰器（或带参数的装饰器工厂）仍然更简洁——区别在于配置发生在定义时还是调用时。"
+      },
+      "code_task": {
+        "prompt": "同一个计时需求写两种形式：装饰器工厂 measured(clock, sink) 与显式高阶函数 measure(func, clock, sink, *args, **kwargs)。两者都把两次 clock() 读数之差 append 进 sink、都原样返回结果、都让异常传播；并用注释说明作用范围差异。",
+        "acceptance": [
+          "measure(add, clock, sink, 1, 2) 返回 3，且 sink 恰好追加一条差值 8",
+          "显式版本能计时任意可调用对象，例如 lambda value: value + 1",
+          "装饰器版本在定义时绑定 clock 与 sink，调用点只传业务参数（double(5) 返回 10）",
+          "同一组假时钟读数下两个版本记录的差值相同（30→42 都记 12）",
+          "两个版本遇到异常都会传播，且都记录当次耗时"
+        ],
+        "reference": "import functools\nimport unittest\n\n\ndef measured(clock, sink):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            start = clock()\n            try:\n                return func(*args, **kwargs)\n            finally:\n                sink.append(clock() - start)\n        return wrapper\n    return decorate\n\n\ndef measure(func, clock, sink, *args, **kwargs):\n    start = clock()\n    try:\n        return func(*args, **kwargs)\n    finally:\n        sink.append(clock() - start)\n\n\nclass FakeClock:\n    def __init__(self, *ticks):\n        self.ticks = list(ticks)\n\n    def __call__(self):\n        return self.ticks.pop(0)\n\n\ndef add(a, b):\n    return a + b\n\n\nclass AlternativesTest(unittest.TestCase):\n    def test_explicit_call_returns_result(self):\n        sink = []\n        self.assertEqual(measure(add, FakeClock(0, 8), sink, 1, 2), 3)\n        self.assertEqual(sink, [8])\n\n    def test_explicit_call_accepts_any_callable(self):\n        sink = []\n        result = measure(lambda value: value + 1, FakeClock(100, 106), sink, 4)\n        self.assertEqual(result, 5)\n        self.assertEqual(sink, [6])\n\n    def test_decorator_binds_clock_at_definition(self):\n        sink = []\n\n        @measured(FakeClock(0, 4), sink)\n        def double(value):\n            return value * 2\n\n        self.assertEqual(double(5), 10)\n        self.assertEqual(sink, [4])\n\n    def test_both_write_the_same_delta(self):\n        sink = []\n\n        @measured(FakeClock(30, 42), sink)\n        def decorated(value):\n            return value\n\n        decorated(1)\n        measure(add, FakeClock(30, 42), sink, 1, 2)\n        self.assertEqual(sink, [12, 12])\n\n    def test_exception_propagates_in_both_forms(self):\n        sink = []\n\n        @measured(FakeClock(0, 2), sink)\n        def boom():\n            raise ValueError(\"x\")\n\n        with self.assertRaises(ValueError):\n            boom()\n        with self.assertRaises(ValueError):\n            measure(boom.__wrapped__, FakeClock(0, 2), sink)\n        self.assertEqual(sink, [2, 2])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "把需要按调用点取值配置的策略硬塞进装饰器，最后只能复制多份装饰器",
+        "想用装饰器环绕一段多语句代码，实际只包住了其中一个函数",
+        "以为只有装饰器能记耗时，忽略上下文管理器能覆盖块内全部语句",
+        "忽略隐藏控制流的代价：栈追踪里多一层 wrapper，不看源码猜不出发生了重试"
+      ]
+    },
+    {
+      "code": "py.registry.decorator",
+      "title": "@register(name) 注册装饰器",
+      "minutes": 25,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3501",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "写一个 @register(\"csv\") 装饰器把处理函数登记到注册表：注册表在装饰器里怎么写？装饰器该返回什么？注册发生在什么时刻？怎样让外部拿到只读的注册表视图？",
+        "answer": [
+          "注册表就是模块级 dict（REGISTRY = {}），装饰器闭包捕获它，装饰时执行 REGISTRY[name] = handler 写入一条 name -> 函数 映射",
+          "@register(name) 是装饰器工厂：外层接收 name 返回 deco，deco 接收被装饰函数、写入注册表后把原函数原样 return，所以被装饰的名字仍然指向原函数，可以继续直接调用与单测",
+          "注册发生在导入时：模块 import 完成时（或函数体执行到装饰语句那一行时）就已登记，不用调用 handler，这与调用时才执行 handler 是两件事",
+          "对外暴露只读视图用 types.MappingProxyType(REGISTRY)：HANDLERS[name] 可读，HANDLERS[name] = x 抛 TypeError；它是底层 dict 的实时视图，注册表后续新增的名字会立刻出现在视图里",
+          "按名字取处理器就是普通查表 HANDLERS[name](source)，查不到抛 KeyError，不会自动兜底成默认处理器"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 HANDLERS 这个只读视图里到底有什么、被装饰的函数名还指向谁",
+        "code": "from types import MappingProxyType\n\nREGISTRY = {}\nHANDLERS = MappingProxyType(REGISTRY)\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\n@register(\"csv\")\ndef first(source):\n    return f\"first:{source}\"\n\n\ndef add_json():\n    @register(\"json\")\n    def second(source):\n        return f\"second:{source}\"\n    return second\n\n\nsecond = add_json()\n\nprint(sorted(HANDLERS))\nprint(first(\"a\"))\nprint(HANDLERS[\"json\"] is second)\nprint(HANDLERS[\"csv\"](\"b\"))\nprint(len(HANDLERS))",
+        "expected": [
+          "['csv', 'json']",
+          "first:a",
+          "True",
+          "first:b",
+          "2"
+        ],
+        "explain": "导入时 @register(\"csv\") 把 first 写进 REGISTRY，add_json() 调用时再执行 @register(\"json\") 把 second 写进同一张表，所以 sorted(HANDLERS) 是 ['csv', 'json']。deco 返回原函数，因此 first 这个名字仍然绑定原函数，first(\"a\") 输出 first:a；HANDLERS[\"json\"] 取出的就是 second 本身，is 比较为 True。按名字取出的处理器能直接调用，HANDLERS[\"csv\"](\"b\") 输出的正是 first:b。len(HANDLERS) 为 2，说明 MappingProxyType 是底层 dict 的实时视图，后注册的名字立刻可见。注意 csv 位置没有被覆盖——如果两次注册同一个名字，先注册的会被静默覆盖，这正是排查题要暴露的问题"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from types import MappingProxyType\n\nREGISTRY = {}\nHANDLERS = MappingProxyType(REGISTRY)\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\n@register(\"csv\")\ndef first(source):\n    return f\"first:{source}\"\n\n\n@register(\"csv\")\ndef second(source):\n    return f\"second:{source}\"\n\n\nprint(len(HANDLERS))\nprint(HANDLERS[\"csv\"] is first)\nprint(HANDLERS[\"csv\"](\"x\"))\nprint(\"xml\" in HANDLERS)",
+        "rootCause": "register 只做 REGISTRY[name] = handler，没有任何重复检查，于是第二次 @register(\"csv\") 把先注册的 first 静默覆盖成 second：len(HANDLERS) 仍是 1、HANDLERS[\"csv\"] is first 变成 False、HANDLERS[\"csv\"](\"x\") 输出 second:x，而整个导入过程一声不响。两个模块各自注册同一个名字时，先写好的处理器就这样消失，问题直到运行时拿到错误实现才暴露。",
+        "fix": "在写表之前先检查名字是否已占用，占用就抛自定义异常，把问题提前到导入时报出来：\n\n    class DuplicateTask(ValueError):\n        pass\n\n    def register(name):\n        def decorator(handler):\n            if name in REGISTRY:\n                raise DuplicateTask(name)\n            REGISTRY[name] = handler\n            return handler\n        return decorator\n\n修复后第二次注册抛 DuplicateTask，first 保持不被覆盖（len(HANDLERS) == 1、HANDLERS[\"csv\"] is first 为 True、输出 first:x），只读视图 HANDLERS[\"csv\"] = ... 依旧抛 TypeError。自定义异常继承 ValueError，既能被具体捕获，也兼容只认 ValueError 的调用方。"
+      },
+      "code_task": {
+        "prompt": "实现一套最小任务注册器：模块级 dict 作为底层表，HANDLERS 是它的 MappingProxyType 只读视图；register(name) 装饰器写入处理函数并返回原函数；execute(name, source) 按名字取出处理函数并用 source 调用。用 unittest 覆盖每条验收。",
+        "acceptance": [
+          "register(name) 装饰器返回原函数：@register(\"csv\") 定义后，该名字调用结果与 HANDLERS[\"csv\"] 是同一个对象",
+          "注册发生的时刻是导入/装饰时：只定义 handler、不调用 execute，HANDLERS 里就已经能查到它",
+          "HANDLERS 是只读视图：对它做 HANDLERS[name] = handler 抛 TypeError，而底层 dict 仍可被 register 写入",
+          "execute(name, source) 按名字取表执行，返回处理器结果",
+          "只读视图是实时视图：新注册一个名字后 len(HANDLERS) 增加、HANDLERS 立刻能查到它"
+        ],
+        "reference": "import unittest\nfrom types import MappingProxyType\n\nREGISTRY = {}\nHANDLERS = MappingProxyType(REGISTRY)\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\ndef execute(name, source):\n    return HANDLERS[name](source)\n\n\nclass RegistryTest(unittest.TestCase):\n    def tearDown(self):\n        REGISTRY.clear()\n\n    def test_register_returns_handler(self):\n        @register(\"csv\")\n        def read_csv(source):\n            return \"csv\"\n\n        self.assertIs(read_csv, HANDLERS[\"csv\"])\n\n    def test_registered_handler_runs_by_name(self):\n        @register(\"csv\")\n        def read_csv(source):\n            return f\"csv:{source}\"\n\n        self.assertEqual(execute(\"csv\", \"a\"), \"csv:a\")\n\n    def test_view_lists_every_name(self):\n        @register(\"csv\")\n        def read_csv(source):\n            return \"csv\"\n\n        @register(\"json\")\n        def read_json(source):\n            return \"json\"\n\n        self.assertEqual(sorted(HANDLERS), [\"csv\", \"json\"])\n\n    def test_view_is_read_only(self):\n        with self.assertRaises(TypeError):\n            HANDLERS[\"xml\"] = lambda source: source\n\n    def test_view_is_live(self):\n        before = len(HANDLERS)\n\n        @register(\"yaml\")\n        def read_yaml(source):\n            return \"yaml\"\n\n        self.assertEqual(len(HANDLERS), before + 1)\n        self.assertIs(HANDLERS[\"yaml\"], read_yaml)\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "写 REGISTRY[name] = handler 却不检查重复，后注册的处理器静默覆盖先注册的",
+        "以为 MappingProxyType 是快照：其实是底层 dict 的实时只读视图，之后注册的名字会立刻出现",
+        "忘了 return handler，被装饰的名字在导入后变成 None，调用时报 NoneType 不可调用",
+        "以为注册发生在第一次调用 handler 时，其实导入完成时就已登记，导入顺序会决定谁覆盖谁"
+      ]
+    },
+    {
+      "code": "py.registry.errors",
+      "title": "注册表重复名称、未知任务、签名异常",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3502",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "注册装饰器需要处理哪几类错误？重复注册该抛什么？未知任务查表失败该抛什么、消息里要有什么？为什么要在注册时就校验处理器签名？",
+        "answer": [
+          "重复注册：写入前先 if name in REGISTRY，占用就抛自定义异常（如 class DuplicateTask(ValueError)），继承 ValueError 让只想捕获 ValueError 的调用方也能接住",
+          "未知任务：按名字查表失败天然抛 KeyError；捕获它后重新抛出并带上可用名字（如 raise KeyError(f\"未知任务 {name!r}，可用：{sorted(handlers)}\") from None）能直接定位",
+          "签名校验在注册时用 inspect.signature(handler) 取参数，只统计 POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD 两类，要求恰好一个参数且名字为 source，不符就拒绝注册",
+          "签名校验必须发生在写表之前：先检查后写入，失败时注册表保持原样，不会留下半个坏处理器",
+          "错误信息要能定位问题：带上任务名与 inspect.signature(handler) 的原文（例如 \"处理器 'bad' 的签名必须是 (source)，实际是 (source, options=None)\"），而不是只说一句“参数不对”"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并解释每个异常是在哪一步抛出的",
+        "code": "import inspect\n\n\nclass HandlerSignatureError(ValueError):\n    pass\n\n\ndef validate_handler(handler):\n    signature = inspect.signature(handler)\n    required = [\n        p for p in signature.parameters.values()\n        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)\n    ]\n    if len(required) != 1 or required[0].name != \"source\":\n        raise HandlerSignatureError(f\"签名不符: {signature}\")\n    return handler\n\n\ndef parse_lines(source):\n    return len(source.splitlines())\n\n\ndef parse_all(source, options=None):\n    return len(source.splitlines())\n\n\nprint(validate_handler(parse_lines).__name__)\nprint(inspect.signature(parse_lines).parameters[\"source\"].name)\ntry:\n    validate_handler(parse_all)\nexcept HandlerSignatureError as exc:\n    print(type(exc).__name__)\n    print(isinstance(exc, ValueError))\n    print(\"options\" in str(exc))",
+        "expected": [
+          "parse_lines",
+          "source",
+          "HandlerSignatureError",
+          "True",
+          "True"
+        ],
+        "explain": "first 两个 print 展示合规签名：inspect.signature(parse_lines) 的参数只有 source，validate_handler 原样返回它，所以 __name__ 是 parse_lines、参数名是 source。parse_all 多了一个带默认值的 options，属于 POSITIONAL_OR_KEYWORD，因此 required 长度为 2，validate_handler 抛 HandlerSignatureError。它继承 ValueError，所以 isinstance(exc, ValueError) 为 True；异常消息里带有 inspect.signature 的原文（含 options），所以 \"options\" in str(exc) 为 True——这正是“能定位问题”的含义。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import inspect\nfrom types import MappingProxyType\n\nREGISTRY = {}\nHANDLERS = MappingProxyType(REGISTRY)\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\ndef to_upper(source, options):\n    return source.upper()\n\n\n@register(\"upper\")\ndef read_upper(source):\n    return to_upper(source)\n\n\n@register(\"upper\")\ndef read_upper_again(source):\n    return source.upper()\n\n\nprint(list(HANDLERS))\nprint(HANDLERS[\"upper\"].__name__)\nprint(read_upper is read_upper_again)\ntry:\n    print(read_upper(\"a\"))\nexcept TypeError as exc:\n    print(type(exc).__name__)\ntry:\n    print(HANDLERS[\"xml\"](\"a\"))\nexcept KeyError as exc:\n    print(type(exc).__name__)",
+        "rootCause": "三处都缺失。其一，两次 @register(\"upper\") 没有任何重复检查，read_upper 被 read_upper_again 静默覆盖，HANDLERS[\"upper\"].__name__ 变成 read_upper_again、read_upper is read_upper_again 为 False；其二，to_upper(source, options) 的签名在注册时根本没被检查，直到调用 read_upper(\"a\") 才抛 TypeError（missing 1 required positional argument: 'options'），把错误推迟到运行时；其三，查表 HANDLERS[\"xml\"] 抛 KeyError 时没有补充可用名字。",
+        "fix": "注册时同时做签名校验与重复检查，并且先校验后写表：\n\n    def _check_signature(name, handler):\n        parameters = [\n            p for p in inspect.signature(handler).parameters.values()\n            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)\n        ]\n        if len(parameters) != 1:\n            raise RegistryError(\n                f\"处理器 {name!r} 需要恰好一个位置参数，实际签名是 {inspect.signature(handler)}\"\n            )\n\n    def register(name):\n        def decorator(handler):\n            _check_signature(name, handler)\n            if name in REGISTRY:\n                raise RegistryError(f\"重复注册的任务名：{name!r}\")\n            REGISTRY[name] = handler\n            return handler\n        return decorator\n\n修复后：第二次注册抛 RegistryError 且 first 处理器保留，签名不符的处理器在注册时就被拒绝，未知任务仍抛 KeyError，只读视图的赋值依旧抛 TypeError，合规的 read_upper(\"abc\") 正常返回 ABC。"
+      },
+      "code_task": {
+        "prompt": "实现注册表错误处理：register(name) 装饰器在写入前先用 inspect.signature 校验处理器必须是恰好一个名为 source 的位置参数，不符抛自定义 RegistryError；重复名称抛 RegistryError；execute(handlers, name) 查表失败时抛 KeyError 且消息里含未知名字与可用名字列表。用 unittest 覆盖每条验收。",
+        "acceptance": [
+          "重复名称抛自定义异常，且该异常是 ValueError 的子类",
+          "重复注册被拒绝后，注册表里原处理器保持不变（不被覆盖）",
+          "处理器多一个参数（如 (source, options=None)）时在注册阶段就抛异常，注册表不留下该条目",
+          "参数名不是 source（如 (lines)）同样在注册阶段被拒绝",
+          "未知任务名抛 KeyError，消息里同时含该名字与可用名字列表",
+          "错误消息里带 inspect.signature 原文，能定位是哪个处理器的签名不符"
+        ],
+        "reference": "import inspect\nimport unittest\nfrom types import MappingProxyType\n\n\nclass RegistryError(ValueError):\n    pass\n\n\ndef execute(handlers, name, source=None):\n    try:\n        handler = handlers[name]\n    except KeyError:\n        raise KeyError(f\"未知任务 {name!r}，可用：{sorted(handlers)}\") from None\n    return handler(source)\n\n\ndef _positional_parameters(handler):\n    return [\n        p for p in inspect.signature(handler).parameters.values()\n        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)\n    ]\n\n\ndef register_handler(name, handler, table):\n    if name in table:\n        raise RegistryError(f\"重复注册：{name!r}\")\n    parameters = _positional_parameters(handler)\n    if len(parameters) != 1 or parameters[0].name != \"source\":\n        raise RegistryError(\n            f\"处理器 {name!r} 的签名必须是 (source)，实际是 {inspect.signature(handler)}\"\n        )\n    table[name] = handler\n    return handler\n\n\ndef make_registry():\n    table = {}\n    handlers = MappingProxyType(table)\n\n    def register(name):\n        def decorator(handler):\n            return register_handler(name, handler, table)\n        return decorator\n\n    return register, handlers\n\n\nclass RegistryErrorTest(unittest.TestCase):\n    def setUp(self):\n        self.register, self.handlers = make_registry()\n\n    def test_register_and_run(self):\n        @self.register(\"upper\")\n        def read_upper(source):\n            return source.upper()\n\n        self.assertEqual(execute(self.handlers, \"upper\", \"ab\"), \"AB\")\n\n    def test_duplicate_name_raises_registry_error(self):\n        @self.register(\"upper\")\n        def read_upper(source):\n            return source\n\n        with self.assertRaises(RegistryError):\n            @self.register(\"upper\")\n            def other(source):\n                return source\n\n        self.assertIs(self.handlers[\"upper\"], read_upper)\n\n    def test_registry_error_is_a_value_error(self):\n        @self.register(\"upper\")\n        def read_upper(source):\n            return source\n\n        with self.assertRaises(ValueError):\n            @self.register(\"upper\")\n            def other(source):\n                return source\n\n    def test_unknown_task_raises_keyerror_with_hint(self):\n        @self.register(\"upper\")\n        def read_upper(source):\n            return source\n\n        with self.assertRaises(KeyError) as ctx:\n            execute(self.handlers, \"xml\")\n        message = str(ctx.exception)\n        self.assertIn(\"xml\", message)\n        self.assertIn(\"upper\", message)\n\n    def test_wrong_signature_rejected_at_registration(self):\n        def too_many(source, options=None):\n            return source\n\n        with self.assertRaises(RegistryError):\n            self.register(\"bad\")(too_many)\n        self.assertEqual(sorted(self.handlers), [])\n\n    def test_wrong_parameter_name_rejected(self):\n        def renamed(lines):\n            return lines\n\n        with self.assertRaises(RegistryError):\n            self.register(\"bad\")(renamed)\n        self.assertNotIn(\"bad\", self.handlers)\n\n    def test_error_message_can_locate_the_handler(self):\n        def too_many(source, options=None):\n            return source\n\n        with self.assertRaises(RegistryError) as ctx:\n            self.register(\"bad\")(too_many)\n        self.assertIn(\"options\", str(ctx.exception))\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "先写表再校验签名，异常抛出时坏处理器已留在注册表里",
+        "校验签名时把 *args、**kwargs 也算进位置参数，导致合法处理器被误拒",
+        "查表失败只抛裸 KeyError('xml')，不带可用名字，排查时还得回去翻源码",
+        "自定义异常不继承 ValueError，让只想捕获 ValueError 的调用方漏接"
+      ]
+    },
+    {
+      "code": "py.registry.testing",
+      "title": "注册表测试、处理函数独立性",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3502",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "3503",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "为什么围绕模块级注册表写测试容易互相串状态？怎样让每个测试干净开始？核心处理函数为什么不该依赖注册表？用 unittest 怎么测重复注册、未知任务与只读视图？",
+        "answer": [
+          "模块级 REGISTRY 在同一个进程里只创建一次，所有测试方法共享它：前一个测试注册的名字会留给后一个，重复注册是否报错、len(HANDLERS) 是多少都取决于测试执行顺序",
+          "用工厂 make_registry() 返回 (register, handlers)：底层 dict 与装饰器闭包在同一作用域创建，在 setUp 里重建，每个测试拿到全新注册表；不要只把 REGISTRY 换成新的而让装饰器仍闭包旧 dict",
+          "注册表装饰器只负责登记，核心处理逻辑写成模块级普通函数（如 count_lines(source)），处理器只调用它；这样 count_lines 可以完全脱离注册表单测",
+          "用 self.assertRaises 测重复注册（DuplicateTask/ValueError）与未知任务（KeyError），并用 assertIn(名字, str(ctx.exception)) 断言消息里带可用名字（注意 KeyError 的 str 是参数的 repr）",
+          "只读视图也断言：with self.assertRaises(TypeError): self.handlers[\"lines\"] = f，并可用 assertEqual(dict(self.handlers), {}) 证明 setUp 后确实是空的"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明为什么三个测试各自看到的注册表互不影响",
+        "code": "import unittest\nfrom types import MappingProxyType\n\n\ndef make_registry():\n    table = {}\n    handlers = MappingProxyType(table)\n\n    def register(name):\n        def decorator(handler):\n            table[name] = handler\n            return handler\n        return decorator\n\n    return register, handlers\n\n\nclass RegistryTest(unittest.TestCase):\n    def setUp(self):\n        self.register, self.handlers = make_registry()\n\n    def test_first(self):\n        @self.register(\"lines\")\n        def handler(source):\n            return len(source.splitlines())\n\n        self.assertEqual(self.handlers[\"lines\"](\"a\\nb\"), 2)\n\n    def test_second(self):\n        @self.register(\"lines\")\n        def handler(source):\n            return len(source.splitlines())\n\n        self.assertEqual(sorted(self.handlers), [\"lines\"])\n\n    def test_third(self):\n        self.assertEqual(sorted(self.handlers), [])\n\n\nresult = unittest.TextTestRunner(verbosity=0).run(\n    unittest.defaultTestLoader.loadTestsFromTestCase(RegistryTest)\n)\nprint(\"run:\", result.testsRun)\nprint(\"failures:\", len(result.failures))\nprint(\"errors:\", len(result.errors))",
+        "expected": [
+          "run: 3",
+          "failures: 0",
+          "errors: 0"
+        ],
+        "explain": "make_registry() 每次调用都在自己的函数作用域里新建 table 与闭环捕获它的 register，setUp 又为每个测试方法重跑一次，所以 test_first、test_second 里注册的 \"lines\" 只存在于各自那份表里，test_third 一开始看到的必然是空表。三个测试全部通过，TextTestRunner 的结果是 testsRun=3、failures=0、errors=0。如果把 table 换成模块级全局注册表，test_third 就会因为前面测试留下的 \"lines\" 而失败——测试之间是否共享状态取决于表建在哪一层作用域。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import io\nimport unittest\n\nREGISTRY = {}\n\n\ndef register(name):\n    def decorator(handler):\n        REGISTRY[name] = handler\n        return handler\n    return decorator\n\n\ndef count_lines(source):\n    return len(source.splitlines())\n\n\n@register(\"lines\")\ndef handler(source):\n    return count_lines(source)\n\n\ndef execute(name, source):\n    return REGISTRY[name](source)\n\n\nclass RegistryTest(unittest.TestCase):\n    def test_handler_works(self):\n        @register(\"lines\")\n        def handler(source):\n            return count_lines(source)\n        self.assertEqual(execute(\"lines\", \"a\\nb\"), 2)\n\n    def test_same_thing_again(self):\n        @register(\"lines\")\n        def handler(source):\n            return count_lines(source)\n        self.assertEqual(execute(\"lines\", \"a\\nb\"), 2)\n\n    def test_each_test_starts_empty(self):\n        self.assertEqual(sorted(REGISTRY), [])\n\n\nbuffer = io.StringIO()\nrunner = unittest.TextTestRunner(stream=buffer, verbosity=0)\nresult = runner.run(unittest.defaultTestLoader.loadTestsFromTestCase(RegistryTest))\nprint(\"failures:\", len(result.failures), \"errors:\", len(result.errors))\nprint(buffer.getvalue().strip().splitlines()[-1])",
+        "rootCause": "REGISTRY 是模块级全局 dict，register 闭包写死它，测试类里既不重建也不清理，于是测试之间串状态：test_handler_works 注册的 \"lines\" 一直留到 test_each_test_starts_empty，后者断言 sorted(REGISTRY) == [] 直接失败。同时处理逻辑 count_lines 被包在装饰出来的 handler 里，只能通过注册表间接触发，第一个测试等于重复验证同一件事，没有对核心逻辑做独立单测。",
+        "fix": "把注册表改成工厂内建、由 setUp 重建，并把核心逻辑抽成模块级函数：\n\n    def make_registry():\n        table = {}\n        handlers = MappingProxyType(table)\n\n        def register(name):\n            def decorator(handler):\n                if name in table:\n                    raise ValueError(f\"重复注册：{name}\")\n                table[name] = handler\n                return handler\n            return decorator\n\n        return register, handlers\n\n    def count_lines(source):\n        return len(source.splitlines())\n\n    class RegistryTest(unittest.TestCase):\n        def setUp(self):\n            self.register, self.handlers = make_registry()\n\n修复后每个测试从空表开始（test_each_test_starts_empty 通过），重复注册会报错而不是静默覆盖，并且可以直接断言 count_lines(\"a\\nb\\nc\") == 3，核心处理函数不再依赖注册表。"
+      },
+      "code_task": {
+        "prompt": "用工厂 make_registry() 返回 (register, handlers) 写一套注册表，并在 setUp 里重建；把行数统计写成独立的 count_lines(source) 与 count_words(source)，处理器只做转发；execute(handlers, name, source) 支持未知任务抛带可用名字的 KeyError。用 unittest 覆盖每条验收，保证测试之间不串状态。",
+        "acceptance": [
+          "setUp 后注册表为空，且连续两个测试都能各自注册同名处理器而不冲突",
+          "核心函数可独立单测：直接断言 count_lines(\"a\\nb\\nc\") == 3 与 count_words(\"a b c\") == 3，不经过注册表",
+          "注册重复名称抛 DuplicateHandler，且原条目不被覆盖",
+          "未知任务抛 KeyError，消息里含可用名字",
+          "对只读视图赋值抛 TypeError",
+          "处理器只是转发到核心函数：execute 的结果与直接调用核心函数一致"
+        ],
+        "reference": "import unittest\nfrom types import MappingProxyType\n\n\nclass DuplicateHandler(ValueError):\n    pass\n\n\ndef make_registry():\n    table = {}\n    handlers = MappingProxyType(table)\n\n    def register(name):\n        def decorator(handler):\n            if name in table:\n                raise DuplicateHandler(f\"重复注册：{name}\")\n            table[name] = handler\n            return handler\n        return decorator\n\n    return register, handlers\n\n\ndef count_lines(source):\n    return len(source.splitlines())\n\n\ndef count_words(source):\n    return len(source.split())\n\n\ndef execute(handlers, name, source=None):\n    try:\n        handler = handlers[name]\n    except KeyError:\n        raise KeyError(f\"未知任务 {name!r}，可用：{sorted(handlers)}\") from None\n    return handler(source)\n\n\nclass RegistryTest(unittest.TestCase):\n    def setUp(self):\n        self.register, self.handlers = make_registry()\n\n    def test_first_run_registers(self):\n        @self.register(\"lines\")\n        def handler(source):\n            return count_lines(source)\n\n        self.assertEqual(execute(self.handlers, \"lines\", \"a\\nb\"), 2)\n\n    def test_fresh_registry_per_test(self):\n        @self.register(\"lines\")\n        def handler(source):\n            return count_lines(source)\n\n        self.assertEqual(sorted(self.handlers), [\"lines\"])\n\n    def test_core_handlers_standalone(self):\n        self.assertEqual(count_lines(\"a\\nb\\nc\"), 3)\n        self.assertEqual(count_words(\"a b c\"), 3)\n\n    def test_duplicate_name_raises(self):\n        @self.register(\"lines\")\n        def handler(source):\n            return 1\n\n        with self.assertRaises(DuplicateHandler):\n            @self.register(\"lines\")\n            def again(source):\n                return 2\n\n        self.assertIs(self.handlers[\"lines\"], handler)\n\n    def test_unknown_task_raises_keyerror(self):\n        @self.register(\"lines\")\n        def handler(source):\n            return 1\n\n        with self.assertRaises(KeyError) as ctx:\n            execute(self.handlers, \"nope\")\n        self.assertIn(\"lines\", str(ctx.exception))\n\n    def test_view_is_read_only(self):\n        with self.assertRaises(TypeError):\n            self.handlers[\"lines\"] = lambda source: 0\n\n    def test_no_module_level_state(self):\n        self.assertEqual(dict(self.handlers), {})\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "把底层表换成新的 dict，装饰器闭包却还指向旧的那份，测试看着过了其实写进了废弃的表",
+        "只在 tearDown 里 REGISTRY.clear()，忘记 setUp 里也要清一次，首个测试仍可能继承导入期注册的内容",
+        "核心处理逻辑直接写进被装饰函数，测试只能通过注册表间接调用，无法单独验证算法",
+        "把 KeyError 消息当普通字符串断言：KeyError 的 str() 是参数的 repr，断言要写名字本身或用 assertIn 子串"
+      ]
+    },
+    {
+      "code": "py.functools.singledispatch",
+      "title": "singledispatch 单分派",
+      "minutes": 25,
+      "module": "functools",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "singledispatch 按什么分派？各类型实现怎么注册？没有匹配类型时走哪条？子类如何选到实现？它和手写 isinstance 分支相比好在哪？方法版是什么？",
+        "answer": [
+          "singledispatch 装饰一个函数作为默认实现，调用时按第一个参数的 type 查注册表分派，其余参数原样透传",
+          "各类型实现用 @func.register 或 @func.register(int) 注册；带类型注解时 register 会从注解推断类型，函数名习惯写成 _",
+          "没有匹配的类型就落到默认实现（registry[object]），所以用加 @singledispatch 的那个函数体兜底",
+          "按 MRO 选最具体实现：int 子类实例命中 int 注册项，list 子类实例命中 list 注册项；bool 是 int 的子类，单独给 bool 注册时先命中 bool，否则命中 int",
+          "方法版是 functools.singledispatchmethod，按第一个参数（通常 self 之后的那个）分派；相比手写 isinstance 链，注册式分派把类型与实现解耦，顺序无关且不会因分支写反出现不可达分支"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每一行命中哪个注册项",
+        "code": "from functools import singledispatch\n\n\n@singledispatch\ndef render(value):\n    return \"default\"\n\n\n@render.register\ndef _(value: int):\n    return \"int\"\n\n\n@render.register\ndef _(value: list):\n    return \"list\"\n\n\nprint(render(True))\nprint(render([1, 2]))\nprint(render(\"x\"))\nprint(render(3.5))\nprint(render.dispatch(list).__name__)\nprint(render.registry[object].__name__)\nprint(sorted(cls.__name__ for cls in render.registry))",
+        "expected": [
+          "int",
+          "list",
+          "default",
+          "default",
+          "_",
+          "render",
+          "['int', 'list', 'object']"
+        ],
+        "explain": "render(True)：bool 是 int 的子类且没有为 bool 注册，按 MRO 命中 int 实现，输出 int。render([1, 2]) 命中 list。render(\"x\") 与 render(3.5) 都没有对应注册，落到默认实现（registry[object]），函数体 return \"default\" 所以输出 default 两次。render.dispatch(list) 返回注册表里 list 对应的函数对象，那是个名字为 _ 的定义，__name__ 是 _。render.registry[object] 是默认实现本身，__name__ 是 render。sorted 列出注册表里所有类型名，含默认实现的 object。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def render(value):\n    if isinstance(value, int):\n        return \"int\"\n    if isinstance(value, bool):\n        return \"bool\"\n    if isinstance(value, list):\n        return \"list\"\n    if isinstance(value, dict):\n        return \"dict\"\n    return \"default\"\n\n\nprint(render(1))\nprint(render(True))\nprint(render({}))\nprint(render(\"x\"))\nprint(\"bool\" in render(True))",
+        "rootCause": "手写 isinstance 链的顺序写反了：bool 是 int 的子类，isinstance(True, int) 为 True，所以 render(True) 在第一个分支就被 int 吃掉，第二个 if isinstance(value, bool) 永远不可达，输出 int 而拿不到 bool。同一段代码里参数一换（例如子类）也要重新审分支顺序，这种顺序耦合正是 type-dispatch 的坑。",
+        "fix": "改用 singledispatch，把类型与实现解耦，注册顺序不再影响结果，再把 bool 单独注册（它是 int 的子类，注册了就会优先命中）：\n\n    from functools import singledispatch\n\n    @singledispatch\n    def render(value):\n        return \"default\"\n\n    @render.register\n    def _(value: bool):\n        return \"bool\"\n\n    @render.register\n    def _(value: int):\n        return \"int\"\n\n    @render.register\n    def _(value: list):\n        return \"list\"\n\n    @render.register\n    def _(value: dict):\n        return \"dict\"\n\n修复后 render(1) 是 int、render(True) 是 bool、render({}) 是 dict、render(\"x\") 是 default，bool 分支不再被 int 遮蔽（可用 render.dispatch(bool).__name__ 验证命中的是 bool 的注册函数）。"
+      },
+      "code_task": {
+        "prompt": "用 functools.singledispatch 实现 render(value)：默认实现返回 \"default:<类型名>\"；bool/int/list/dict 各有专门实现（bool 返回 \"bool\"，int 返回 \"int\"，list 返回 \"list\"，dict 返回 \"dict\"）。要求运行时新注册一个类型能命中、子类实例命中最近的基类实现，并额外用 singledispatchmethod 演示方法版。用 unittest 覆盖每条验收。",
+        "acceptance": [
+          "render(3) 返回 \"int\"、render([]) 返回 \"list\"、render({}) 返回 \"dict\"、render(True) 返回 \"bool\"",
+          "未注册类型落到默认实现：render(\"x\") 返回 \"default:str\"、render(3.5) 返回 \"default:float\"",
+          "int 的子类实例（class Tiny(int)）命中 int 实现",
+          "运行时 @render.register 新类型后，该类型实例命中新实现，而原类型结果不变",
+          "render.dispatch(int) 取回的就是 int 的实现函数",
+          "singledispatchmethod 版本的类方法能对方法第一个实参分派"
+        ],
+        "reference": "import unittest\nfrom functools import singledispatch, singledispatchmethod\n\n\n@singledispatch\ndef render(value):\n    return f\"default:{type(value).__name__}\"\n\n\n@render.register\ndef _(value: bool):\n    return \"bool\"\n\n\n@render.register\ndef _(value: int):\n    return \"int\"\n\n\n@render.register\ndef _(value: list):\n    return \"list\"\n\n\n@render.register\ndef _(value: dict):\n    return \"dict\"\n\n\ndef manual_render(value):\n    if isinstance(value, (int, float)):\n        return \"number\"\n    return \"other\"\n\n\nclass Row(list):\n    pass\n\n\nclass Holder:\n    @singledispatchmethod\n    def render(self, value):\n        return f\"default:{type(value).__name__}\"\n\n    @render.register\n    def _(self, value: int):\n        return \"int\"\n\n\nclass RenderTest(unittest.TestCase):\n    def test_int_dispatch(self):\n        self.assertEqual(render(3), \"int\")\n\n    def test_bool_registration_wins(self):\n        self.assertEqual(render(True), \"bool\")\n\n    def test_dispatch_returns_handler(self):\n        self.assertEqual(render.dispatch(int)(5), \"int\")\n        self.assertEqual(render.dispatch(bool)(True), \"bool\")\n\n    def test_mro_picks_most_specific(self):\n        class Tiny(int):\n            pass\n\n        self.assertEqual(render(Tiny(9)), \"int\")\n\n    def test_default_fallback(self):\n        self.assertEqual(render(\"x\"), \"default:str\")\n        self.assertEqual(render(3.5), \"default:float\")\n\n    def test_new_registration(self):\n        class Rows(list):\n            pass\n\n        @render.register\n        def _(value: Rows):\n            return \"rows\"\n\n        self.addCleanup(render.register(list), render.registry[list])\n        self.assertEqual(render(Rows([])), \"rows\")\n        self.assertEqual(render([]), \"list\")\n\n    def test_singledispatchmethod(self):\n        holder = Holder()\n        self.assertEqual(holder.render(1), \"int\")\n        self.assertEqual(holder.render(\"x\"), \"default:str\")\n\n    def test_manual_version_is_coarse(self):\n        self.assertEqual(manual_render(3), \"number\")\n        self.assertEqual(manual_render(\"x\"), \"other\")\n        self.assertEqual(manual_render(True), \"number\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "手写 isinstance 分支时把 int 放在 bool 前面，bool 分支变成永远不可达",
+        "以为 singledispatch 会按第二个或后续参数分派（只看第一个参数）",
+        "忘了写默认实现或默认实现里 raise NotImplementedError，遇到未注册类型直接炸而不是兜底",
+        "写 @render.register(list) 时又给函数标了别的类型注解，显式类型参数说了算，容易注册到意料之外的类型（或反过来只靠注解却漏写参数）"
+      ]
+    },
+    {
+      "code": "py.deco.class-decorator",
+      "title": "类装饰器",
+      "minutes": 20,
+      "module": "装饰器",
+      "level": "实用",
+      "week": 3,
+      "taskRefs": [
+        {
+          "taskId": "3505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "类装饰器接收什么、返回什么？给类加方法该怎么做？返回新类会有什么后果？它和 __init_subclass__、元类的职责怎么分？",
+        "answer": [
+          "类装饰器就是一个接收类对象、返回类对象的可调用对象：@deco 等价于 C = deco(C)，被装饰的类名最终绑定到返回值",
+          "给类加属性/方法最常见的是原地修改再返回原来的类：cls.describe = describe; return cls，这样旧引用、isinstance、type() 判断全部继续有效",
+          "也可以返回新类（如返回一个子类或 type() 造的新类），但被装饰的名字换成了新对象：旧引用仍是旧类，type(old_instance) is NewClass 为 False、isinstance(old_instance, NewClass) 可能为 False，已经序列化/注册的类型信息会错位",
+          "与 __init_subclass__ 的分工：__init_subclass__ 是父类里的钩子，在每个子类创建时自动执行，适合给所有子类统一打标记或校验",
+          "与元类的分工：元类控制整族类的创建过程（type 的子类，__new__/__init__ 里改类），类装饰器只作用于被它装饰的那一个具体类；三者可叠加，简单点对点增强优先用类装饰器"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明为什么 Legacy 与 Modern 是同一个类对象",
+        "code": "def add_describe(cls):\n    def describe(self):\n        return f\"{cls.__name__}:{self.name}\"\n    cls.describe = describe\n    return cls\n\n\n@add_describe\nclass Modern:\n    def __init__(self, name):\n        self.name = name\n\n\nclass Legacy:\n    def __init__(self, name):\n        self.name = name\n\n\nprint(Modern(\"gin\").describe())\nprint(add_describe(Legacy) is Legacy)\nprint(Legacy(\"rum\").describe())\nprint(isinstance(Legacy(\"rum\"), Legacy))\nprint(\"describe\" in vars(Legacy))\nprint(type(Modern).__name__)\nprint(Modern.__mro__[1].__name__)",
+        "expected": [
+          "Modern:gin",
+          "True",
+          "Legacy:rum",
+          "True",
+          "True",
+          "type",
+          "object"
+        ],
+        "explain": "add_describe 原地给 cls 塞了 describe 方法后 return cls，所以 @add_describe 装饰的 Modern 仍然绑定原来那个类对象。describe 里 f\"{cls.__name__}:{self.name}\" 用的是闭包捕获的类名，所以 Modern(\"gin\") 输出 Modern:gin、Legacy(\"rum\") 在手工装饰后输出 Legacy:rum。add_describe(Legacy) is Legacy 为 True，证明返回的就是同一个类对象；因此 isinstance(Legacy(\"rum\"), Legacy) 为 True，\"describe\" in vars(Legacy) 为 True（方法加在类上而不是实例上）。Modern 是 type 的实例，type(Modern).__name__ 是 type；它直接继承 object，所以 __mro__[1].__name__ 是 object"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "def wrap(cls):\n    class Wrapped(cls):\n        def describe(self):\n            return f\"{cls.__name__}:{self.name}\"\n\n    Wrapped.__name__ = cls.__name__\n    Wrapped.__qualname__ = cls.__name__\n    return Wrapped\n\n\nclass Session:\n    def __init__(self, name):\n        self.name = name\n\n\nLegacy = Session\nSession = wrap(Session)\n\nprint(Legacy is Session)\nprint(type(Legacy(\"a\")) is Session)\nprint(isinstance(Legacy(\"a\"), Session))\nprint(Session(\"a\").describe())\nprint(Legacy.__mro__[1].__name__)",
+        "rootCause": "wrap 返回的是新造的 Wrapped 子类而不是原类，装饰后名字 Session 指向 Wrapped，Legacy 仍指向旧的 Session：Legacy is Session 变成 False，type(Legacy(\"a\")) is Session 也是 False（旧类建的实例，类型是旧类），isinstance(Legacy(\"a\"), Session) 为 False，因为旧类是父类、新类是子类。type() 精确比较、按类型查表、按 __mro__ 做的序列化都会把旧实例判成“另一种类型”，而 Legacy.__mro__[1] 还是 object，旧类根本不知道自己被换掉了。",
+        "fix": "如果只是给类加成员，就原地修改并返回原类，让类名与所有旧引用继续指向同一个对象：\n\n    def add_describe(cls):\n        def describe(self):\n            return f\"{cls.__name__}:{self.name}\"\n\n        cls.describe = describe\n        return cls\n\n    Session = add_describe(Session)\n\n修复后 Legacy is Session 为 True、type(Legacy(\"a\")) is Session 为 True、isinstance 为 True，\"describe\" in vars(Legacy) 为 True。若确实需要返回新类（例如要在调用前后包一层），必须保证旧引用不再被使用，并且不要用 type() 精确比较——但绝大多数“加个方法”的场景都该用原地修改。"
+      },
+      "code_task": {
+        "prompt": "实现类装饰器 add_describe(cls)：在原地给类加上 describe(self) 方法（返回 f\"{cls.__name__}:{self.name}\"）并返回同一个类对象，保证装饰前后旧引用、isinstance、type() 判断都不变。用 unittest 覆盖每条验收。",
+        "acceptance": [
+          "add_describe(Item) is Item 为真：返回的是同一个类对象，不是新类",
+          "装饰后 Item(\"book\").describe() 等于 \"Item:book\"",
+          "装饰前保存的旧引用与装饰后的名字是同一个类：Legacy is Item 且 type(Legacy(\"pen\")) is Item",
+          "describe 出现在类命名空间 vars(cls) 里，不出现在实例 __dict__ 里",
+          "describe 通过闭包使用被装饰类的 __name__，@add_describe 语法作用于 User 时 User(\"gin\").describe() 等于 \"User:gin\""
+        ],
+        "reference": "import unittest\n\n\ndef add_describe(cls):\n    def describe(self):\n        return f\"{cls.__name__}:{self.name}\"\n\n    cls.describe = describe\n    return cls\n\n\n@add_describe\nclass User:\n    def __init__(self, name):\n        self.name = name\n\n\nclass Item:\n    def __init__(self, name):\n        self.name = name\n\n\nclass ClassDecoratorTest(unittest.TestCase):\n    def setUp(self):\n        if \"describe\" in vars(Item):\n            del Item.describe\n        self.decorated = add_describe(Item)\n\n    def test_returns_same_class_object(self):\n        self.assertIs(self.decorated, Item)\n\n    def test_describe_output(self):\n        self.assertEqual(Item(\"book\").describe(), \"Item:book\")\n\n    def test_old_reference_is_still_the_same_class(self):\n        Legacy = Item\n        self.assertIs(Legacy, self.decorated)\n        self.assertTrue(isinstance(Legacy(\"pen\"), Item))\n\n    def test_type_identity_holds(self):\n        Legacy = Item\n        self.assertIs(type(Legacy(\"pen\")), Item)\n\n    def test_attribute_lives_on_the_class(self):\n        self.assertIn(\"describe\", vars(Item))\n        self.assertNotIn(\"describe\", vars(Item(\"mug\")))\n\n    def test_decorated_class_still_constructs_normally(self):\n        self.assertEqual(User(\"gin\").describe(), \"User:gin\")\n        self.assertEqual(User(\"gin\").name, \"gin\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "返回新造的类却让旧引用继续用，type(x) is NewClass 与 isinstance 判断悄悄失效",
+        "在类装饰器里改 __name__ 伪装成原类，掩盖了类型身份已变的事实",
+        "以为类装饰器能像元类一样影响所有子类：它只作用于被装饰的那一个类",
+        "在装饰器里把 cls 换名或返回 None，导致装饰后的类名不可调用"
+      ]
+    }
+  ]
+}

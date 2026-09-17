@@ -115,5 +115,23 @@ class ReviewContentTests(unittest.TestCase):
         self.assertEqual(len(set(codes)), 40, "知识点 code 必须唯一")
 
 
+    def test_every_week_file_passes_validation(self) -> None:
+        """content/review 下每个 py-week*.json 都必须能载入且通过全部粒度规则。"""
+        paths = sorted(Path("content/review").glob("py-week*.json"))
+        self.assertTrue(paths, "content/review 下应至少有一个 py-week*.json")
+        weeks = []
+        codes = []
+        for path in paths:
+            with self.subTest(path=path.name):
+                loaded = review_content.load_content_file(path)
+                self.assertEqual(review_content.validate_points(loaded["points"]), [])
+                self.assertGreater(loaded["week"], 0, f"{path.name} 缺少合法的 week")
+                weeks.append(loaded["week"])
+                codes.extend(point["code"] for point in loaded["points"])
+        self.assertEqual(len(weeks), len(set(weeks)), f"各文件的 week 不能重复：{weeks}")
+        duplicated = sorted({code for code in codes if codes.count(code) > 1})
+        self.assertEqual(duplicated, [], f"跨文件 code 不能重复：{duplicated}")
+
+
 if __name__ == "__main__":
     unittest.main()
