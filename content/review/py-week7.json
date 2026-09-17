@@ -5,7 +5,7 @@
   "points": [
     {
       "code": "py.async.coroutine-object",
-      "title": "async def 与协程对象：调用不等于执行",
+      "title": "async def 的调用结果：协程对象不等于执行",
       "minutes": 20,
       "module": "协程",
       "level": "进阶",
@@ -48,9 +48,9 @@
         "acceptance": [
           "collect 是 async def，内部对每个元素 await 取回结果，返回 [1, 2, 3]",
           "collect 的返回顺序与输入顺序一致，长度等于输入长度",
-          "未 await 的协程对象用 inspect.iscoroutine 判定为真，且单独构造的协程在测试里被 aclose() 关闭（不留下 never awaited 警告）"
+          "未 await 的协程对象用 inspect.iscoroutine 判定为真，且单独构造的协程在测试里用 close() 关闭并变为 CORO_CLOSED（不留下 never awaited 警告）"
         ],
-        "reference": "import asyncio\nimport inspect\nimport unittest\n\n\nasync def fetch(value):\n    await asyncio.sleep(0)\n    return value\n\n\nasync def collect(values):\n    results = []\n    for value in values:\n        results.append(await fetch(value))\n    return results\n\n\nclass CollectTest(unittest.TestCase):\n    def test_collect_awaits_every_value(self):\n        self.assertEqual(asyncio.run(collect([1, 2, 3])), [1, 2, 3])\n        self.assertEqual(asyncio.run(collect([4])), [4])\n\n    def test_calling_async_function_returns_coroutine(self):\n        coro = fetch(1)\n        self.assertTrue(inspect.iscoroutine(coro))\n        coro.close()\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport inspect\nimport unittest\n\n\nasync def fetch(value):\n    await asyncio.sleep(0)\n    return value\n\n\nasync def collect(values):\n    results = []\n    for value in values:\n        results.append(await fetch(value))\n    return results\n\n\nclass CollectTest(unittest.TestCase):\n    def test_collect_awaits_every_value(self):\n        self.assertEqual(asyncio.run(collect([1, 2, 3])), [1, 2, 3])\n        self.assertEqual(asyncio.run(collect([4])), [4])\n\n    def test_calling_async_function_returns_coroutine(self):\n        coro = fetch(1)\n        self.assertTrue(inspect.iscoroutine(coro))\n        coro.close()\n        self.assertEqual(inspect.getcoroutinestate(coro), inspect.CORO_CLOSED)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "把协程对象当普通返回值使用",
@@ -109,7 +109,7 @@
           "两个函数都返回 [\"A\", \"B\"]，与传入顺序一致",
           "两个函数内部都只用 await asyncio.sleep(0) 让出控制权，不依赖真实耗时"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def step(name, log):\n    log.append(name + \"-start\")\n    await asyncio.sleep(0)\n    log.append(name + \"-end\")\n    return name\n\n\nasync def sequential_pair(log):\n    first = await step(\"A\", log)\n    second = await step(\"B\", log)\n    return [first, second]\n\n\nasync def concurrent_pair(log):\n    first = asyncio.create_task(step(\"A\", log))\n    second = asyncio.create_task(step(\"B\", log))\n    return list(await asyncio.gather(first, second))\n\n\nclass AwaitSemanticsTest(unittest.TestCase):\n    def test_sequential_await_does_not_interleave(self):\n        log = []\n        results = asyncio.run(sequential_pair(log))\n        self.assertEqual(log, [\"A-start\", \"A-end\", \"B-start\", \"B-end\"])\n        self.assertEqual(results, [\"A\", \"B\"])\n\n    def test_create_task_interleaves_at_await_points(self):\n        log = []\n        results = asyncio.run(concurrent_pair(log))\n        self.assertEqual(log, [\"A-start\", \"B-start\", \"A-end\", \"B-end\"])\n        self.assertEqual(results, [\"A\", \"B\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def step(name, log):\n    log.append(name + \"-start\")\n    await asyncio.sleep(0)\n    log.append(name + \"-end\")\n    return name\n\n\nasync def sequential_pair(log):\n    first = await step(\"A\", log)\n    second = await step(\"B\", log)\n    return [first, second]\n\n\nasync def concurrent_pair(log):\n    first = asyncio.create_task(step(\"A\", log))\n    second = asyncio.create_task(step(\"B\", log))\n    return list(await asyncio.gather(first, second))\n\n\nclass AwaitSemanticsTest(unittest.TestCase):\n    def test_sequential_await_does_not_interleave(self):\n        log = []\n        started = time.perf_counter()\n        results = asyncio.run(sequential_pair(log))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(log, [\"A-start\", \"A-end\", \"B-start\", \"B-end\"])\n        self.assertEqual(results, [\"A\", \"B\"])\n        self.assertLess(elapsed, 0.5)\n\n    def test_create_task_interleaves_at_await_points(self):\n        log = []\n        started = time.perf_counter()\n        results = asyncio.run(concurrent_pair(log))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(log, [\"A-start\", \"B-start\", \"A-end\", \"B-end\"])\n        self.assertEqual(results, [\"A\", \"B\"])\n        self.assertLess(elapsed, 0.5)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "以为 await 会开新线程或并行执行",
@@ -120,7 +120,7 @@
     },
     {
       "code": "py.async.create-task-order",
-      "title": "create_task 的调度时机与就绪顺序",
+      "title": "create_task 的调度时机：就绪顺序如何决定",
       "minutes": 25,
       "module": "任务",
       "level": "进阶",
@@ -148,7 +148,7 @@
           "results: ['A', 'B']",
           "log: ['A-start', 'A-passed', 'B-start', 'B-passed']"
         ],
-        "explain": "create_task 只是把两个协程排进就绪队列，协程体一行都没跑，所以 after create 时 log 是 []、两个任务都还没 done。main 在 gather 处挂起后事件循环才推进它们：A 记录 A-start 并挂在 gate.wait() 上，B 记录 B-start 也挂起；随后 gate.set() 放行（本例在 main 恢复前就已 set，两个 wait 都能完成），A、B 依次记录 passed 并返回，results 是 [\"A\", \"B\"]、log 是 [\"A-start\", \"B-start\", \"A-passed\", \"B-passed\"]。整条链只有 await 点、没有计时，所以顺序可复现。"
+        "explain": "create_task 只是把两个协程排进就绪队列，协程体一行都没跑，所以 after create 时 log 是 []、两个任务都还没 done。随后 main 在 set() 时并没有任何等待者，gate 变成已设置；等 gather 真正调度两个任务时，gate.wait() 因为门已开而立即返回、不产生挂起点：A 一次跑完记录 A-start、A-passed，然后才轮到 B 记录 B-start、B-passed。所以 results 是 ['A', 'B']、log 是 ['A-start', 'A-passed', 'B-start', 'B-passed']——顺序由“注册顺序 + 没有挂起点”共同决定，而不是 A、B 交错挂起。整条链只有 await 点、没有计时，所以顺序可复现。"
       },
       "debug": {
         "prompt": "下面代码在 set 门之后立刻取消等待，两个任务一个都没被放行，找出问题、说明根因并给出修法",
@@ -164,7 +164,7 @@
           "最终日志恰好是 [\"start\", \"start\", \"passed\", \"passed\"]",
           "等待带 0.5 秒以内的超时，测试不会永久挂起"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def wait_until_ready(gate, log, ready):\n    log.append(\"start\")\n    ready.set()\n    try:\n        await asyncio.wait_for(gate.wait(), timeout=0.5)\n    except TimeoutError:\n        log.append(\"timeout\")\n        return False\n    log.append(\"passed\")\n    return True\n\n\nclass CreateTaskOrderTest(unittest.TestCase):\n    def test_created_tasks_do_not_run_before_a_yield(self):\n        async def scenario():\n            gate = asyncio.Event()\n            ready = asyncio.Event()\n            log = []\n            first = asyncio.create_task(wait_until_ready(gate, log, ready))\n            second = asyncio.create_task(wait_until_ready(gate, log, ready))\n            self.assertEqual(log, [])\n            await asyncio.wait_for(ready.wait(), timeout=0.5)\n            self.assertEqual(log, [\"start\", \"start\"])\n            gate.set()\n            results = await asyncio.gather(first, second)\n            return results, log\n\n        results, log = asyncio.run(scenario())\n        self.assertEqual(results, [True, True])\n        self.assertEqual(log, [\"start\", \"start\", \"passed\", \"passed\"])\n\n    def test_waiter_times_out_without_the_gate(self):\n        async def scenario():\n            gate = asyncio.Event()\n            ready = asyncio.Event()\n            log = []\n            return await wait_until_ready(gate, log, ready), log\n\n        result, log = asyncio.run(scenario())\n        self.assertFalse(result)\n        self.assertEqual(log, [\"start\", \"timeout\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def wait_until_ready(gate, log, ready):\n    log.append(\"start\")\n    ready.set()\n    try:\n        await asyncio.wait_for(gate.wait(), timeout=0.5)\n    except TimeoutError:\n        log.append(\"timeout\")\n        return False\n    log.append(\"passed\")\n    return True\n\n\nclass CreateTaskOrderTest(unittest.TestCase):\n    def test_created_tasks_do_not_run_before_a_yield(self):\n        async def scenario():\n            gate = asyncio.Event()\n            ready = asyncio.Event()\n            log = []\n            first = asyncio.create_task(wait_until_ready(gate, log, ready))\n            second = asyncio.create_task(wait_until_ready(gate, log, ready))\n            self.assertEqual(log, [])\n            await asyncio.wait_for(ready.wait(), timeout=0.5)\n            self.assertEqual(log, [\"start\", \"start\"])\n            gate.set()\n            results = await asyncio.gather(first, second)\n            return results, log\n\n        results, log = asyncio.run(scenario())\n        self.assertEqual(results, [True, True])\n        self.assertEqual(log, [\"start\", \"start\", \"passed\", \"passed\"])\n\n    def test_waiter_times_out_without_the_gate(self):\n        async def scenario():\n            gate = asyncio.Event()\n            ready = asyncio.Event()\n            log = []\n            return await wait_until_ready(gate, log, ready), log\n\n        started = time.perf_counter()\n        result, log = asyncio.run(scenario())\n        elapsed = time.perf_counter() - started\n        self.assertFalse(result)\n        self.assertEqual(log, [\"start\", \"timeout\"])\n        self.assertLess(elapsed, 1.0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "以为 create_task 会立刻执行协程体",
@@ -175,7 +175,7 @@
     },
     {
       "code": "py.async.task-future",
-      "title": "Task、Future 与 ensure_future 的关系",
+      "title": "Task、Future、ensure_future 三者关系",
       "minutes": 25,
       "module": "任务",
       "level": "进阶",
@@ -208,20 +208,20 @@
         "explain": "loop.create_future() 造出 pending 的 Future：type 是 Future，done 与 cancelled 都是 False。ensure_future(produce(...)) 把协程包装成 Task，Task 是 Future 的子类，所以 isinstance(task, asyncio.Future) 为 True。主协程 await future 后挂起，produce 先 sleep(0) 再 set_result(\"ready\")，future 变成 finished，主协程恢复打印 value: ready；此后再看状态，future.done() 与 task.done() 都是 True，task 的返回值是 producer。整段没有出现 Task 对象地址或耗时。"
       },
       "debug": {
-        "prompt": "下面代码在任务失败后什么异常都看不到，只在最后拿到一个未完成的任务对象，找出问题、说明根因并给出修法",
+        "prompt": "下面代码的任务失败后 stdout 一切正常，失败只在 stderr 留了一句警告，找出问题、说明根因并给出修法",
         "code": "import asyncio\n\n\nasync def risky():\n    await asyncio.sleep(0)\n    raise ValueError(\"disk full\")\n\n\nasync def main():\n    task = asyncio.create_task(risky())\n    await asyncio.sleep(0.01)\n    print(\"main done, task done:\", task.done())\n\n\nasyncio.run(main())\n",
-        "rootCause": "risky 的异常被 set_exception 存进了 Task，但 main 从不 await 它、也不调用 task.exception()，异常没有任何人取回：任务结束时 asyncio 只会打印 Task exception was never retrieved 警告（消息里带 “disk full”），业务上表现为“失败被静默吞掉”；main 里那句 task.done() 甚至来不及看到任务结束，打印 False。",
-        "fix": "要么 await task（异常会重新抛出并带上 “disk full”），要么用 TaskGroup/gather 统一收集异常，要么至少在任务结束后显式调用 task.exception()；修复后 main 能观察到 ValueError。"
+        "rootCause": "risky 的异常被 set_exception 存进了 Task，但 main 从不 await 它、也不调用 task.exception()，异常没有任何人取回：main 等 0.01 秒后打印 main done, task done: True（任务确实结束了），stdout 看不出任何失败；只有任务对象被回收时 asyncio 才在 stderr 打印 Task exception was never retrieved 警告（消息里带 “disk full”）。业务上表现为“失败被静默吞掉”，而“任务已结束”并不等于“异常已处理”。",
+        "fix": "要么 await task（异常会重新抛出并带上 “disk full”），要么用 TaskGroup/gather 统一收集异常，要么至少在任务结束后显式调用 task.exception()；修复后 main 能观察到 ValueError 并打印 caught: disk full。"
       },
       "code_task": {
-        "prompt": "写 async 函数 resolve_later()：创建一个 loop.create_future()，用 create_task 启动一个协程在 sleep(0) 之后 set_result(\"ready\")，返回 (isinstance(task, asyncio.Future), await future)；再写一个 async 函数 first_failure(task) 返回任务抛出异常的字符串。用 unittest 断言前者是 (True, \"ready\")、后者对失败任务返回 \"disk full\"，并断言任务最终 done() 为 True。",
+        "prompt": "写 async 函数 resolve_later()：创建一个 loop.create_future()，用 create_task 启动一个协程在 sleep(0) 之后 set_result(\"ready\")，返回 (isinstance(task, asyncio.Task) and isinstance(task, asyncio.Future), await future)；再写一个 async 函数 first_failure(task) 返回任务抛出异常的字符串。用 unittest 断言前者是 (True, \"ready\")、后者对失败任务返回 \"disk full\"，并断言任务最终 done() 为 True、测试结束时没有 pending 任务遗留。",
         "acceptance": [
           "create_task 返回的对象同时是 asyncio.Task 与 asyncio.Future 的实例",
           "await Future 拿到生产者用 set_result 写入的值 \"ready\"",
           "失败任务的异常被显式取回，字符串里含 \"disk full\"",
           "测试结束时所有任务 done() 为 True，没有 pending 任务遗留"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def resolve_later():\n    loop = asyncio.get_running_loop()\n    future = loop.create_future()\n\n    async def producer():\n        await asyncio.sleep(0)\n        future.set_result(\"ready\")\n\n    task = asyncio.create_task(producer())\n    value = await future\n    await task\n    return isinstance(task, asyncio.Task) and isinstance(task, asyncio.Future), value\n\n\nasync def first_failure(task):\n    try:\n        await task\n    except ValueError as error:\n        return str(error)\n    return \"\"\n\n\nasync def failing():\n    await asyncio.sleep(0)\n    raise ValueError(\"disk full\")\n\n\nclass TaskFutureTest(unittest.TestCase):\n    def test_task_is_a_future_and_carries_the_value(self):\n        is_both, value = asyncio.run(resolve_later())\n        self.assertTrue(is_both)\n        self.assertEqual(value, \"ready\")\n\n    def test_failure_is_retrieved_and_no_task_is_left_pending(self):\n        async def scenario():\n            task = asyncio.create_task(failing())\n            message = await first_failure(task)\n            return message, task\n\n        message, task = asyncio.run(scenario())\n        self.assertIn(\"disk full\", message)\n        self.assertTrue(task.done())\n        self.assertFalse(task.cancelled())\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport unittest\n\n\nasync def resolve_later():\n    loop = asyncio.get_running_loop()\n    future = loop.create_future()\n\n    async def producer():\n        await asyncio.sleep(0)\n        future.set_result(\"ready\")\n\n    task = asyncio.create_task(producer())\n    value = await future\n    await task\n    return isinstance(task, asyncio.Task) and isinstance(task, asyncio.Future), value\n\n\nasync def first_failure(task):\n    try:\n        await task\n    except ValueError as error:\n        return str(error)\n    return \"\"\n\n\nasync def failing():\n    await asyncio.sleep(0)\n    raise ValueError(\"disk full\")\n\n\nclass TaskFutureTest(unittest.TestCase):\n    def test_task_is_a_future_and_carries_the_value(self):\n        is_both, value = asyncio.run(resolve_later())\n        self.assertTrue(is_both)\n        self.assertEqual(value, \"ready\")\n\n    def test_failure_is_retrieved_and_no_task_is_left_pending(self):\n        async def scenario():\n            task = asyncio.create_task(failing())\n            message = await first_failure(task)\n            return message, task\n\n        message, task = asyncio.run(scenario())\n        self.assertIn(\"disk full\", message)\n        self.assertTrue(task.done())\n        self.assertFalse(task.cancelled())\n\n    def test_no_task_is_left_pending(self):\n        async def scenario():\n            is_both, _ = await resolve_later()\n            message = await first_failure(asyncio.create_task(failing()))\n            current = asyncio.current_task()\n            left = [task for task in asyncio.all_tasks() if task is not current]\n            return is_both, message, left\n\n        is_both, message, left = asyncio.run(scenario())\n        self.assertTrue(is_both)\n        self.assertIn(\"disk full\", message)\n        self.assertEqual(left, [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "把 ensure_future 当 create_task 的同义词使用",
@@ -232,7 +232,7 @@
     },
     {
       "code": "py.async.run-lifecycle",
-      "title": "asyncio.run 与事件循环生命周期",
+      "title": "asyncio.run 的事件循环生命周期",
       "minutes": 20,
       "module": "事件循环",
       "level": "进阶",
@@ -246,7 +246,7 @@
         "prompt": "asyncio.run 做了哪些事？它返回后事件循环处于什么状态？",
         "answer": [
           "asyncio.run(main) 建一个新事件循环、把 main 协程跑成任务、等它结束，然后取消所有剩余任务、关闭异步生成器、关闭事件循环并把它从当前线程解除",
-          "每次调用 asyncio.run 都是一个独立循环：上一次 run 里创建的 Task、Event、Queue 都绑定在已关闭的循环上，传给下一次 run 会报 “attached to a different loop”",
+          "每次调用 asyncio.run 都是一个独立循环：上一次 run 里创建的 Task/Future 绑定在已关闭的循环上，传给下一次 run 会报 RuntimeError: ... attached to a different loop；Event/Queue 这类原语（只要在第一次循环里真正等待过）报的是 RuntimeError: ... is bound to a different event loop",
           "run 返回 main 的返回值；main 抛异常时 run 把原异常抛给调用方（取消等内部异常会被处理）",
           "run 之后当前线程没有事件循环：asyncio.get_event_loop() 抛 RuntimeError: There is no current event loop in thread 'MainThread'，要再跑就得再调用一次 run（或自己在同一个 run 里完成）",
           "run 内部禁止嵌套：在已经运行的事件循环里调用 asyncio.run 会抛 RuntimeError: asyncio.run() cannot be called from a running event loop"
@@ -331,7 +331,7 @@
           "心跳任务在函数返回前被取消并 await，测试结束后 asyncio.all_tasks() 里没有遗留任务",
           "两种场景的整段耗时都在 1 秒以内，不使用长睡眠"
         ],
-        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def detect_blocking(fn):\n    log = []\n\n    async def heartbeat():\n        while True:\n            await asyncio.sleep(0)\n            log.append(1)\n\n    beat = asyncio.create_task(heartbeat())\n    await asyncio.sleep(0)\n    before = len(log)\n    await fn()\n    after = len(log)\n    beat.cancel()\n    try:\n        await beat\n    except asyncio.CancelledError:\n        pass\n    return before, after\n\n\nasync def blocking_once():\n    time.sleep(0.05)\n\n\nasync def async_once():\n    await asyncio.sleep(0.01)\n\n\nclass LoopBlockingTest(unittest.TestCase):\n    def test_sync_call_freezes_the_heartbeat(self):\n        before, after = asyncio.run(detect_blocking(blocking_once))\n        self.assertEqual(before, 0)\n        self.assertEqual(after, 0)\n\n    def test_awaiting_io_keeps_the_heartbeat_running(self):\n        before, after = asyncio.run(detect_blocking(async_once))\n        self.assertGreater(after, before)\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await detect_blocking(async_once)\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def detect_blocking(fn):\n    log = []\n\n    async def heartbeat():\n        while True:\n            await asyncio.sleep(0)\n            log.append(1)\n\n    beat = asyncio.create_task(heartbeat())\n    await asyncio.sleep(0)\n    before = len(log)\n    await fn()\n    after = len(log)\n    beat.cancel()\n    try:\n        await beat\n    except asyncio.CancelledError:\n        pass\n    return before, after\n\n\nasync def blocking_once():\n    time.sleep(0.05)\n\n\nasync def async_once():\n    await asyncio.sleep(0.01)\n\n\nclass LoopBlockingTest(unittest.TestCase):\n    def test_sync_call_freezes_the_heartbeat(self):\n        started = time.perf_counter()\n        before, after = asyncio.run(detect_blocking(blocking_once))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(before, 0)\n        self.assertEqual(after, 0)\n        self.assertLess(elapsed, 1.0)\n\n    def test_awaiting_io_keeps_the_heartbeat_running(self):\n        started = time.perf_counter()\n        before, after = asyncio.run(detect_blocking(async_once))\n        elapsed = time.perf_counter() - started\n        self.assertGreater(after, before)\n        self.assertLess(elapsed, 1.0)\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await detect_blocking(async_once)\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "在协程里直接调用 time.sleep / requests / 同步文件读",
@@ -384,9 +384,9 @@
           "同步包装版（time.sleep）在第一次让出后日志长度等于 1，证明它没有挂起点",
           "异步版（await asyncio.sleep(0)）在第一次让出后日志长度等于 0，证明它真的挂起了",
           "两个任务都被 await 收尾，返回结果分别是 \"sync\" 与 \"async\"",
-          "整段测试不依赖真实长耗时（睡眠不超过 0.05 秒）"
+          "整段测试耗时在 1 秒以内（内部睡眠不超过 0.05 秒），不使用长耗时"
         ],
-        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def sync_style(log):\n    time.sleep(0.01)\n    log.append(\"sync\")\n    return \"sync\"\n\n\nasync def async_style(log):\n    await asyncio.sleep(0.01)\n    log.append(\"async\")\n    return \"async\"\n\n\nasync def count_yields(coro_func, log):\n    task = asyncio.create_task(coro_func(log))\n    await asyncio.sleep(0)\n    observed = len(log)\n    return observed, await task\n\n\nclass PseudoAsyncTest(unittest.TestCase):\n    def test_sync_body_finishes_before_the_first_yield(self):\n        log = []\n        observed, result = asyncio.run(count_yields(sync_style, log))\n        self.assertEqual(observed, 1)\n        self.assertEqual(result, \"sync\")\n\n    def test_async_body_suspends_before_finishing(self):\n        log = []\n        observed, result = asyncio.run(count_yields(async_style, log))\n        self.assertEqual(observed, 0)\n        self.assertEqual(result, \"async\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def sync_style(log):\n    time.sleep(0.01)\n    log.append(\"sync\")\n    return \"sync\"\n\n\nasync def async_style(log):\n    await asyncio.sleep(0.01)\n    log.append(\"async\")\n    return \"async\"\n\n\nasync def count_yields(coro_func, log):\n    task = asyncio.create_task(coro_func(log))\n    await asyncio.sleep(0)\n    observed = len(log)\n    return observed, await task\n\n\nclass PseudoAsyncTest(unittest.TestCase):\n    def test_sync_body_finishes_before_the_first_yield(self):\n        log = []\n        started = time.perf_counter()\n        observed, result = asyncio.run(count_yields(sync_style, log))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(observed, 1)\n        self.assertEqual(result, \"sync\")\n        self.assertLess(elapsed, 1.0)\n\n    def test_async_body_suspends_before_finishing(self):\n        log = []\n        started = time.perf_counter()\n        observed, result = asyncio.run(count_yields(async_style, log))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(observed, 0)\n        self.assertEqual(result, \"async\")\n        self.assertLess(elapsed, 1.0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "给同步阻塞函数套一个 async def 就当成异步",
@@ -397,7 +397,7 @@
     },
     {
       "code": "py.async.gather",
-      "title": "gather 的结果顺序与失败传播",
+      "title": "gather 的结果顺序怎样受失败影响",
       "minutes": 25,
       "module": "并发",
       "level": "进阶",
@@ -433,14 +433,15 @@
         "fix": "需要一次性汇总就用 TaskGroup + except*（子任务会被取消并汇总成 ExceptionGroup），或者用 gather(..., return_exceptions=True) 后遍历结果筛出 BaseException；修复后 failures 能拿到 a 与 b 两条。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 collect_all(jobs)：jobs 是 (name, should_fail) 列表，用 asyncio.gather(..., return_exceptions=True) 并发执行，返回 {\"values\": [成功结果], \"errors\": [\"name: 错误信息\"]}，两者的顺序都按 jobs 顺序；再用 TaskGroup 版本 collect_all_structured(jobs) 返回同样结构但用 except* 汇总。用 unittest 断言两个版本给出相同的结果、异常不会漏掉、成功结果保持传入顺序。",
+        "prompt": "实现 async 函数 collect_all(jobs)：jobs 是 (name, should_fail) 列表，用 asyncio.gather(..., return_exceptions=True) 并发执行，返回 {\"values\": [成功结果], \"errors\": [\"name: 错误信息\"]}，两者的顺序都按 jobs 顺序；再用 TaskGroup 版本 collect_all_structured(jobs) 返回同样结构但用 except* 汇总。用 unittest 断言：对同一批很快完成的 jobs，两版本的 values 与 errors 逐项相同；gather 不会取消仍在跑的慢成功兄弟（它会出现在 values 里），TaskGroup 会取消它（values 里没有它）；成功结果保持传入顺序。",
         "acceptance": [
           "gather 版本对两个失败一个成功返回 errors 长度 2、values 长度 1",
-          "TaskGroup 版本与 gather 版本返回的 values 与 errors 完全相同",
+          "对同一批很快完成的 jobs，TaskGroup 版本与 gather 版本返回的 values 与 errors 逐项相同（都按 jobs 顺序）",
           "成功结果按传入顺序排列，不受完成先后影响",
+          "TaskGroup 会在失败时取消仍在跑的慢成功兄弟（它不出现在 values 里），gather 不会取消、慢成功兄弟仍出现在 values 里",
           "两个版本都不抛出未捕获异常，且没有遗留的 pending 任务"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def job(name, fail):\n    await asyncio.sleep(0)\n    if fail:\n        raise ValueError(name + \" failed\")\n    return name\n\n\nasync def collect_all(jobs):\n    results = await asyncio.gather(*(job(name, fail) for name, fail in jobs), return_exceptions=True)\n    values = [item for item in results if not isinstance(item, BaseException)]\n    errors = [str(item) for item in results if isinstance(item, BaseException)]\n    return {\"values\": values, \"errors\": errors}\n\n\nasync def collect_all_structured(jobs):\n    values = []\n    errors = []\n    try:\n        async with asyncio.TaskGroup() as group:\n            tasks = [group.create_task(job(name, fail)) for name, fail in jobs]\n    except* ValueError as group_error:\n        errors.extend(sorted(str(item) for item in group_error.exceptions))\n    for task in tasks:\n        if task.done() and task.exception() is None:\n            values.append(task.result())\n    return {\"values\": values, \"errors\": sorted(errors)}\n\n\nclass GatherTest(unittest.TestCase):\n    def test_gather_collects_every_failure(self):\n        report = asyncio.run(collect_all([(\"a\", True), (\"b\", True), (\"c\", False)]))\n        self.assertEqual(len(report[\"errors\"]), 2)\n        self.assertEqual(report[\"values\"], [\"c\"])\n\n    def test_task_group_matches_gather(self):\n        jobs = [(\"a\", True), (\"b\", False), (\"c\", True)]\n        self.assertEqual(asyncio.run(collect_all_structured(jobs)), asyncio.run(collect_all(jobs)))\n\n    def test_success_order_follows_input(self):\n        report = asyncio.run(collect_all([(\"first\", False), (\"second\", False)]))\n        self.assertEqual(report[\"values\"], [\"first\", \"second\"])\n        self.assertEqual(report[\"errors\"], [])\n\n    def test_no_pending_task_survives(self):\n        async def scenario():\n            await collect_all([(\"a\", True), (\"b\", False)])\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport unittest\n\n\nasync def job(name, fail):\n    await asyncio.sleep(0)\n    if fail:\n        raise ValueError(name + \" failed\")\n    return name\n\n\nasync def slow_job(name):\n    await asyncio.sleep(0.05)\n    return name\n\n\nasync def collect_all(jobs, job_func=job):\n    results = await asyncio.gather(*(job_func(name, fail) for name, fail in jobs), return_exceptions=True)\n    values = [item for item in results if not isinstance(item, BaseException)]\n    errors = [str(item) for item in results if isinstance(item, BaseException)]\n    return {\"values\": values, \"errors\": errors}\n\n\nasync def collect_all_structured(jobs, job_func=job):\n    values = []\n    errors = []\n    try:\n        async with asyncio.TaskGroup() as group:\n            tasks = [group.create_task(job_func(name, fail)) for name, fail in jobs]\n    except* ValueError:\n        pass\n    for task in tasks:\n        if task.cancelled():\n            continue\n        error = task.exception()\n        if error is None:\n            values.append(task.result())\n        else:\n            errors.append(str(error))\n    return {\"values\": values, \"errors\": errors}\n\n\ndef with_a_slow_sibling(name, fail):\n    if name == \"slow\":\n        return slow_job(name)\n    return job(name, fail)\n\n\nclass GatherTest(unittest.TestCase):\n    def test_gather_collects_every_failure(self):\n        report = asyncio.run(collect_all([(\"a\", True), (\"b\", True), (\"c\", False)]))\n        self.assertEqual(report[\"errors\"], [\"a failed\", \"b failed\"])\n        self.assertEqual(report[\"values\"], [\"c\"])\n\n    def test_task_group_matches_gather_on_quick_jobs(self):\n        jobs = [(\"z\", True), (\"a\", True), (\"m\", False)]\n        self.assertEqual(asyncio.run(collect_all_structured(jobs)), asyncio.run(collect_all(jobs)))\n\n    def test_task_group_cancels_slow_siblings_gather_keeps_them(self):\n        jobs = [(\"slow\", False), (\"quick\", True)]\n        gather_report = asyncio.run(collect_all(jobs, with_a_slow_sibling))\n        structured_report = asyncio.run(collect_all_structured(jobs, with_a_slow_sibling))\n        self.assertEqual(gather_report[\"values\"], [\"slow\"])\n        self.assertEqual(gather_report[\"errors\"], [\"quick failed\"])\n        self.assertEqual(structured_report[\"values\"], [])\n        self.assertEqual(structured_report[\"errors\"], [\"quick failed\"])\n\n    def test_success_order_follows_input(self):\n        report = asyncio.run(collect_all([(\"first\", False), (\"second\", False)]))\n        self.assertEqual(report[\"values\"], [\"first\", \"second\"])\n        self.assertEqual(report[\"errors\"], [])\n\n    def test_no_pending_task_survives(self):\n        async def scenario():\n            await collect_all([(\"a\", True), (\"b\", False)])\n            await collect_all_structured([(\"a\", True), (\"b\", False)])\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "以为 gather 按完成顺序返回结果",
@@ -451,7 +452,7 @@
     },
     {
       "code": "py.async.wait-as-completed",
-      "title": "wait 与 as_completed 的增量等待",
+      "title": "wait、as_completed 的增量等待",
       "minutes": 25,
       "module": "任务",
       "level": "进阶",
@@ -482,9 +483,9 @@
         "explain": "wait 在 0.05 秒超时后返回：quick 已完成，done 里它的 result() 是 \"quick\"；slow 还在跑，落在 pending 里，所以 pending 长度 1。代码随后对 pending 里的任务 cancel() 并 gather 收尾，await 到 CancelledError 被 return_exceptions=True 当作结果吞掉，两个任务的 cancelled() 分别是 False（正常完成）和 True（被取消）。这演示了 wait 不会替调用方取消超时任务。"
       },
       "debug": {
-        "prompt": "下面代码超时后打印了结果就退出，但慢任务还在后台跑、退出时还报错，找出问题、说明根因并给出修法",
+        "prompt": "下面代码超时后打印了结果就退出，慢任务还在后台跑、结果被静默丢弃，找出问题、说明根因并给出修法",
         "code": "import asyncio\n\n\nasync def quick():\n    await asyncio.sleep(0.01)\n    return \"quick\"\n\n\nasync def slow():\n    await asyncio.sleep(5)\n    return \"slow\"\n\n\nasync def main():\n    tasks = [asyncio.create_task(quick()), asyncio.create_task(slow())]\n    done, pending = await asyncio.wait(tasks, timeout=0.05)\n    print(\"results:\", sorted(task.result() for task in done))\n    print(\"assuming all finished:\", len(done) == len(tasks))\n\n\nasyncio.run(main())\n",
-        "rootCause": "asyncio.wait 超时返回时不会取消未完成的任务：slow 仍在事件循环里运行，main 结束后 asyncio.run 关闭循环时只能把它销毁，运行时会打印 Task was destroyed but it is pending! 之类的告警；而代码把 done 当成了全部结果，assuming all finished 打印 False。超时分支漏掉了对 pending 的清理。",
+        "rootCause": "asyncio.wait 超时返回时不会取消未完成的任务：slow 仍在事件循环里运行，而代码把 done 当成了全部结果，assuming all finished 打印 False。main 返回后 asyncio.run 会替调用方取消这个剩余任务并等它结束（所以不会打印 Task was destroyed 告警），但超时分支的清理、结果收集与失败处理全都被跳过了，超时路径等于把慢任务静默丢掉。",
         "fix": "wait 之后显式处理 pending：对每个 pending 任务 cancel() 并用 await asyncio.gather(*pending, return_exceptions=True) 等它们真正结束（或用 asyncio.timeout 包住并让 except TimeoutError 里统一取消）；修复后打印 assuming all finished: True 且没有遗留任务。"
       },
       "code_task": {
@@ -495,7 +496,7 @@
           "完成的慢任务不会被误取消（cancelled 计数只统计 pending 的任务）",
           "函数耗时远小于最慢任务的 5 秒，测试整体在 1 秒内结束"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def finish_after(delay, tag):\n    await asyncio.sleep(delay)\n    return tag\n\n\nasync def wait_with_cleanup(delays, timeout):\n    tasks = [asyncio.create_task(finish_after(delay, f\"t{index}\")) for index, delay in enumerate(delays)]\n    done, pending = await asyncio.wait(tasks, timeout=timeout)\n    for task in pending:\n        task.cancel()\n    if pending:\n        await asyncio.gather(*pending, return_exceptions=True)\n    return {\"finished\": sorted(task.result() for task in done), \"cancelled\": sum(1 for task in pending if task.cancelled())}\n\n\nclass WaitAsCompletedTest(unittest.TestCase):\n    def test_slow_task_is_cancelled_not_left_running(self):\n        report = asyncio.run(wait_with_cleanup((0.01, 5), 0.05))\n        self.assertEqual(len(report[\"finished\"]), 1)\n        self.assertEqual(report[\"cancelled\"], 1)\n\n    def test_no_task_survives_the_call(self):\n        async def scenario():\n            await wait_with_cleanup((0.01, 5), 0.05)\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n    def test_finished_slow_task_is_not_counted_as_cancelled(self):\n        report = asyncio.run(wait_with_cleanup((0.01, 0.02), 0.5))\n        self.assertEqual(report[\"cancelled\"], 0)\n        self.assertEqual(len(report[\"finished\"]), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def finish_after(delay, tag):\n    await asyncio.sleep(delay)\n    return tag\n\n\nasync def wait_with_cleanup(delays, timeout):\n    tasks = [asyncio.create_task(finish_after(delay, f\"t{index}\")) for index, delay in enumerate(delays)]\n    done, pending = await asyncio.wait(tasks, timeout=timeout)\n    for task in pending:\n        task.cancel()\n    if pending:\n        await asyncio.gather(*pending, return_exceptions=True)\n    return {\"finished\": sorted(task.result() for task in done), \"cancelled\": sum(1 for task in pending if task.cancelled())}\n\n\nclass WaitAsCompletedTest(unittest.TestCase):\n    def test_slow_task_is_cancelled_not_left_running(self):\n        started = time.perf_counter()\n        report = asyncio.run(wait_with_cleanup((0.01, 5), 0.05))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(len(report[\"finished\"]), 1)\n        self.assertEqual(report[\"cancelled\"], 1)\n        self.assertLess(elapsed, 1.0)\n\n    def test_no_task_survives_the_call(self):\n        async def scenario():\n            await wait_with_cleanup((0.01, 5), 0.05)\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n    def test_finished_slow_task_is_not_counted_as_cancelled(self):\n        report = asyncio.run(wait_with_cleanup((0.01, 0.02), 0.5))\n        self.assertEqual(report[\"cancelled\"], 0)\n        self.assertEqual(len(report[\"finished\"]), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "把协程直接传给 asyncio.wait",
@@ -561,7 +562,7 @@
     },
     {
       "code": "py.async.exception-group",
-      "title": "ExceptionGroup 与 except* 的拆分处理",
+      "title": "ExceptionGroup、except* 的拆分处理",
       "minutes": 30,
       "module": "并发",
       "level": "进阶",
@@ -593,9 +594,9 @@
         "explain": "TaskGroup 把两个子任务的失败汇总成一个 ExceptionGroup。except* 按类型拆分：ValueError 分支先执行，拿到只含 1 个 ValueError 的子组并打印 value branch: 1 ValueError；TypeError 分支同样执行，打印 type branch: 1 TypeError。两个分支都会跑（这与普通 except 只走第一个匹配不同），所有异常都被处理，于是最后打印 both branches ran，没有异常逃逸。"
       },
       "debug": {
-        "prompt": "下面代码用 TaskGroup 汇总失败后只拿到一句 “unhandled errors in a TaskGroup”，看不到真正的错误，找出问题、说明根因并给出修法",
+        "prompt": "下面代码用 TaskGroup 汇总失败后只拿到一句 “unhandled errors in a TaskGroup (1 sub-exception)”，看不到真正的错误，找出问题、说明根因并给出修法",
         "code": "import asyncio\n\n\nasync def boom():\n    await asyncio.sleep(0)\n    raise ValueError(\"disk full\")\n\n\nasync def main():\n    try:\n        async with asyncio.TaskGroup() as group:\n            group.create_task(boom())\n    except Exception as error:\n        print(\"str:\", error)\n        print(\"args:\", len(error.args))\n\n\nasyncio.run(main())\n",
-        "rootCause": "TaskGroup 抛出的是 ExceptionGroup，它的 str() 只显示外层消息 unhandled errors in a TaskGroup（args 是 (message, exceptions)），真正的 ValueError(\"disk full\") 藏在 error.exceptions 里；用普通 except Exception 捕获后直接打印 str(error)，根因信息就丢了，看起来像“只有一句无用的报错”。异常并没有被处理掉，只是被压扁展示。",
+        "rootCause": "TaskGroup 抛出的是 ExceptionGroup，它的 str() 只显示外层消息 unhandled errors in a TaskGroup (1 sub-exception)（args 是 (message, exceptions)，实测 args 长度为 2），真正的 ValueError(\"disk full\") 藏在 error.exceptions 里；用普通 except Exception 捕获后直接打印 str(error)，根因信息就丢了，看起来像“只有一句无用的报错”。异常并没有被处理掉，只是被压扁展示。",
         "fix": "用 except* 按类型拆分，或捕获 ExceptionGroup 后遍历 error.exceptions（含递归展开嵌套组）取每个子异常的 str 与类型；修复后能打印出 disk full。"
       },
       "code_task": {
@@ -617,7 +618,7 @@
     },
     {
       "code": "py.async.sibling-cancellation",
-      "title": "子任务失败时兄弟任务的取消与清理",
+      "title": "子任务失败时兄弟任务的取消、清理",
       "minutes": 25,
       "module": "并发",
       "level": "进阶",
@@ -625,10 +626,6 @@
         {
           "taskId": "7203",
           "relation": "introduces"
-        },
-        {
-          "taskId": "7203",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -653,11 +650,11 @@
       "debug": {
         "prompt": "下面代码的兄弟任务在收到取消后还要做异步清理，结果清理没做完就被判定结束，找出问题、说明根因并给出修法",
         "code": "import asyncio\n\n\nasync def worker(log):\n    try:\n        await asyncio.sleep(5)\n    except asyncio.CancelledError:\n        asyncio.create_task(asyncio.sleep(0.01))  # 把清理丢给后台任务\n        log.append(\"cancel-seen\")\n        return\n\n\nasync def failing(log):\n    await asyncio.sleep(0)\n    log.append(\"failing\")\n    raise ValueError(\"boom\")\n\n\nasync def main():\n    log = []\n    try:\n        async with asyncio.TaskGroup() as group:\n            group.create_task(worker(log))\n            group.create_task(failing(log))\n    except* ValueError:\n        pass\n    print(\"log:\", log)\n    print(\"cleanup awaited:\", \"cleanup-done\" in log)\n\n\nasyncio.run(main())\n",
-        "rootCause": "worker 捕获 CancelledError 后既没有重新抛出，也没有 await 清理逻辑：它把清理丢成一个独立的 asyncio.create_task 后直接 return，TaskGroup 认为该子任务正常完成，于是取消传播链被切断（吞掉 CancelledError 是反模式），后台清理任务游离在失败汇总之外，cleanup-awaited 永远不会出现。",
+        "rootCause": "worker 捕获 CancelledError 后既没有重新抛出，也没有 await 清理逻辑：它把清理丢成一个独立的 asyncio.create_task 后直接 return，TaskGroup 认为该子任务正常完成，于是取消传播链被切断（吞掉 CancelledError 是反模式），后台清理任务游离在失败汇总之外，所以打印固定是 cleanup awaited: False。",
         "fix": "在 except CancelledError 里用 await 完成清理后再 raise（清理必须是当前协程的 await，不能另起任务），例如 await asyncio.sleep(0) 记录 cleanup-done 后重新抛出；修复后日志含 cleanup-done，取消语义保持完整。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 run_with_sibling(log)：TaskGroup 里启动兄弟任务 wait_forever(log)（内部 await 一个 Event，被取消时记录 \"cancelled\" 并重新抛出，finally 记录 \"cleanup\"）和一个立刻失败的 fail_now()；捕获 except* ValueError，返回 (失败消息列表, log)。用 unittest 断言兄弟任务先记录 cancelled 再记录 cleanup、失败消息里只有 \"boom\"（不含 CancelledError），并断言返回后无 pending 任务。",
+        "prompt": "实现 async 函数 run_with_sibling(log)：TaskGroup 里启动兄弟任务 wait_forever(log)（内部 await 一个 Event，被取消时记录 \"cancelled\" 并重新抛出，finally 记录 \"cleanup\"）和一个立刻失败的 fail_now()；捕获 except* ValueError，返回 (失败消息列表, log, 兄弟任务)；用 unittest 断言兄弟任务先记录 cancelled 再记录 cleanup、失败消息里只有 \"boom\"（不含 CancelledError），并断言返回后无 pending 任务。",
         "acceptance": [
           "log 恰好是 [\"cancelled\", \"cleanup\"]，顺序证明取消先于清理",
           "except* 捕获到的子组只有 ValueError，消息为 \"boom\"，不含 CancelledError",
@@ -675,7 +672,7 @@
     },
     {
       "code": "py.async.orphan-task",
-      "title": "后台任务的引用与生命周期",
+      "title": "后台任务的引用、生命周期",
       "minutes": 25,
       "module": "任务",
       "level": "进阶",
@@ -692,8 +689,8 @@
       "concept": {
         "prompt": "为什么“发了就不管”的后台任务危险？怎么避免它活过调用方？",
         "answer": [
-          "create_task 返回的 Task 是普通对象：不保存引用的任务可能在挂起时被垃圾回收，解释器只打印 Task was destroyed but it is pending! 作为线索",
-          "任务的生命周期不随创建它的协程结束而结束：父协程甚至 asyncio.run 返回后，任务仍在事件循环里等 I/O，直到循环关闭时被销毁",
+          "create_task 返回的 Task 是普通对象：如果事件循环在任务还 pending 时就被关闭（例如手动 loop.close() 而不取消或等待），任务被回收时会打印 Task was destroyed but it is pending! 作为线索；正常用 asyncio.run 时它会在退出前先取消剩余任务，这条告警不会出现，任务只是被静默取消",
+          "任务的生命周期不随创建它的协程结束而结束：父协程返回后任务仍在事件循环里等 I/O，直到 asyncio.run 退出清理时被取消（或被手动 loop.close() 直接丢弃）",
           "让任务活过调用方会带来两类问题：副作用（写文件、发请求）在没人负责的时机发生，以及退出时未完成任务的告警与数据丢失",
           "结构化做法一是 TaskGroup：把子任务约束在 with 块作用域里，退出即全部收敛；二是把后台任务登记到集合里，在退出路径上 cancel() 并 await 收尾",
           "后台任务不是“免费并发”：它需要明确的拥有者、取消点与结果归宿，三者缺一个就会变成泄漏"
@@ -707,13 +704,13 @@
           "result: done log: ['late work']",
           "after await, done: True"
         ],
-        "explain": "create_task 后父协程立刻打印，此时后台任务还在 sleep，所以 done: False；父协程如果就此返回，它就活过了调用方。这里父协程选择 await task：等待 0.02 秒后任务完成，日志里有 late work，result 是 done，打印 at await done: True。演示的重点是“任务会不会活过调用方，取决于你有没有 await 它”。"
+        "explain": "create_task 后父协程立刻打印，此时后台任务还在 sleep，所以 done: False；父协程如果就此返回，它就活过了调用方。这里父协程选择 await task：等待 0.02 秒后任务完成，日志里有 late work，result 是 done，打印 after await, done: True。演示的重点是“任务会不会活过调用方，取决于你有没有 await 它”。"
       },
       "debug": {
-        "prompt": "下面代码的后台任务在父协程返回后仍在跑，退出时报未处理任务告警，找出问题、说明根因并给出修法",
-        "code": "import asyncio\n\n\ndef schedule_background(jobs):\n    for name in jobs:\n        asyncio.get_running_loop().create_task(process(name))\n\n\nasync def process(name):\n    await asyncio.sleep(0.05)\n    return name\n\n\nasync def main():\n    log = []\n    schedule_background([\"a\", \"b\"])\n    print(\"main returned without waiting\")\n\n\nasyncio.run(main())\n",
-        "rootCause": "schedule_background 用 create_task 把任务“发了就不管”：返回的 Task 引用没有保存，main 又立刻返回，asyncio.run 在关闭循环时发现两个未完成任务并打印 Task was destroyed but it is pending!；任务里的返回值也没人取。根因是任务的生命周期超出了调用方的作用域，而调用方没有登记、等待或取消它们。",
-        "fix": "把任务登记下来并在退出路径上收敛：用 TaskGroup 包住（或收集任务列表后 await asyncio.gather(*tasks)），保证函数返回时没有 pending 任务；修复后打印 remaining: 0 且没有销毁告警。"
+        "prompt": "下面代码用 create_task 发出后台任务后直接关闭事件循环，进程退出时在 stderr 报未完成任务告警，任务结果也全部丢失，找出问题、说明根因并给出修法",
+        "code": "import asyncio\nimport gc\n\n\nasync def process(name):\n    await asyncio.sleep(0.05)\n    return name\n\n\ndef schedule_background(jobs):\n    loop = asyncio.new_event_loop()\n    for name in jobs:\n        loop.create_task(process(name))\n    loop.close()\n\n\nschedule_background([\"a\", \"b\"])\ngc.collect()\nprint(\"main returned without waiting\")\n",
+        "rootCause": "schedule_background 自己建了一个事件循环，用 loop.create_task 把任务“发了就不管”，然后立刻 loop.close()：这两个任务从未被调度、也没人取消或等待，任务对象在回收时由 Task.__del__ 在 stderr 打印 Task was destroyed but it is pending!，返回值也永远没人取。根因是任务的生命周期超出了调用方的作用域，而调用方既没有登记、等待，也没有取消它们。（对比：如果改用 asyncio.run，退出前会先取消剩余任务，这条告警不会出现，但结果同样会静默丢失。）",
+        "fix": "把任务登记下来并在退出路径上收敛：用 asyncio.run + TaskGroup 包住（或收集任务列表后 await asyncio.gather(*tasks)），保证进程退出时没有 pending 任务；修复后打印 results: ['a', 'b'] 和 remaining: 0，且 stderr 没有任何销毁告警。"
       },
       "code_task": {
         "prompt": "实现 async 函数 supervised(jobs)：用 asyncio.TaskGroup 并发跑每个 job（内部 await asyncio.sleep(0) 后返回 name），返回 (结果列表, 函数返回时剩余的任务数)；用 unittest 断言结果与输入顺序一致、剩余任务数为 0，并断言函数返回后 asyncio.all_tasks() 里除当前任务外为空（用 0.5 秒超时保护，不产生销毁告警）。",
@@ -723,7 +720,7 @@
           "任务在 TaskGroup 作用域内全部 done() 且 exception() 为 None",
           "测试用例在 0.5 秒内完成，不依赖长睡眠"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def do(name):\n    await asyncio.sleep(0)\n    return name\n\n\nasync def supervised(jobs):\n    async with asyncio.TaskGroup() as group:\n        tasks = [group.create_task(do(name)) for name in jobs]\n    current = asyncio.current_task()\n    remaining = [task for task in asyncio.all_tasks() if task is not current]\n    return [task.result() for task in tasks], len(remaining)\n\n\nclass OrphanTaskTest(unittest.TestCase):\n    def test_results_follow_input_order(self):\n        results, remaining = asyncio.run(supervised([\"a\", \"b\", \"c\"]))\n        self.assertEqual(results, [\"a\", \"b\", \"c\"])\n        self.assertEqual(remaining, 0)\n\n    def test_no_task_outlives_the_call(self):\n        async def scenario():\n            await supervised([\"a\"])\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n    def test_every_task_is_clean(self):\n        async def scenario():\n            async with asyncio.TaskGroup() as group:\n                tasks = [group.create_task(do(name)) for name in (\"x\", \"y\")]\n            return [task.done() and task.exception() is None for task in tasks]\n\n        self.assertEqual(asyncio.run(scenario()), [True, True])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def do(name):\n    await asyncio.sleep(0)\n    return name\n\n\nasync def supervised(jobs):\n    async with asyncio.TaskGroup() as group:\n        tasks = [group.create_task(do(name)) for name in jobs]\n    current = asyncio.current_task()\n    remaining = [task for task in asyncio.all_tasks() if task is not current]\n    return [task.result() for task in tasks], len(remaining)\n\n\nclass OrphanTaskTest(unittest.TestCase):\n    def test_results_follow_input_order(self):\n        started = time.perf_counter()\n        results, remaining = asyncio.run(supervised([\"a\", \"b\", \"c\"]))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(results, [\"a\", \"b\", \"c\"])\n        self.assertEqual(remaining, 0)\n        self.assertLess(elapsed, 0.5)\n\n    def test_no_task_outlives_the_call(self):\n        async def scenario():\n            await supervised([\"a\"])\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n    def test_every_task_is_clean(self):\n        async def scenario():\n            async with asyncio.TaskGroup() as group:\n                tasks = [group.create_task(do(name)) for name in (\"x\", \"y\")]\n            return [task.done() and task.exception() is None for task in tasks]\n\n        self.assertEqual(asyncio.run(scenario()), [True, True])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "create_task 后不保存引用",
@@ -734,7 +731,7 @@
     },
     {
       "code": "py.async.exception-not-retrieved",
-      "title": "未取回异常与失败静默",
+      "title": "未取回异常导致的失败静默",
       "minutes": 20,
       "module": "任务",
       "level": "进阶",
@@ -754,7 +751,7 @@
           "任务里的异常由 Task.set_exception 保存，只有 await 该任务或调用 task.exception() 才算取回；取回前异常一直挂在任务上",
           "没人取回时任务回收会打印 Task exception was never retrieved，附带的 traceback 只进日志，业务代码完全感知不到失败",
           "await task 会重新抛出保存的异常；task.result() 在任务失败时也重新抛出；task.exception() 返回异常对象而不抛",
-          "取消一个还没取回异常的任务不会替你看异常：被取消的任务 exception() 为 None、cancelled() 为 True",
+          "取消一个还没取回异常的任务不会替你看异常：被取消的任务 cancelled() 为 True，而 exception() 会重新抛出 CancelledError（不是返回 None），所以想判断“有没有业务异常”必须捕获 CancelledError",
           "要避免静默失败：用 TaskGroup 让失败必然冒出、用 gather(return_exceptions=True) 显式分类，或把每个后台任务的异常统一收集到报告里"
         ]
       },
@@ -767,7 +764,7 @@
           "retrieved: background failed",
           "final done: True cancelled: False"
         ],
-        "explain": "create_task 只排队，任务还没跑，done() 为 False。主协程让出一次后任务执行到 raise，异常被保存在任务里，任务已经结束，所以第二个 done 是 True，但此刻还没有人取回它。直到 await task 把异常重新抛出、被 except ValueError 接住，才打印 retrieved: background failed；最终 final done: True cancelled: False。重点是“任务结束”与“异常被取回”是两件独立的事。"
+        "explain": "create_task 只排队，任务还没跑，第一个 done() 为 False。主协程让出一次后，failing 才刚执行到它自己的 await asyncio.sleep(0)，还没跑到 raise，所以任务仍未结束，第二个 done 依然是 False（字段名 finished but unretrieved 只是提示“异常还没被取回”，不是“任务已完成”）。直到 await task 驱动它跑完并把异常重新抛出、被 except ValueError 接住，才打印 retrieved: background failed；最终 final done: True cancelled: False。重点是“任务结束”与“异常被取回”是两件独立的事。"
       },
       "debug": {
         "prompt": "下面代码的运行结果看起来完全正常，但任务的失败只在日志里留了一句警告，找出问题、说明根因并给出修法",
@@ -776,14 +773,14 @@
         "fix": "显式取回异常：await task（异常重新抛出）、或 task.exception() 主动检查、或改用 TaskGroup/gather 统一汇总；修复后能打印 disk full 并进入失败分支。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 retrieve_all(jobs)：用 asyncio.gather(..., return_exceptions=True) 并发执行，返回 ({\"ok\": {name: value}, \"failed\": {name: (类型名, 消息)}}, 未取回异常的任务数)；用 unittest 断言失败任务都被取回（未取回计数为 0）、成功与失败的键划分正确，并断言取消一个失败任务后它的 cancelled() 为 True 而 exception() 为 None。",
+        "prompt": "实现 async 函数 retrieve_all(jobs)：用 asyncio.gather(..., return_exceptions=True) 并发执行，返回 ({\"ok\": {name: value}, \"failed\": {name: (类型名, 消息)}}, 剩余存活任务数)；用 unittest 断言失败任务都被取回（剩余计数为 0）、成功与失败的键划分正确且 failed 里保留消息，并断言取消一个失败任务后它的 cancelled() 为 True 而 exception() 会重新抛 CancelledError（断言里捕获它并视为“无异常对象”）。",
         "acceptance": [
           "混合成功/失败时 ok 与 failed 的键划分正确，failed 里保留类型名与消息",
-          "未取回异常的任务数为 0，所有任务的 exception() 都已被访问或 await 过",
+          "所有任务都用 gather(return_exceptions=True) 取回：返回的剩余存活任务数为 0，且没有除当前任务以外的存活任务",
           "取消一个尚未取回异常的失败任务后 cancelled() 为 True，直接调用 exception() 会重新抛 CancelledError，所以断言里要捕获它并视为“无异常对象”",
           "返回后没有除当前任务以外的存活任务"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def job(name, fail):\n    await asyncio.sleep(0)\n    if fail:\n        raise ValueError(name + \" failed\")\n    return name\n\n\nasync def retrieve_all(jobs):\n    outcomes = await asyncio.gather(*(job(name, fail) for name, fail in jobs), return_exceptions=True)\n    ok = {}\n    failed = {}\n    for (name, _), outcome in zip(jobs, outcomes):\n        if isinstance(outcome, BaseException):\n            failed[name] = (type(outcome).__name__, str(outcome))\n        else:\n            ok[name] = outcome\n    current = asyncio.current_task()\n    pending = [task for task in asyncio.all_tasks() if task is not current]\n    return {\"ok\": ok, \"failed\": failed}, len(pending)\n\n\nasync def cancel_unretrieved():\n    task = asyncio.create_task(job(\"z\", True))\n    await asyncio.sleep(0)\n    task.cancel()\n    try:\n        await task\n    except asyncio.CancelledError:\n        pass\n    try:\n        exception = task.exception()\n    except asyncio.CancelledError:\n        exception = None\n    return task.cancelled(), exception\n\n\nclass ExceptionNotRetrievedTest(unittest.TestCase):\n    def test_outcomes_are_split_and_nothing_is_left(self):\n        report, unretrieved = asyncio.run(retrieve_all([(\"a\", True), (\"b\", False)]))\n        self.assertEqual(sorted(report[\"ok\"]), [\"b\"])\n        self.assertEqual(report[\"failed\"][\"a\"][0], \"ValueError\")\n        self.assertEqual(unretrieved, 0)\n\n    def test_cancelled_task_has_no_exception(self):\n        cancelled, exception = asyncio.run(cancel_unretrieved())\n        self.assertTrue(cancelled)\n        self.assertIsNone(exception)\n\n    def test_all_success_needs_no_retrieval(self):\n        report, unretrieved = asyncio.run(retrieve_all([(\"a\", False)]))\n        self.assertEqual(report[\"failed\"], {})\n        self.assertEqual(unretrieved, 0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport unittest\n\n\nasync def job(name, fail):\n    await asyncio.sleep(0)\n    if fail:\n        raise ValueError(name + \" failed\")\n    return name\n\n\nasync def retrieve_all(jobs):\n    outcomes = await asyncio.gather(*(job(name, fail) for name, fail in jobs), return_exceptions=True)\n    ok = {}\n    failed = {}\n    for (name, _), outcome in zip(jobs, outcomes):\n        if isinstance(outcome, BaseException):\n            failed[name] = (type(outcome).__name__, str(outcome))\n        else:\n            ok[name] = outcome\n    current = asyncio.current_task()\n    pending = [task for task in asyncio.all_tasks() if task is not current]\n    return {\"ok\": ok, \"failed\": failed}, len(pending)\n\n\nasync def cancel_unretrieved():\n    task = asyncio.create_task(job(\"z\", True))\n    await asyncio.sleep(0)\n    task.cancel()\n    try:\n        await task\n    except asyncio.CancelledError:\n        pass\n    try:\n        exception = task.exception()\n    except asyncio.CancelledError:\n        exception = None\n    return task.cancelled(), exception\n\n\nclass ExceptionNotRetrievedTest(unittest.TestCase):\n    def test_outcomes_are_split_and_nothing_is_left(self):\n        report, unretrieved = asyncio.run(retrieve_all([(\"a\", True), (\"b\", False)]))\n        self.assertEqual(sorted(report[\"ok\"]), [\"b\"])\n        self.assertEqual(report[\"failed\"][\"a\"], (\"ValueError\", \"a failed\"))\n        self.assertEqual(unretrieved, 0)\n\n    def test_cancelled_task_has_no_exception(self):\n        cancelled, exception = asyncio.run(cancel_unretrieved())\n        self.assertTrue(cancelled)\n        self.assertIsNone(exception)\n\n    def test_all_success_needs_no_retrieval(self):\n        report, unretrieved = asyncio.run(retrieve_all([(\"a\", False)]))\n        self.assertEqual(report[\"failed\"], {})\n        self.assertEqual(unretrieved, 0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "任务失败却不 await 也不看 exception()",
@@ -844,7 +841,7 @@
           "断言 issubclass(asyncio.CancelledError, BaseException) 为真且 issubclass(..., Exception) 为假",
           "整个取消流程在 0.2 秒内结束"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def worker(log):\n    try:\n        await asyncio.sleep(5)\n    except asyncio.CancelledError:\n        log.append(\"cancel-seen\")\n        raise\n    finally:\n        log.append(\"cleanup\")\n\n\nasync def cancel_probe():\n    log = []\n    task = asyncio.create_task(worker(log))\n    await asyncio.sleep(0.01)\n    task.cancel()\n    try:\n        await task\n    except asyncio.CancelledError:\n        pass\n    return log, task\n\n\nclass CancelPropagationTest(unittest.TestCase):\n    def test_cancel_is_raised_at_the_await_point(self):\n        log, task = asyncio.run(cancel_probe())\n        self.assertEqual(log, [\"cancel-seen\", \"cleanup\"])\n        self.assertTrue(task.cancelled())\n\n    def test_cancelled_error_is_a_base_exception(self):\n        self.assertTrue(issubclass(asyncio.CancelledError, BaseException))\n        self.assertFalse(issubclass(asyncio.CancelledError, Exception))\n\n    def test_no_other_task_survives(self):\n        async def scenario():\n            await cancel_probe()\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def worker(log):\n    try:\n        await asyncio.sleep(5)\n    except asyncio.CancelledError:\n        log.append(\"cancel-seen\")\n        raise\n    finally:\n        log.append(\"cleanup\")\n\n\nasync def cancel_probe():\n    log = []\n    task = asyncio.create_task(worker(log))\n    await asyncio.sleep(0.01)\n    task.cancel()\n    try:\n        await task\n    except asyncio.CancelledError:\n        pass\n    return log, task\n\n\nclass CancelPropagationTest(unittest.TestCase):\n    def test_cancel_is_raised_at_the_await_point(self):\n        started = time.perf_counter()\n        log, task = asyncio.run(cancel_probe())\n        elapsed = time.perf_counter() - started\n        self.assertEqual(log, [\"cancel-seen\", \"cleanup\"])\n        self.assertTrue(task.cancelled())\n        self.assertLess(elapsed, 0.2)\n\n    def test_cancelled_error_is_a_base_exception(self):\n        self.assertTrue(issubclass(asyncio.CancelledError, BaseException))\n        self.assertFalse(issubclass(asyncio.CancelledError, Exception))\n\n    def test_no_other_task_survives(self):\n        async def scenario():\n            await cancel_probe()\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "用 except Exception 捕获 CancelledError",
@@ -855,7 +852,7 @@
     },
     {
       "code": "py.async.cooperative-cancel",
-      "title": "协作式取消与无挂起点的任务",
+      "title": "协作式取消：无挂起点的任务",
       "minutes": 25,
       "module": "取消",
       "level": "进阶",
@@ -898,7 +895,7 @@
           "两个任务都在 1 秒内结束，测试不挂起",
           "测试结束时除当前任务外没有遗留任务"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def blocking_style():\n    total = 0\n    for index in range(200000):\n        total += index\n    return total\n\n\nasync def yielding_style():\n    total = 0\n    for index in range(200000):\n        if index % 50000 == 0:\n            await asyncio.sleep(0)\n        total += index\n    return total\n\n\nasync def cancel_outcome(coro):\n    task = asyncio.create_task(coro)\n    await asyncio.sleep(0)\n    task.cancel()\n    await asyncio.sleep(0.01)\n    return task\n\n\nclass CooperativeCancelTest(unittest.TestCase):\n    def test_task_without_await_points_cannot_be_cancelled_in_time(self):\n        task = asyncio.run(cancel_outcome(blocking_style()))\n        self.assertTrue(task.done())\n        self.assertFalse(task.cancelled())\n\n    def test_task_with_await_points_is_cancelled(self):\n        task = asyncio.run(cancel_outcome(yielding_style()))\n        self.assertTrue(task.cancelled())\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await cancel_outcome(yielding_style())\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def blocking_style():\n    total = 0\n    for index in range(200000):\n        total += index\n    return total\n\n\nasync def yielding_style():\n    total = 0\n    for index in range(200000):\n        if index % 50000 == 0:\n            await asyncio.sleep(0)\n        total += index\n    return total\n\n\nasync def cancel_outcome(coro):\n    task = asyncio.create_task(coro)\n    await asyncio.sleep(0)\n    task.cancel()\n    await asyncio.sleep(0.01)\n    return task\n\n\nclass CooperativeCancelTest(unittest.TestCase):\n    def test_task_without_await_points_cannot_be_cancelled_in_time(self):\n        started = time.perf_counter()\n        task = asyncio.run(cancel_outcome(blocking_style()))\n        elapsed = time.perf_counter() - started\n        self.assertTrue(task.done())\n        self.assertFalse(task.cancelled())\n        self.assertLess(elapsed, 1.0)\n\n    def test_task_with_await_points_is_cancelled(self):\n        started = time.perf_counter()\n        task = asyncio.run(cancel_outcome(yielding_style()))\n        elapsed = time.perf_counter() - started\n        self.assertTrue(task.cancelled())\n        self.assertLess(elapsed, 1.0)\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await cancel_outcome(yielding_style())\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "以为 cancel() 能立刻打断同步循环",
@@ -941,9 +938,9 @@
         "explain": "shield 让取消落在外层可等待对象上而不是内层任务：guarded.cancel() 后 await guarded 抛 CancelledError，打印 waiter cancelled。此时内层 task 仍在 sleep(0.05)，not task.done() 为 True。主协程随后 await task 等它自己完成，拿到 \"done\"，日志里有 finished，task.cancelled() 为 False。关键点：取消的是“等待”，不是“工作”。"
       },
       "debug": {
-        "prompt": "下面代码想保护关键写入段，但被取消后内层任务再也没有人等待、退出时报未处理告警，找出问题、说明根因并给出修法",
+        "prompt": "下面代码想用 shield 保护关键写入段，但外层被取消后内层任务再也没人等待，写入最终丢失，找出问题、说明根因并给出修法",
         "code": "import asyncio\n\n\nasync def critical(log):\n    await asyncio.sleep(5)\n    log.append(\"finished\")\n\n\nasync def main():\n    log = []\n    task = asyncio.create_task(critical(log))\n    guarded = asyncio.shield(task)\n    guarded.cancel()\n    try:\n        await guarded\n    except asyncio.CancelledError:\n        print(\"waiter cancelled, assuming nothing was written\")\n    print(\"log:\", log)\n\n\nasyncio.run(main())\n",
-        "rootCause": "shield 只挡住取消，不改变内层任务的生命周期：guarded 被取消后内层 task 仍在 sleep(5)，而 main 直接返回，内层任务引用丢失、无人 await；asyncio.run 关闭循环时把它销毁并打印 Task was destroyed but it is pending!，关键写入的结果（log）也永远看不到。",
+        "rootCause": "shield 只挡住取消，不改变内层任务的生命周期：guarded 被取消后内层 task 还在 sleep(5)，而 main 直接返回；asyncio.run 在退出前会取消所有剩余任务并等它们结束（不是销毁，也不会打印 Task was destroyed），但内层任务从没被 await，所以它被取消后 log 里永远没有 finished——“被保护的关键写入”其实一次都没发生。根因是取消外层后没有继续持有并等待内层任务。",
         "fix": "取消外层后必须继续持有并等待内层任务（或在退出前取消它再 await 收尾）：await guarded 抛 CancelledError 后加 await task（可用 shield 保护地等待或 try/except 收尾）；修复后打印 finished 且没有遗留任务告警。"
       },
       "code_task": {
@@ -954,7 +951,7 @@
           "函数返回后没有除当前任务以外的存活任务",
           "整段耗时在 0.5 秒内（内层睡眠 0.05 秒）"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def critical(log):\n    await asyncio.sleep(0.05)\n    log.append(\"finished\")\n    return \"done\"\n\n\nasync def run_shielded():\n    log = []\n    task = asyncio.create_task(critical(log))\n    guarded = asyncio.shield(task)\n    guarded.cancel()\n    try:\n        await guarded\n    except asyncio.CancelledError:\n        pass\n    await task\n    return log, task\n\n\nclass ShieldTest(unittest.TestCase):\n    def test_inner_task_survives_and_finishes(self):\n        log, task = asyncio.run(run_shielded())\n        self.assertEqual(log, [\"finished\"])\n        self.assertFalse(task.cancelled())\n        self.assertTrue(task.done())\n        self.assertEqual(task.result(), \"done\")\n\n    def test_outer_wait_is_cancelled(self):\n        async def scenario():\n            log = []\n            task = asyncio.create_task(critical(log))\n            guarded = asyncio.shield(task)\n            guarded.cancel()\n            with self.assertRaises(asyncio.CancelledError):\n                await guarded\n            await task\n\n        asyncio.run(scenario())\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            log, _ = await run_shielded()\n            current = asyncio.current_task()\n            return log, [task for task in asyncio.all_tasks() if task is not current]\n\n        log, left = asyncio.run(scenario())\n        self.assertEqual(log, [\"finished\"])\n        self.assertEqual(left, [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def critical(log):\n    await asyncio.sleep(0.05)\n    log.append(\"finished\")\n    return \"done\"\n\n\nasync def run_shielded():\n    log = []\n    task = asyncio.create_task(critical(log))\n    guarded = asyncio.shield(task)\n    guarded.cancel()\n    try:\n        await guarded\n    except asyncio.CancelledError:\n        pass\n    await task\n    return log, task\n\n\nclass ShieldTest(unittest.TestCase):\n    def test_inner_task_survives_and_finishes(self):\n        started = time.perf_counter()\n        log, task = asyncio.run(run_shielded())\n        elapsed = time.perf_counter() - started\n        self.assertEqual(log, [\"finished\"])\n        self.assertFalse(task.cancelled())\n        self.assertTrue(task.done())\n        self.assertEqual(task.result(), \"done\")\n        self.assertLess(elapsed, 0.5)\n\n    def test_outer_wait_is_cancelled(self):\n        async def scenario():\n            log = []\n            task = asyncio.create_task(critical(log))\n            guarded = asyncio.shield(task)\n            guarded.cancel()\n            with self.assertRaises(asyncio.CancelledError):\n                await guarded\n            await task\n\n        asyncio.run(scenario())\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            log, _ = await run_shielded()\n            current = asyncio.current_task()\n            return log, [task for task in asyncio.all_tasks() if task is not current]\n\n        log, left = asyncio.run(scenario())\n        self.assertEqual(log, [\"finished\"])\n        self.assertEqual(left, [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "以为 shield 能让整个调用不可取消",
@@ -965,7 +962,7 @@
     },
     {
       "code": "py.async.timeout-layer",
-      "title": "asyncio.timeout 与分层超时",
+      "title": "asyncio.timeout 的分层超时",
       "minutes": 30,
       "module": "超时",
       "level": "进阶",
@@ -1020,7 +1017,7 @@
     },
     {
       "code": "py.async.async-with-for",
-      "title": "异步上下文管理器与异步迭代器",
+      "title": "异步上下文管理器、异步迭代器",
       "minutes": 25,
       "module": "异步协议",
       "level": "进阶",
@@ -1036,7 +1033,7 @@
           "async with 依赖 __aenter__ / __aexit__（两者都是协程）；进入时 await __aenter__，离开时 await __aexit__，因此清理可以做异步操作（关闭连接、回滚事务、写入日志）",
           "async for 依赖 __aiter__ / __anext__：__anext__ 是协程，每次迭代都可能挂起，最后以 StopAsyncIteration 结束循环",
           "关键差别是“挂起点”：同步 with/for 里不能 await，异步版本在进入、每次迭代和退出时都可以等待真实 I/O",
-          "异步生成器函数（含 yield 的 async def）会自动实现这两个协议，async for 与 async with contextlib.asynccontextmanager 都基于它",
+          "异步生成器函数（含 yield 的 async def）只自动实现 __aiter__ / __anext__，可以直接用于 async for；它没有 __aenter__ / __aexit__，直接 async with 会抛 TypeError: 'async_generator' object does not support the asynchronous context manager protocol（要用 contextlib.asynccontextmanager 包装后才能 async with）",
           "清理期间取消同样会到达 __aexit__：它应该是幂等的、不能吞掉 CancelledError，块内异常会以参数形式传给 __aexit__，返回 True 可抑制异常"
         ]
       },
@@ -1056,7 +1053,7 @@
         "fix": "把签名改成 async def __aexit__(self, exc_type, exc, tb) 并返回 True/False 表示是否抑制异常；修复后 async with 正常退出并打印 closed: True。"
       },
       "code_task": {
-        "prompt": "实现一个异步资源类 AsyncCounter：__aenter__ 让内部计数加 1 并返回自身，__aexit__ 让计数减 1 并记录清理次数（两者内部都有 await asyncio.sleep(0)）；再实现异步生成器 countdown(n) 依次 yield n-1 … 0。用 unittest 断言 async with 之后 active 为 0、cleanups 为 1，async for 收集结果是 3、2、1，且异常在块内抛出时 __aexit__ 仍被调用。",
+        "prompt": "实现一个异步资源类 AsyncCounter：__aenter__ 让内部计数加 1 并返回自身，__aexit__ 让计数减 1 并记录清理次数（两者内部都有 await asyncio.sleep(0)）；再实现异步生成器 countdown(n) 依次 yield n、n-1、…、1。用 unittest 断言 async with 之后 active 为 0、cleanups 为 1，async for 收集结果是 [3, 2, 1]，且异常在块内抛出时 __aexit__ 仍被调用。",
         "acceptance": [
           "async with 正常退出后 active 为 0、cleanups 为 1",
           "块内抛 ValueError 时 __aexit__ 仍执行，清理计数增加且异常继续传播",
@@ -1074,7 +1071,7 @@
     },
     {
       "code": "py.async.cancel-cleanup",
-      "title": "取消与失败路径上的清理顺序",
+      "title": "取消路径、失败路径上的清理顺序",
       "minutes": 25,
       "module": "取消",
       "level": "进阶",
@@ -1092,7 +1089,7 @@
         "prompt": "被取消或失败时，finally 与 async with 的清理顺序是怎样的？清理本身还能 await 吗？",
         "answer": [
           "清理时机由挂起点决定：CancelledError 从 await 表达式抛出后，当前协程的 finally / __aexit__ 按嵌套顺序从内到外执行，最后异常继续向上传播",
-          "清理代码可以 await：只要在清理里再次 await，取消会再次从那里抛出（可能在清理中途打断），所以要保证清理幂等、可分步完成",
+          "清理代码可以 await：单次 cancel() 只投递一次 CancelledError，清理里的 await 不会自动再抛（能正常跑完）；只有再次 cancel()（例如外层 timeout 兜底）才会在清理中途再次抛出，所以清理仍要幂等、可分步完成",
           "异常路径也要走同一条清理链：块内抛 ValueError 时 __aexit__ 收到的 exc_type 不为 None，返回 True 会吞掉异常，通常应返回 False 让它继续传播",
           "多个资源嵌套时按“后进先出”清理：外层 async with 先进入、后退出，确保依赖关系正确的释放顺序",
           "清理再失败会替换或附加异常：清理里抛出的新异常会覆盖原异常（在 ExceptionGroup/TaskGroup 场景下则可能被汇总），所以清理要谨慎、避免再抛"
@@ -1107,20 +1104,20 @@
         "explain": "__aenter__ 不挂起，按进入顺序记录 outer-enter、inner-enter；块内抛 ValueError 后，两个上下文管理器按后进先出依次 await __aexit__：inner-exit 先、outer-exit 后，都返回 False 让异常继续传播；外层 except ValueError 记录 caught，随后 finally 记录 finally。整条链只依赖 await asyncio.sleep(0) 和异常传播，输出与调度速度无关。"
       },
       "debug": {
-        "prompt": "下面代码的清理逻辑在被取消时会永久挂住整个程序，找出问题、说明根因并给出修法",
-        "code": "import asyncio\n\n\nasync def worker(log, gate):\n    try:\n        await asyncio.sleep(5)\n    finally:\n        await gate.wait()\n        log.append(\"cleanup-done\")\n\n\nasync def main():\n    log = []\n    gate = asyncio.Event()\n    task = asyncio.create_task(worker(log, gate))\n    await asyncio.sleep(0.01)\n    task.cancel()\n    try:\n        await asyncio.wait_for(task, timeout=0.1)\n    except TimeoutError:\n        print(\"cleanup blocked the cancel\")\n    print(\"log:\", log)\n\n\nasyncio.run(main())\n",
-        "rootCause": "worker 的 finally 里 await gate.wait()，而 gate 永远不会被设置：取消到达后协程在清理中再次挂起并永久等待，任务既没有完成也没有正确响应取消；调用方用 wait_for 兜底才看到 cleanup blocked the cancel。清理代码里的无超时等待是取消路径上的典型挂死点。",
-        "fix": "清理必须是有界且可完成的：把无超时等待换成带超时的等待（await asyncio.wait_for(gate.wait(), timeout=0.05) 并捕获 TimeoutError），或直接做不需要等待的清理；修复后任务在 0.1 秒内真正结束，log 里出现 bounded-cleanup。"
+        "prompt": "下面代码的清理逻辑在被取消后卡死在无超时等待上，靠外层兜底取消才勉强结束，清理一次都没跑完，找出问题、说明根因并给出修法",
+        "code": "import asyncio\n\n\nasync def worker(log, gate):\n    try:\n        await asyncio.sleep(5)\n    finally:\n        await gate.wait()\n        log.append(\"cleanup-done\")\n\n\nasync def main():\n    log = []\n    gate = asyncio.Event()\n    task = asyncio.create_task(worker(log, gate))\n    await asyncio.sleep(0.01)\n    task.cancel()\n    try:\n        await asyncio.wait_for(task, timeout=0.1)\n    except TimeoutError:\n        print(\"cleanup blocked the cancel\")\n    print(\"log:\", log)\n    print(\"worker done:\", task.done(), \"cancelled:\", task.cancelled())\n\n\nasyncio.run(main())\n",
+        "rootCause": "worker 的 finally 里 await gate.wait()，而 gate 永远不会被设置：取消到达后协程在清理中再次挂起，单次 cancel() 不会自动再抛取消，所以它会一直等下去，直到外层 wait_for 超时后再 cancel 一次，才把任务从 gate.wait() 里打断。最终 worker done: True、cancelled: True，但 log 是空的——cleanup-done 一次都没执行，清理等于没做。根因是清理代码里的无超时等待；外层兜底取消只是掩盖问题，并没有完成清理。",
+        "fix": "清理必须是有界且可完成的：把无超时等待换成带超时的等待（await asyncio.wait_for(gate.wait(), timeout=0.05) 并捕获 TimeoutError），或直接做不需要等待的清理；修复后任务在预算内自己结束，log 里出现 bounded-cleanup。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 cleanup_report(): 用 async with 打开一个记录事件的资源（进入、退出都 await asyncio.sleep(0)），块内主动 raise ValueError 并捕获，返回事件的顺序列表；用 unittest 断言事件恰为 [\"enter\", \"exit\", \"caught\"]、异常已传播到 except 分支、资源处于已释放状态，并断言清理没有吞掉异常。",
+        "prompt": "实现 async 函数 cleanup_report(): 用 async with 打开一个记录事件的资源（进入、退出都 await asyncio.sleep(0)），块内主动 raise ValueError 并捕获，返回 (事件顺序列表, 资源对象)；用 unittest 断言事件恰为 [\"enter\", \"exit\", \"caught\"]、异常已传播到 except 分支、资源处于已释放状态，并断言清理没有吞掉异常。",
         "acceptance": [
           "事件顺序恰为 [\"enter\", \"exit\", \"caught\"]，证明 __aexit__ 在 except 之前执行",
           "块内 ValueError 被外层 except 捕获，说明 __aexit__ 返回 False 没有抑制异常",
           "资源对象在返回时处于已释放状态（released 为 True 且 active 为 0）",
           "测试函数在 0.5 秒内完成，不使用长睡眠"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nclass Resource:\n    def __init__(self, log):\n        self.log = log\n        self.active = 0\n        self.released = False\n\n    async def __aenter__(self):\n        await asyncio.sleep(0)\n        self.active += 1\n        self.log.append(\"enter\")\n        return self\n\n    async def __aexit__(self, exc_type, exc, tb):\n        await asyncio.sleep(0)\n        self.active -= 1\n        self.released = True\n        self.log.append(\"exit\")\n        return False\n\n\nasync def cleanup_report():\n    log = []\n    resource = Resource(log)\n    try:\n        async with resource:\n            raise ValueError(\"boom\")\n    except ValueError:\n        log.append(\"caught\")\n    return log, resource\n\n\nclass CancelCleanupTest(unittest.TestCase):\n    def test_cleanup_runs_before_the_except_branch(self):\n        log, resource = asyncio.run(cleanup_report())\n        self.assertEqual(log, [\"enter\", \"exit\", \"caught\"])\n        self.assertTrue(resource.released)\n        self.assertEqual(resource.active, 0)\n\n    def test_exception_is_not_swallowed(self):\n        async def scenario():\n            raised = False\n            try:\n                async with Resource([]):\n                    raise ValueError(\"boom\")\n            except ValueError:\n                raised = True\n            return raised\n\n        self.assertTrue(asyncio.run(scenario()))\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await cleanup_report()\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nclass Resource:\n    def __init__(self, log):\n        self.log = log\n        self.active = 0\n        self.released = False\n\n    async def __aenter__(self):\n        await asyncio.sleep(0)\n        self.active += 1\n        self.log.append(\"enter\")\n        return self\n\n    async def __aexit__(self, exc_type, exc, tb):\n        await asyncio.sleep(0)\n        self.active -= 1\n        self.released = True\n        self.log.append(\"exit\")\n        return False\n\n\nasync def cleanup_report():\n    log = []\n    resource = Resource(log)\n    try:\n        async with resource:\n            raise ValueError(\"boom\")\n    except ValueError:\n        log.append(\"caught\")\n    return log, resource\n\n\nclass CancelCleanupTest(unittest.TestCase):\n    def test_cleanup_runs_before_the_except_branch(self):\n        started = time.perf_counter()\n        log, resource = asyncio.run(cleanup_report())\n        elapsed = time.perf_counter() - started\n        self.assertEqual(log, [\"enter\", \"exit\", \"caught\"])\n        self.assertTrue(resource.released)\n        self.assertEqual(resource.active, 0)\n        self.assertLess(elapsed, 0.5)\n\n    def test_exception_is_not_swallowed(self):\n        async def scenario():\n            raised = False\n            try:\n                async with Resource([]):\n                    raise ValueError(\"boom\")\n            except ValueError:\n                raised = True\n            return raised\n\n        self.assertTrue(asyncio.run(scenario()))\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await cleanup_report()\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "在 finally 里做无超时的 await 等待",
@@ -1163,18 +1160,18 @@
       "debug": {
         "prompt": "下面代码想在 asyncio 里用线程队列排队，结果第三个元素直接被拒、consumer 只收到两个，找出问题、说明根因并给出修法",
         "code": "import asyncio\nimport queue\n\n\nasync def produce(items, shared, log):\n    for item in items:\n        shared.put_nowait(item)\n        log.append(\"put\" + str(item))\n    return len(items)\n\n\nasync def consume(shared, count, log):\n    for _ in range(count):\n        await asyncio.sleep(0)\n        log.append(\"get\" + str(shared.get_nowait()))\n\n\nasync def main():\n    shared = queue.Queue(maxsize=2)\n    log = []\n    try:\n        await asyncio.gather(produce([1, 2, 3], shared, log), consume(shared, 2, log))\n    except queue.Full:\n        print(\"third put rejected:\", log)\n\n\nasyncio.run(main())\n",
-        "rootCause": "consumer 一开始就 await asyncio.sleep(0) 让出控制权，producer 于是连续调用 queue.Queue.put_nowait：maxsize=2 时前两次成功，第三次抛 queue.Full，producer 直接异常退出，gather 把它抛给 main，打印 “third put rejected: ['put1', 'put2']”，consumer 连一次 get 都没轮到。根因是在协程里混用同步队列并且用 put_nowait：它不会挂起等待空位，只会拒绝，也没有把事件循环让给消费者。",
+        "rootCause": "consumer 一开始就 await asyncio.sleep(0) 让出控制权，producer 于是连续调用 queue.Queue.put_nowait：maxsize=2 时前两次成功，第三次抛 queue.Full，producer 直接异常退出，gather 把它抛给 main，打印 third put rejected: ['put1', 'put2', 'get1']——consumer 只来得及取走一个元素（get1），第三个元素被拒绝、第二个元素还留在队列里。根因是在协程里混用同步 queue.Queue 并且用 put_nowait：它不会挂起等待空位，只会拒绝，消费者也就没有机会把队列腾空。",
         "fix": "换成 asyncio.Queue 并用 await put / await get：队列满时生产者挂起、消费者取走元素后自动唤醒，三个元素全部入队并被消费；修复后 producer done 为 True、consumer 收齐 [1, 2, 3] 且队列为空。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 run_pipeline(items, maxsize=2)：生产者把 items 放进 asyncio.Queue，两个消费者把每个元素乘以 2 写进结果列表并调用 task_done()，生产者结束后按 worker 数量发停止信号，用 q.join() 等所有元素处理完，最后 await 消费者并返回排序后的结果；用 unittest 断言结果正确、队列为空、没有遗留任务，并用 maxsize=1 再跑一次验证不会死锁。",
+        "prompt": "实现 async 函数 run_pipeline(items, maxsize=2)：生产者把 items 放进有界的 asyncio.Queue，两个消费者把每个元素乘以 2 写进结果列表并调用 task_done()，生产者结束后按 worker 数量发停止信号，用 q.join() 等所有元素处理完，最后 await 消费者并返回 (按升序排列的结果, 队列剩余长度)；用 unittest 断言结果正确、队列为空、没有遗留任务，并用 maxsize=1 再跑一次验证不会死锁。",
         "acceptance": [
           "返回结果是输入元素的 2 倍并按升序排列，长度与输入一致",
           "所有元素都被消费：队列 qsize() 为 0 且 q.join() 正常返回",
           "maxsize=1 与 maxsize=2 两种配置都能在 1 秒内完成，不发生死锁",
           "函数返回后没有除当前任务外的存活任务"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def run_pipeline(items, maxsize=2):\n    queue = asyncio.Queue(maxsize=maxsize)\n    results = []\n\n    async def worker():\n        while True:\n            item = await queue.get()\n            if item is None:\n                queue.task_done()\n                return\n            results.append(item * 2)\n            queue.task_done()\n\n    workers = [asyncio.create_task(worker()) for _ in range(2)]\n\n    async def produce():\n        for item in items:\n            await queue.put(item)\n\n    producer = asyncio.create_task(produce())\n    await producer\n    await queue.join()\n    for _ in workers:\n        await queue.put(None)\n    await asyncio.gather(*workers)\n    return sorted(results), queue.qsize()\n\n\nclass QueueProducerConsumerTest(unittest.TestCase):\n    def test_results_are_doubled_and_sorted(self):\n        results, remaining = asyncio.run(run_pipeline([3, 1, 2]))\n        self.assertEqual(results, [2, 4, 6])\n        self.assertEqual(remaining, 0)\n\n    def test_queue_is_drained(self):\n        async def scenario():\n            results, remaining = await run_pipeline([1, 2, 3])\n            current = asyncio.current_task()\n            left = [task for task in asyncio.all_tasks() if task is not current]\n            return results, remaining, left\n\n        results, remaining, left = asyncio.run(scenario())\n        self.assertEqual(results, [2, 4, 6])\n        self.assertEqual(remaining, 0)\n        self.assertEqual(left, [])\n\n    def test_maxsize_one_does_not_deadlock(self):\n        results, remaining = asyncio.run(run_pipeline([5, 6], maxsize=1))\n        self.assertEqual(results, [10, 12])\n        self.assertEqual(remaining, 0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def run_pipeline(items, maxsize=2):\n    queue = asyncio.Queue(maxsize=maxsize)\n    results = []\n\n    async def worker():\n        while True:\n            item = await queue.get()\n            if item is None:\n                queue.task_done()\n                return\n            results.append(item * 2)\n            queue.task_done()\n\n    workers = [asyncio.create_task(worker()) for _ in range(2)]\n\n    async def produce():\n        for item in items:\n            await queue.put(item)\n\n    producer = asyncio.create_task(produce())\n    await producer\n    await queue.join()\n    for _ in workers:\n        await queue.put(None)\n    await asyncio.gather(*workers)\n    return sorted(results), queue.qsize()\n\n\nclass QueueProducerConsumerTest(unittest.TestCase):\n    def test_results_are_doubled_and_sorted(self):\n        started = time.perf_counter()\n        results, remaining = asyncio.run(run_pipeline([3, 1, 2]))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(results, [2, 4, 6])\n        self.assertEqual(remaining, 0)\n        self.assertLess(elapsed, 1.0)\n\n    def test_queue_is_drained(self):\n        async def scenario():\n            results, remaining = await run_pipeline([1, 2, 3])\n            current = asyncio.current_task()\n            left = [task for task in asyncio.all_tasks() if task is not current]\n            return results, remaining, left\n\n        results, remaining, left = asyncio.run(scenario())\n        self.assertEqual(results, [2, 4, 6])\n        self.assertEqual(remaining, 0)\n        self.assertEqual(left, [])\n\n    def test_maxsize_one_does_not_deadlock(self):\n        started = time.perf_counter()\n        results, remaining = asyncio.run(run_pipeline([5, 6], maxsize=1))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(results, [10, 12])\n        self.assertEqual(remaining, 0)\n        self.assertLess(elapsed, 1.0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "在协程里用 queue.Queue 并同步阻塞",
@@ -1185,7 +1182,7 @@
     },
     {
       "code": "py.async.queue-shutdown",
-      "title": "queue.join、task_done 与停机哨兵",
+      "title": "queue.join、task_done、停机哨兵",
       "minutes": 25,
       "module": "队列",
       "level": "进阶",
@@ -1215,20 +1212,20 @@
         "explain": "put(\"job\") 之后未完成计数是 1，join() 会一直等待，0.05 秒的 wait_for 超时后打印 join still waiting。调用 task_done() 把计数归零后，第二次 join() 立即返回，打印 join finished after task_done。这说明 join 跟踪的是“已取走但未声明完成”的元素数，而不是队列长度：元素取走后队列已经空了，但没 task_done 之前 join 仍然会等。"
       },
       "debug": {
-        "prompt": "下面代码只发了一个哨兵给两个 worker，关闭时一个 worker 永久卡在 get 上，找出问题、说明根因并给出修法",
+        "prompt": "下面代码只发了一个哨兵给两个 worker，停机时有一个 worker 没收到哨兵，找出问题、说明根因并给出修法",
         "code": "import asyncio\n\n\nasync def worker(queue, done):\n    while True:\n        item = await queue.get()\n        if item is None:\n            queue.task_done()\n            done.append(1)\n            return\n        queue.task_done()\n\n\nasync def main():\n    queue = asyncio.Queue()\n    done = []\n    workers = [asyncio.create_task(worker(queue, done)) for _ in range(2)]\n    for value in range(2):\n        await queue.put(value)\n    await queue.join()\n    await queue.put(None)\n    try:\n        await asyncio.wait_for(asyncio.gather(*workers), timeout=0.1)\n    except TimeoutError:\n        print(\"a worker never stopped\")\n    print(\"stopped workers:\", len(done), \"left:\", [task.done() for task in workers])\n\n\nasyncio.run(main())\n",
-        "rootCause": "两个 worker 同时阻塞在 await queue.get() 上，但只放了一个 None 哨兵：一个 worker 收到哨兵退出，另一个永远等不到新元素，gather 在 0.1 秒内无法完成（靠 wait_for 兜底才打印 a worker never stopped），并且 asyncio.run 关闭循环时会销毁这个 pending 任务。停机信号数量必须与 worker 数量一致。",
+        "rootCause": "两个 worker 同时阻塞在 await queue.get() 上，但只放了一个 None 哨兵：一个 worker 收到哨兵正常退出（stopped workers: 1），另一个永远等不到新元素；wait_for 在 0.1 秒后超时，反过来取消 gather，把这个 worker 也取消掉，所以最后 left 是 [True, True]（两个都 done，但第二个是被取消的），打印 a worker never stopped 说明它没被正常停机。停机信号数量必须与 worker 数量一致，不能靠外部超时兜底。",
         "fix": "按 worker 数量发送哨兵：for _ in workers: await queue.put(None)（或改用取消 + await 收尾）；修复后两个 worker 都退出，stopped workers 为 2、left 全为 True。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 run_workers(items, worker_count=2)：有界队列 + 多个 worker，元素处理结果进结果列表，每个元素处理完调用 task_done()，主流程先 await queue.join() 再按 worker 数量发 None 哨兵，最后 gather 收尾并返回 sorted(results)；用 unittest 断言结果正确、worker 全部结束、队列为空，并断言中途抛异常的 worker 也会 task_done()（用一个会失败的 worker 验证 join 不会卡住）。",
+        "prompt": "实现 async 函数 run_workers(items, worker_count=2)：有界队列（asyncio.Queue(maxsize=2)）+ 多个 worker，元素处理结果进结果列表，每个元素处理完在 finally 里调用 task_done()，主流程先 await queue.join() 再按 worker 数量发 None 哨兵，最后 gather 收尾，返回 {\"results\": 升序结果, \"failures\": 失败消息, \"remaining\": 队列剩余长度, \"workers\": worker 任务列表}；用 unittest 断言结果正确、worker 全部 done()、队列剩余长度为 0，并断言中途抛异常的 worker 也会 task_done()（用一个会失败的 worker 验证 join 不会卡住）。",
         "acceptance": [
           "结果与串行处理一致且升序排列",
-          "所有 worker 在函数返回前 done() 且队列 qsize() 为 0",
+          "所有 worker 在函数返回前 done()，且返回的队列剩余长度为 0",
           "worker 处理元素时抛异常也会调用 task_done()，join 仍然正常返回（用 0.5 秒超时保护）",
           "返回后没有除当前任务外的存活任务"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def run_workers(items, worker_count=2):\n    queue = asyncio.Queue()\n    results = []\n    failures = []\n\n    async def worker():\n        while True:\n            item = await queue.get()\n            try:\n                if item is None:\n                    return\n                if item == 0:\n                    raise ValueError(\"bad item\")\n                results.append(item * 2)\n            except ValueError as error:\n                failures.append(str(error))\n            finally:\n                queue.task_done()\n\n    workers = [asyncio.create_task(worker()) for _ in range(worker_count)]\n    for item in items:\n        await queue.put(item)\n    await asyncio.wait_for(queue.join(), timeout=0.5)\n    for _ in workers:\n        await queue.put(None)\n    await asyncio.wait_for(asyncio.gather(*workers), timeout=0.5)\n    return sorted(results), failures, workers\n\n\nclass QueueShutdownTest(unittest.TestCase):\n    def test_all_items_are_processed(self):\n        results, failures, workers = asyncio.run(run_workers([3, 1, 2]))\n        self.assertEqual(results, [2, 4, 6])\n        self.assertEqual(failures, [])\n        self.assertTrue(all(task.done() for task in workers))\n\n    def test_failing_worker_still_calls_task_done(self):\n        results, failures, workers = asyncio.run(run_workers([0, 4]))\n        self.assertEqual(results, [8])\n        self.assertEqual(failures, [\"bad item\"])\n        self.assertTrue(all(task.done() for task in workers))\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await run_workers([1, 2])\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport unittest\n\n\nasync def run_workers(items, worker_count=2):\n    queue = asyncio.Queue(maxsize=2)\n    results = []\n    failures = []\n\n    async def worker():\n        while True:\n            item = await queue.get()\n            try:\n                if item is None:\n                    return\n                if item == 0:\n                    raise ValueError(\"bad item\")\n                results.append(item * 2)\n            except ValueError as error:\n                failures.append(str(error))\n            finally:\n                queue.task_done()\n\n    workers = [asyncio.create_task(worker()) for _ in range(worker_count)]\n    for item in items:\n        await queue.put(item)\n    await asyncio.wait_for(queue.join(), timeout=0.5)\n    for _ in workers:\n        await queue.put(None)\n    await asyncio.wait_for(asyncio.gather(*workers), timeout=0.5)\n    return {\"results\": sorted(results), \"failures\": failures, \"remaining\": queue.qsize(), \"workers\": workers}\n\n\nclass QueueShutdownTest(unittest.TestCase):\n    def test_all_items_are_processed(self):\n        report = asyncio.run(run_workers([3, 1, 2]))\n        self.assertEqual(report[\"results\"], [2, 4, 6])\n        self.assertEqual(report[\"failures\"], [])\n        self.assertEqual(report[\"remaining\"], 0)\n        self.assertTrue(all(task.done() for task in report[\"workers\"]))\n\n    def test_failing_worker_still_calls_task_done(self):\n        report = asyncio.run(run_workers([0, 4]))\n        self.assertEqual(report[\"results\"], [8])\n        self.assertEqual(report[\"failures\"], [\"bad item\"])\n        self.assertEqual(report[\"remaining\"], 0)\n        self.assertTrue(all(task.done() for task in report[\"workers\"]))\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await run_workers([1, 2])\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "漏调 task_done 让 join 永久阻塞",
@@ -1239,7 +1236,7 @@
     },
     {
       "code": "py.async.backpressure",
-      "title": "慢消费者与背压观察",
+      "title": "慢消费者下的背压观察",
       "minutes": 25,
       "module": "队列",
       "level": "进阶",
@@ -1251,10 +1248,6 @@
         {
           "taskId": "7404",
           "relation": "introduces"
-        },
-        {
-          "taskId": "7404",
-          "relation": "exercises"
         }
       ],
       "concept": {
@@ -1275,23 +1268,23 @@
           "bounded producer stalled while the queue was full",
           "unbounded queued: 5 full: False"
         ],
-        "explain": "有界队列 maxsize=2：先放两个元素把它填满，打印 bounded queued: 2。随后的 put_three 想把三个元素一次性放进去，第三次 await put 时队列满、又没有任何消费者，于是生产者被挂起；0.1 秒的 wait_for 兜底超时，打印 bounded producer stalled while the queue was full——这就是背压：有界队列不允许生产者在没人消费时继续推进。无界队列（maxsize=0）里 put_nowait 五次全部成功，unbounded queued: 5、full() 永远为 False，代价是缓冲可以无限增长。"
+        "explain": "有界队列 maxsize=2：先放两个元素把它填满，打印 bounded queued: 2。随后的 put_three 想再放三个元素，第一次 await put 时队列就已经满了、又没有消费者，于是生产者立刻被挂起（不是第三次才挂）；0.1 秒的 wait_for 兜底超时，打印 bounded producer stalled while the queue was full——这就是背压：有界队列不允许生产者在没人消费时继续推进。无界队列（maxsize=0）里 put_nowait 五次全部成功，unbounded queued: 5、full() 永远为 False，代价是缓冲可以无限增长。"
       },
       "debug": {
-        "prompt": "下面代码想用 maxsize 演示背压，但生产者第一次 put 就抛异常，找出问题、说明根因并给出修法",
-        "code": "import asyncio\n\n\nasync def producer(queue, count, log, flags):\n    for value in range(count):\n        queue.put_nowait(value)\n        log.append(\"put\" + str(value))\n    flags[\"stalled\"] = False\n\n\nasync def consumer(queue, count, log):\n    for _ in range(count):\n        await asyncio.sleep(0)\n        log.append(\"get\" + str(await queue.get()))\n\n\nasync def main():\n    queue = asyncio.Queue(maxsize=2)\n    log = []\n    flags = {}\n    try:\n        await asyncio.gather(producer(queue, 4, log, flags), consumer(queue, 4, log))\n    except asyncio.QueueFull:\n        print(\"producer raised QueueFull after:\", len(log), \"puts\")\n    print(\"observed:\", log)\n\n\nasyncio.run(main())\n",
-        "rootCause": "生产者用的是 put_nowait：它不会因为队列满而挂起，而是直接抛 asyncio.QueueFull。maxsize=2 时前两次 put_nowait 成功，第三次立刻抛 QueueFull；因为异常发生在 gather 调度消费者之前，消费者一次都没跑，日志里只有 put0、put1，证据是 “producer raised QueueFull after: 2 puts”。根因是用不等待的 put_nowait 去演示需要等待的背压，maxsize 在这里只是摆设。",
-        "fix": "生产者改用 await queue.put(value)：队列满时它会挂起，等消费者 get 腾出空位再继续；修复后 4 个元素全部入队并被消费，队列最终为 0，而且生产者确实停顿过（记录 put 完成后消费者已取走的次数大于 0）。"
+        "prompt": "下面代码用 put_nowait 演示背压，但生产者既不挂起也不等待，第三个元素直接抛异常，找出问题、说明根因并给出修法",
+        "code": "import asyncio\n\n\nasync def producer(queue, count, log, flags):\n    for value in range(count):\n        queue.put_nowait(value)\n        log.append(\"put\" + str(value))\n    flags[\"stalled\"] = False\n\n\nasync def consumer(queue, count, log):\n    for _ in range(count):\n        await asyncio.sleep(0)\n        log.append(\"get\" + str(await queue.get()))\n\n\nasync def main():\n    queue = asyncio.Queue(maxsize=2)\n    log = []\n    flags = {}\n    try:\n        await asyncio.gather(producer(queue, 4, log, flags), consumer(queue, 4, log))\n    except asyncio.QueueFull:\n        print(\"producer raised QueueFull, log so far:\", log)\n\n\nasyncio.run(main())\n",
+        "rootCause": "生产者用的是 put_nowait：它不会因为队列满而挂起，而是直接抛 asyncio.QueueFull。maxsize=2 时前两次 put_nowait 成功，第三次立刻抛 QueueFull；消费者只来得及取走一个元素（get0），日志停在 ['put0', 'put1', 'get0']，证据是 producer raised QueueFull, log so far: ['put0', 'put1', 'get0']。根因是用不等待的 put_nowait 去演示需要等待的背压：生产者既不挂起也不等待消费者，maxsize 在这里只是摆设。",
+        "fix": "生产者改用 await queue.put(value)：队列满时它会挂起，等消费者 get 腾出空位再继续；修复后 4 个元素全部入队并被消费，队列最终为 0，而且生产者确实停顿过（打印 producer stalled: True、final size: 0）。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 bounded_pipeline(count, maxsize)：生产者用 await queue.put 放 count 个元素并记录每次 put 完成，消费者每轮先 await asyncio.sleep(0) 再 get，返回 (处理结果列表, 队列长度峰值, 生产者第一次挂起的位置)；用 unittest 断言 maxsize=1 时队列长度峰值不超过 1、结果完整、生产者至少挂起过一次（说明背压生效），并与 maxsize=0（无界）对照说明后者不会挂起。",
+        "prompt": "实现 async 函数 bounded_pipeline(count, maxsize)：生产者用 await queue.put 放 count 个元素并记录每次 put 完成，消费者每轮先 await asyncio.sleep(0) 再 get，返回 (处理结果列表, 队列长度峰值, 队列已满时仍要 put 的次数, 总 put 次数)；用 unittest 断言 maxsize=1 时队列长度峰值不超过 1、结果完整、full_puts 不小于 1（说明背压生效），并与 maxsize=0（无界）对照说明后者 full_puts 为 0。",
         "acceptance": [
           "maxsize=1 时队列长度峰值不超过 1，且至少有一次在队列已满时仍要 put（full_puts 不小于 1）",
           "所有 count 个元素都被消费者处理，结果与输入一致",
           "无界配置（maxsize=0）下队列永远 full() 为 False，full_puts 为 0，说明生产者从不被队列拦住",
           "整段测试在 1 秒内结束，不使用真实长耗时"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def bounded_pipeline(count, maxsize):\n    queue = asyncio.Queue(maxsize=maxsize)\n    events = []\n    results = []\n    peak = 0\n    full_puts = 0\n    total_puts = 0\n\n    async def producer():\n        nonlocal full_puts, total_puts\n        for value in range(count):\n            if queue.full():\n                full_puts += 1\n            total_puts += 1\n            await queue.put(value)\n            events.append((\"put\", value))\n\n    async def consumer():\n        nonlocal peak\n        for _ in range(count):\n            await asyncio.sleep(0)\n            peak = max(peak, queue.qsize())\n            results.append(await queue.get())\n            events.append((\"get\", results[-1]))\n\n    await asyncio.gather(producer(), consumer())\n    return results, peak, full_puts, total_puts\n\n\nclass BackpressureTest(unittest.TestCase):\n    def test_bounded_queue_caps_the_buffer(self):\n        results, peak, full_puts, total_puts = asyncio.run(bounded_pipeline(5, maxsize=1))\n        self.assertEqual(results, [0, 1, 2, 3, 4])\n        self.assertLessEqual(peak, 1)\n        self.assertGreaterEqual(full_puts, 1)\n        self.assertEqual(total_puts, 5)\n\n    def test_unbounded_queue_never_fills_up(self):\n        results, _, full_puts, total_puts = asyncio.run(bounded_pipeline(5, maxsize=0))\n        self.assertEqual(results, [0, 1, 2, 3, 4])\n        self.assertEqual(full_puts, 0)\n        self.assertEqual(total_puts, 5)\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await bounded_pipeline(3, maxsize=1)\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def bounded_pipeline(count, maxsize):\n    queue = asyncio.Queue(maxsize=maxsize)\n    events = []\n    results = []\n    peak = 0\n    full_puts = 0\n    total_puts = 0\n\n    async def producer():\n        nonlocal full_puts, total_puts\n        for value in range(count):\n            if queue.full():\n                full_puts += 1\n            total_puts += 1\n            await queue.put(value)\n            events.append((\"put\", value))\n\n    async def consumer():\n        nonlocal peak\n        for _ in range(count):\n            await asyncio.sleep(0)\n            peak = max(peak, queue.qsize())\n            results.append(await queue.get())\n            events.append((\"get\", results[-1]))\n\n    await asyncio.gather(producer(), consumer())\n    return results, peak, full_puts, total_puts\n\n\nclass BackpressureTest(unittest.TestCase):\n    def test_bounded_queue_caps_the_buffer(self):\n        started = time.perf_counter()\n        results, peak, full_puts, total_puts = asyncio.run(bounded_pipeline(5, maxsize=1))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(results, [0, 1, 2, 3, 4])\n        self.assertLessEqual(peak, 1)\n        self.assertGreaterEqual(full_puts, 1)\n        self.assertEqual(total_puts, 5)\n        self.assertLess(elapsed, 1.0)\n\n    def test_unbounded_queue_never_fills_up(self):\n        started = time.perf_counter()\n        results, _, full_puts, total_puts = asyncio.run(bounded_pipeline(5, maxsize=0))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(results, [0, 1, 2, 3, 4])\n        self.assertEqual(full_puts, 0)\n        self.assertEqual(total_puts, 5)\n        self.assertLess(elapsed, 1.0)\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await bounded_pipeline(3, maxsize=1)\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "用无界队列掩盖消费过慢",
@@ -1377,12 +1370,12 @@
       },
       "predict": {
         "prompt": "写出下面代码的输出，并说明两个布尔值分别证明了什么",
-        "code": "import asyncio\nimport threading\n\n\nasync def main():\n    ticks = []\n\n    async def ticker():\n        for _ in range(2):\n            await asyncio.sleep(0)\n            ticks.append(1)\n\n    beat = asyncio.create_task(ticker())\n    await asyncio.sleep(0)\n    before = len(ticks)\n    thread_name = await asyncio.to_thread(threading.current_thread)\n    after = len(ticks)\n    await beat\n    print(\"runs off main thread:\", thread_name.name != \"MainThread\")\n    print(\"loop kept running:\", after > before)\n\n\nasyncio.run(main())\n",
+        "code": "import asyncio\nimport threading\n\n\nasync def main():\n    ticks = []\n    released = threading.Event()\n\n    async def ticker():\n        await asyncio.sleep(0)\n        ticks.append(1)\n        released.set()\n\n    def blocking_work():\n        off_main = threading.current_thread() is not threading.main_thread()\n        return off_main, released.wait(timeout=1)\n\n    beat = asyncio.create_task(ticker())\n    await asyncio.sleep(0)\n    before = len(ticks)\n    off_main, progressed = await asyncio.to_thread(blocking_work)\n    after = len(ticks)\n    await beat\n    print(\"runs off main thread:\", off_main)\n    print(\"loop kept running while the worker blocked:\", progressed and after > before)\n\n\nasyncio.run(main())\n",
         "expected": [
           "runs off main thread: True",
-          "loop kept running: False"
+          "loop kept running while the worker blocked: True"
         ],
-        "explain": "先 await asyncio.sleep(0) 把控制权交给 ticker，让它推进到第一个挂起点并至少记录一次心跳。threading.current_thread 这个函数在线程池的工作线程里执行，返回该线程对象，名字不是 MainThread，所以第一行 True；同时 to_thread 等待期间事件循环没有被占住，ticker 又推进了至少一次，所以 after > before 为 True。两者合起来说明阻塞工作被移到了别的线程，而事件循环继续调度协程。注意不要打印线程名本身（不同实现名字不同），只比较它是不是主线程。"
+        "explain": "先让 ticker 推进到第一个挂起点；blocking_work 在工作线程里先记录自己不是主线程，再阻塞在 released.wait() 上。事件循环没有被占住，于是 ticker 恢复、把心跳加一并 set 事件，工作线程被唤醒返回 True。两个输出都是确定性的：不是靠时间猜测，而是靠“工作线程必须等到事件循环真的推进过一次才可能返回”这条因果链。注意不要打印线程名本身，只比较它是不是主线程。"
       },
       "debug": {
         "prompt": "下面代码把会调用事件循环 API 的同步函数丢进 to_thread，运行时报 no running event loop，找出问题、说明根因并给出修法",
@@ -1391,14 +1384,14 @@
         "fix": "to_thread 的目标函数只做纯同步工作（文件读写、摘要、JSON 解析），需要循环的能力留在协程里：把 get_running_loop 移到 load 内部，sync_lookup 返回纯数据；修复后打印结果且不抛异常。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 digest_in_thread(payload)：用 asyncio.to_thread 调用同步函数 hashlib.sha256(payload.encode()).hexdigest()，返回摘要字符串；再实现 async 函数 write_and_read(line)：在临时目录里用 to_thread 写一行 JSONL 再读回来，返回读到的行。用 unittest 断言摘要等于同步计算的 sha256、写入的临时文件读回内容一致，并断言事件循环在 to_thread 期间仍在推进（用一个记录心跳的任务验证）。",
+        "prompt": "实现 async 函数 digest_in_thread(payload)：用 asyncio.to_thread 调用同步函数 hashlib.sha256(payload.encode()).hexdigest()，返回 64 位十六进制摘要；再实现 async 函数 write_and_read(line)：在 tempfile 生成的临时目录里用 to_thread 写一行 JSONL 再读回来，返回 (读到的行, 临时文件路径)。用 unittest 断言摘要等于同步计算的 sha256、写入的临时文件读回内容一致且函数返回后临时文件已被清理，并断言事件循环在 to_thread 期间仍在推进（用一个记录心跳的任务，配合 threading.Event 确定性地验证，而不是靠 sleep 计时）。",
         "acceptance": [
           "to_thread 返回的摘要与直接调用 hashlib.sha256 的结果完全一致（64 位十六进制）",
-          "临时文件写入后能原样读回，测试结束后临时目录被清理（用 tempfile）",
-          "心跳任务在 to_thread 等待期间继续推进（after 大于 before），证明阻塞工作跑在工作线程、事件循环没被占用",
-          "所有文件路径由 tempfile 生成，不用固定绝对路径"
+          "临时文件写入后能原样读回，函数返回后临时目录已被清理（用 tempfile）",
+          "心跳任务在 to_thread 等待期间继续推进：工作线程等待的 threading.Event 由事件循环里的任务 set，progressed 为 True 且 after 大于 before",
+          "所有文件路径由 tempfile 生成、不用固定绝对路径，且断言里验证路径已不存在"
         ],
-        "reference": "import asyncio\nimport hashlib\nimport json\nimport tempfile\nimport time\nimport unittest\nfrom pathlib import Path\n\n\ndef sync_digest(payload):\n    return hashlib.sha256(payload.encode(\"utf-8\")).hexdigest()\n\n\ndef sync_write(path, line):\n    Path(path).write_text(json.dumps({\"line\": line}) + \"\\n\", encoding=\"utf-8\")\n    return Path(path).read_text(encoding=\"utf-8\").strip()\n\n\nasync def digest_in_thread(payload):\n    return await asyncio.to_thread(sync_digest, payload)\n\n\nasync def write_and_read(line):\n    with tempfile.TemporaryDirectory() as work:\n        target = Path(work) / \"lines.jsonl\"\n        return await asyncio.to_thread(sync_write, str(target), line)\n\n\ndef busy_wait(seconds):\n    deadline = time.perf_counter() + seconds\n    while time.perf_counter() < deadline:\n        pass\n    return seconds\n\n\nasync def heartbeats_during_thread():\n    ticks = []\n\n    async def ticker():\n        while True:\n            await asyncio.sleep(0)\n            ticks.append(1)\n\n    beat = asyncio.create_task(ticker())\n    await asyncio.sleep(0)\n    before = len(ticks)\n    await asyncio.to_thread(busy_wait, 0.05)\n    after = len(ticks)\n    beat.cancel()\n    try:\n        await beat\n    except asyncio.CancelledError:\n        pass\n    return before, after\n\n\nclass ToThreadTest(unittest.TestCase):\n    def test_digest_matches_sync_computation(self):\n        payload = \"hello asyncio\"\n        self.assertEqual(asyncio.run(digest_in_thread(payload)), hashlib.sha256(payload.encode(\"utf-8\")).hexdigest())\n\n    def test_write_then_read_round_trip(self):\n        line = \"taskrunner\"\n        self.assertEqual(asyncio.run(write_and_read(line)), json.dumps({\"line\": line}))\n\n    def test_event_loop_keeps_running_during_to_thread(self):\n        before, after = asyncio.run(heartbeats_during_thread())\n        self.assertGreaterEqual(before, 0)\n        self.assertGreater(after, before)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport hashlib\nimport json\nimport tempfile\nimport threading\nimport unittest\nfrom pathlib import Path\n\n\ndef sync_digest(payload):\n    return hashlib.sha256(payload.encode(\"utf-8\")).hexdigest()\n\n\ndef sync_write(path, line):\n    Path(path).write_text(json.dumps({\"line\": line}) + \"\\n\", encoding=\"utf-8\")\n    return Path(path).read_text(encoding=\"utf-8\").strip()\n\n\nasync def digest_in_thread(payload):\n    return await asyncio.to_thread(sync_digest, payload)\n\n\nasync def write_and_read(line):\n    with tempfile.TemporaryDirectory() as work:\n        target = Path(work) / \"lines.jsonl\"\n        content = await asyncio.to_thread(sync_write, str(target), line)\n        return content, str(target)\n\n\nasync def heartbeats_during_thread():\n    ticks = []\n    released = threading.Event()\n\n    async def ticker():\n        await asyncio.sleep(0)\n        ticks.append(1)\n        released.set()\n\n    def blocking_work():\n        return released.wait(timeout=2)\n\n    beat = asyncio.create_task(ticker())\n    await asyncio.sleep(0)\n    before = len(ticks)\n    progressed = await asyncio.to_thread(blocking_work)\n    after = len(ticks)\n    beat.cancel()\n    try:\n        await beat\n    except asyncio.CancelledError:\n        pass\n    return before, after, progressed\n\n\nclass ToThreadTest(unittest.TestCase):\n    def test_digest_matches_sync_computation(self):\n        payload = \"hello asyncio\"\n        digest = asyncio.run(digest_in_thread(payload))\n        self.assertEqual(digest, hashlib.sha256(payload.encode(\"utf-8\")).hexdigest())\n        self.assertEqual(len(digest), 64)\n\n    def test_write_then_read_round_trip_and_cleanup(self):\n        line = \"taskrunner\"\n        content, path = asyncio.run(write_and_read(line))\n        self.assertEqual(content, json.dumps({\"line\": line}))\n        self.assertFalse(Path(path).exists())\n\n    def test_event_loop_keeps_running_during_to_thread(self):\n        before, after, progressed = asyncio.run(heartbeats_during_thread())\n        self.assertTrue(progressed)\n        self.assertGreater(after, before)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "在 to_thread 的目标函数里调用事件循环 API",
@@ -1409,7 +1402,7 @@
     },
     {
       "code": "py.async.run-in-executor",
-      "title": "run_in_executor 与自定义执行器",
+      "title": "run_in_executor、自定义执行器",
       "minutes": 25,
       "module": "线程桥接",
       "level": "进阶",
@@ -1439,10 +1432,10 @@
         "explain": "两种写法都返回 tag 加一个布尔值：工作线程不是主线程，所以都是 False。默认执行器由 asyncio 管理（大小与 CPU 数相关），自定义池 max_workers=1 明确把并发限制为 1 个线程，size 打印 1。with 退出时池被关闭，线程回收，不会遗留资源。片段刻意不打印线程名与默认池大小，避免依赖机器配置。"
       },
       "debug": {
-        "prompt": "下面代码想并发跑两个摘要任务并观察线程复用，但自定义池一直不结束、退出时报线程泄漏，找出问题、说明根因并给出修法",
+        "prompt": "下面代码想并发跑两个摘要任务并观察线程复用，但自定义线程池从未关闭，main 返回时池内线程仍然存活，找出问题、说明根因并给出修法",
         "code": "import asyncio\nimport threading\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef digest(tag):\n    return tag, threading.current_thread().name\n\n\nasync def main():\n    loop = asyncio.get_running_loop()\n    pool = ThreadPoolExecutor(max_workers=1)\n    first = await loop.run_in_executor(pool, digest, \"a\")\n    second = await loop.run_in_executor(pool, digest, \"b\")\n    print(\"tags:\", first[0], second[0])\n    print(\"same thread:\", first[1] == second[1])\n    print(\"alive workers:\", len(pool._threads))\n\n\nasyncio.run(main())\n",
-        "rootCause": "ThreadPoolExecutor 创建后没有关闭：run_in_executor 只负责提交任务，不负责池的生命周期。main 结束后池既没有 shutdown，也没有 with 兜底，池内线程仍存活（alive 线程数 1），asyncio.run 关闭循环时不会回收它，测试/进程退出时就是线程泄漏。根因是把执行器的所有权交给了 asyncio。",
-        "fix": "用 with ThreadPoolExecutor(max_workers=1) as pool: 包住提交（或显式 pool.shutdown(wait=True)）；修复后线程已回收，threads after shutdown 为 0。"
+        "rootCause": "ThreadPoolExecutor 创建后没有关闭：run_in_executor 只负责提交任务，不负责池的生命周期。main 结束后池既没有 shutdown，也没有 with 兜底，池内线程仍存活（alive workers: 1），asyncio.run 关闭循环也不会回收它——这些线程要等解释器退出时由 atexit 里的 join 兜底，进程内的资源生命周期因此完全失控。根因是把执行器的所有权交给了 asyncio。",
+        "fix": "用 with ThreadPoolExecutor(max_workers=1) as pool: 包住提交（或显式 pool.shutdown(wait=True)）；修复后池内线程全部结束，打印 threads after shutdown: 0。"
       },
       "code_task": {
         "prompt": "实现 async 函数 run_with_pool(tags, max_workers)：创建 ThreadPoolExecutor(max_workers=max_workers)，用 loop.run_in_executor 并发提交同步函数 tag_and_thread(tag)（返回 (tag, 是否主线程)），收集结果后关闭池，返回 {\"results\", \"max_workers\", \"alive_threads\"}；用 unittest 断言结果与输入顺序一致、全部不是主线程、关闭后池内线程数为 0，并断言 max_workers=1 时两个任务复用了同一个线程。",
@@ -1452,7 +1445,7 @@
           "max_workers=1 时两个任务报告相同的线程名，证明线程被复用",
           "函数返回后没有除当前任务以外的存活任务"
         ],
-        "reference": "import asyncio\nimport threading\nimport unittest\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef tag_and_thread(tag):\n    return tag, threading.current_thread() is threading.main_thread(), threading.current_thread().name\n\n\nasync def run_with_pool(tags, max_workers):\n    loop = asyncio.get_running_loop()\n    with ThreadPoolExecutor(max_workers=max_workers) as pool:\n        results = [await loop.run_in_executor(pool, tag_and_thread, tag) for tag in tags]\n    pool.shutdown(wait=True)\n    return {\"results\": results, \"max_workers\": max_workers, \"alive_threads\": len([item for item in pool._threads if item.is_alive()])}\n\n\nclass RunInExecutorTest(unittest.TestCase):\n    def test_results_follow_input_order(self):\n        report = asyncio.run(run_with_pool([\"a\", \"b\", \"c\"], 2))\n        self.assertEqual([item[0] for item in report[\"results\"]], [\"a\", \"b\", \"c\"])\n        self.assertTrue(all(item[1] is False for item in report[\"results\"]))\n\n    def test_pool_is_closed_after_use(self):\n        report = asyncio.run(run_with_pool([\"a\"], 1))\n        self.assertEqual(report[\"alive_threads\"], 0)\n\n    def test_single_worker_reuses_one_thread(self):\n        report = asyncio.run(run_with_pool([\"a\", \"b\"], 1))\n        names = {item[2] for item in report[\"results\"]}\n        self.assertEqual(len(names), 1)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport threading\nimport unittest\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef tag_and_thread(tag):\n    return tag, threading.current_thread() is threading.main_thread(), threading.current_thread().name\n\n\nasync def run_with_pool(tags, max_workers):\n    loop = asyncio.get_running_loop()\n    with ThreadPoolExecutor(max_workers=max_workers) as pool:\n        results = [await loop.run_in_executor(pool, tag_and_thread, tag) for tag in tags]\n    pool.shutdown(wait=True)\n    return {\"results\": results, \"max_workers\": max_workers, \"alive_threads\": len([item for item in pool._threads if item.is_alive()])}\n\n\nclass RunInExecutorTest(unittest.TestCase):\n    def test_results_follow_input_order(self):\n        report = asyncio.run(run_with_pool([\"a\", \"b\", \"c\"], 2))\n        self.assertEqual([item[0] for item in report[\"results\"]], [\"a\", \"b\", \"c\"])\n        self.assertTrue(all(item[1] is False for item in report[\"results\"]))\n\n    def test_pool_is_closed_after_use(self):\n        report = asyncio.run(run_with_pool([\"a\"], 1))\n        self.assertEqual(report[\"alive_threads\"], 0)\n\n    def test_single_worker_reuses_one_thread(self):\n        report = asyncio.run(run_with_pool([\"a\", \"b\"], 1))\n        names = {item[2] for item in report[\"results\"]}\n        self.assertEqual(len(names), 1)\n\n    def test_no_task_is_left_behind(self):\n        async def scenario():\n            await run_with_pool([\"a\", \"b\"], 2)\n            current = asyncio.current_task()\n            return [task for task in asyncio.all_tasks() if task is not current]\n\n        self.assertEqual(asyncio.run(scenario()), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "创建了执行器却不关闭",
@@ -1463,7 +1456,7 @@
     },
     {
       "code": "py.async.runner-limits",
-      "title": "异步 Runner 的并发上限、超时与取消",
+      "title": "异步 Runner 的并发上限、超时、取消",
       "minutes": 30,
       "module": "并发",
       "level": "进阶",
@@ -1492,10 +1485,10 @@
         "explain": "Semaphore(1) 让两个任务串行拿到配额：fast 先进入，0.01 秒内完成返回 (\"fast\", \"ok\")；slow 随后进入，在 0.1 秒的 timeout 到期时被取消并抛 TimeoutError，被 except 转成 (\"slow\", \"timeout\")。因此打印 [('fast', 'ok'), ('slow', 'timeout')]。两个结果都不抛给 gather，失败被 Runner 自己分类记录；注意 slow 实际只等了 0.1 秒而不是 0.5 秒。"
       },
       "debug": {
-        "prompt": "下面 Runner 在某个任务超时后把被取消的子任务留在事件循环里，退出时报未处理任务，找出问题、说明根因并给出修法",
+        "prompt": "下面 Runner 在某个任务超出预算后把已创建的慢任务留在事件循环里，结果与清理都被丢弃，找出问题、说明根因并给出修法",
         "code": "import asyncio\n\n\nasync def run_all(delays, budget):\n    tasks = []\n    for index, delay in enumerate(delays):\n        task = asyncio.create_task(asyncio.sleep(delay))\n        tasks.append(task)\n        if delay > budget:\n            break\n    done, pending = await asyncio.wait(tasks, timeout=budget)\n    return len(done), len(pending)\n\n\nasync def main():\n    done, pending = await run_all([0.01, 0.5, 0.01], 0.05)\n    print(\"done:\", done, \"pending:\", pending)\n\n\nasyncio.run(main())\n",
-        "rootCause": "run_all 遇到第一个超过预算的 delay 就 break，只为前两个 delay 建了任务，而且 wait 超时后 pending 里的 0.5 秒任务既没有 cancel() 也没有 await：main 返回、asyncio.run 关闭循环时销毁这个未完成任务并打印 Task was destroyed but it is pending!。Runner 没有把“已创建任务”全部收尾。",
-        "fix": "为所有输入创建任务，并在 wait 之后统一清理 pending（task.cancel() + await asyncio.gather(*pending, return_exceptions=True)），或直接用 TaskGroup 让作用域负责收敛；修复后没有遗留任务（left 为 0），pending 里的任务已取消并 await 收尾。"
+        "rootCause": "run_all 遇到第一个超过预算的 delay 就 break，只为前两个 delay 建了任务；wait 超时后 pending 里的 0.5 秒任务既没有 cancel() 也没有 await，main 返回后由 asyncio.run 在退出清理时统一取消（所以不会有 Task was destroyed 告警，但代码完全拿不到它被取消的确认，也没有任何清理与结果汇总）。根因是 Runner 没有把“已创建任务”全部收尾。",
+        "fix": "为所有输入创建任务，并在 wait 之后统一清理 pending（task.cancel() + await asyncio.gather(*pending, return_exceptions=True)），或直接用 TaskGroup 让作用域负责收敛；修复后打印 left: 0、pending handled: 1，没有遗留任务。"
       },
       "code_task": {
         "prompt": "实现 class AsyncRunner：构造参数 limit（并发上限）与 budget（单任务超时）；async run(jobs) 接收 (name, delay, should_fail) 列表，用 Semaphore 限流 + asyncio.timeout 超时 + gather(return_exceptions=True) 收集，返回 {\"ok\": {name: value}, \"failed\": {name: (异常类型名, 消息)}, \"peak\"}；用 unittest 断言 peak 不超过 limit、超时任务记为 TimeoutError、业务失败记为 ValueError、正常任务结果齐全，并断言返回后无遗留任务。",
@@ -1516,7 +1509,7 @@
     },
     {
       "code": "py.async.runner-failure-aggregate",
-      "title": "异步 Runner 的失败汇总与部分成功",
+      "title": "异步 Runner 的失败汇总、部分成功",
       "minutes": 30,
       "module": "并发",
       "level": "进阶",
@@ -1570,7 +1563,7 @@
     },
     {
       "code": "py.async.mode-comparison",
-      "title": "同步、线程与 asyncio 三种模式的结果一致性",
+      "title": "同步、线程、asyncio 三种模式的结果一致性",
       "minutes": 30,
       "module": "并发",
       "level": "进阶",
@@ -1607,14 +1600,14 @@
         "fix": "把同步调用挪到线程并并发等待：return list(await asyncio.gather(*(asyncio.to_thread(nap, item) for item in items)))，或者依赖原生异步 API；修复后 asyncio 版本耗时约为串行的三分之一，async faster than serial 为 True。"
       },
       "code_task": {
-        "prompt": "实现三个函数 run_serial(items)、run_threaded(items, workers)、run_async(items)：都调用同一同步函数 double(value)（内部 time.sleep(0.01) 再返回 value * 2），三种模式都返回按输入顺序排列的结果列表；用 unittest 断言三种模式结果完全一致、I/O 密集场景下线程版与 asyncio 版墙上时间都小于串行版的 0.8 倍，并断言 asyncio 版本用 to_thread 后事件循环没有被阻塞（等待时间接近单次延迟）。",
+        "prompt": "实现三个函数 run_serial(items, tracker)、run_threaded(items, tracker, workers)、run_async(items, tracker)：都调用同一同步函数 double(value, tracker)（内部 time.sleep(0.05) 再返回 value * 2，并在进入/离开时更新 tracker 的同时运行计数与峰值），三种模式都返回按输入顺序排列的结果列表。用 unittest 断言三种模式结果完全一致、串行模式的最大同时运行数恒为 1（不重叠）、线程模式与 asyncio 模式的最大同时运行数都大于 1（确实重叠）、asyncio 模式内部用 asyncio.to_thread、函数返回时并发计数归零且没有遗留任务；断言不依赖墙钟阈值。",
         "acceptance": [
           "三种模式结果完全相同且顺序一致（比如 [2, 4, 6]）",
-          "线程模式与 asyncio 模式的墙上时间都小于串行模式的 0.8 倍",
-          "asyncio 模式内部用 asyncio.to_thread，三个 0.01 秒任务的总耗时小于 0.03 秒",
-          "测试结束时不遗留线程与任务（线程池用 with 关闭）"
+          "并发计数证明重叠：线程模式与 asyncio 模式的最大同时运行数都大于 1，串行模式恒为 1（不用墙钟阈值）",
+          "asyncio 模式内部用 asyncio.to_thread 调用同步函数，重叠由计数而不是耗时证明",
+          "测试返回时并发计数归零且没有遗留任务（两个自定义线程池都用 with 关闭）"
         ],
-        "reference": "import asyncio\nimport time\nimport unittest\nfrom concurrent.futures import ThreadPoolExecutor\n\n\ndef double(value):\n    time.sleep(0.01)\n    return value * 2\n\n\ndef run_serial(items):\n    return [double(item) for item in items]\n\n\ndef run_threaded(items, workers=3):\n    with ThreadPoolExecutor(max_workers=workers) as pool:\n        return list(pool.map(double, items))\n\n\nasync def run_async(items):\n    return list(await asyncio.gather(*(asyncio.to_thread(double, item) for item in items)))\n\n\ndef timed(func, *args):\n    started = time.perf_counter()\n    result = func(*args)\n    return result, time.perf_counter() - started\n\n\nasync def _timed_async(items):\n    started = time.perf_counter()\n    result = await run_async(items)\n    return result, time.perf_counter() - started\n\n\nclass ModeComparisonTest(unittest.TestCase):\n    def test_all_modes_agree_on_results(self):\n        items = [1, 2, 3]\n        serial, _ = timed(run_serial, items)\n        threaded, _ = timed(run_threaded, items)\n        async_result, async_elapsed = asyncio.run(_timed_async(items))\n        self.assertEqual(serial, [2, 4, 6])\n        self.assertEqual(threaded, serial)\n        self.assertEqual(async_result, serial)\n        self.assertLess(async_elapsed, 0.03)\n\n    def test_io_workload_overlaps_in_thread_and_async(self):\n        items = [1, 2, 3]\n        _, serial_elapsed = timed(run_serial, items)\n        _, threaded_elapsed = timed(run_threaded, items)\n        _, async_elapsed = asyncio.run(_timed_async(items))\n        self.assertLess(threaded_elapsed, serial_elapsed * 0.8)\n        self.assertLess(async_elapsed, serial_elapsed * 0.8)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport threading\nimport time\nimport unittest\nfrom concurrent.futures import ThreadPoolExecutor\n\n\nclass Overlap:\n    def __init__(self):\n        self.lock = threading.Lock()\n        self.active = 0\n        self.peak = 0\n\n    def enter(self):\n        with self.lock:\n            self.active += 1\n            self.peak = max(self.peak, self.active)\n\n    def leave(self):\n        with self.lock:\n            self.active -= 1\n\n\ndef double(value, tracker):\n    tracker.enter()\n    try:\n        time.sleep(0.05)\n        return value * 2\n    finally:\n        tracker.leave()\n\n\ndef run_serial(items, tracker):\n    return [double(item, tracker) for item in items]\n\n\ndef run_threaded(items, tracker, workers=3):\n    with ThreadPoolExecutor(max_workers=workers) as pool:\n        return list(pool.map(lambda item: double(item, tracker), items))\n\n\nasync def run_async(items, tracker):\n    return list(await asyncio.gather(*(asyncio.to_thread(double, item, tracker) for item in items)))\n\n\nclass ModeComparisonTest(unittest.TestCase):\n    def test_all_modes_agree_on_results(self):\n        items = [1, 2, 3]\n        self.assertEqual(run_serial(items, Overlap()), [2, 4, 6])\n        self.assertEqual(run_threaded(items, Overlap()), [2, 4, 6])\n        self.assertEqual(asyncio.run(run_async(items, Overlap())), [2, 4, 6])\n\n    def test_serial_never_overlaps(self):\n        tracker = Overlap()\n        self.assertEqual(run_serial([1, 2, 3], tracker), [2, 4, 6])\n        self.assertEqual(tracker.peak, 1)\n\n    def test_thread_and_async_overlap(self):\n        threaded = Overlap()\n        self.assertEqual(run_threaded([1, 2, 3], threaded), [2, 4, 6])\n        self.assertGreaterEqual(threaded.peak, 2)\n        asynchronous = Overlap()\n        self.assertEqual(asyncio.run(run_async([1, 2, 3], asynchronous)), [2, 4, 6])\n        self.assertGreaterEqual(asynchronous.peak, 2)\n\n    def test_workers_are_released(self):\n        async def scenario():\n            tracker = Overlap()\n            await run_async([1, 2, 3], tracker)\n            current = asyncio.current_task()\n            return tracker.active, [task for task in asyncio.all_tasks() if task is not current]\n\n        active, left = asyncio.run(scenario())\n        self.assertEqual(active, 0)\n        self.assertEqual(left, [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "没对齐结果就先比性能",
@@ -1625,7 +1618,7 @@
     },
     {
       "code": "py.async.contextvars",
-      "title": "contextvars 在任务与线程间的传递",
+      "title": "contextvars 在任务、线程间的传递",
       "minutes": 25,
       "module": "异步协议",
       "level": "进阶",
@@ -1662,7 +1655,7 @@
         "fix": "给每个任务传独立的上下文副本：asyncio.create_task(bump(...), context=shared.copy())，或者干脆不传 context（create_task 默认就会拷贝当前上下文）；修复后 log 是 ['first', 'second']，labels distinct 为 True。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 labels_for(names)：用 contextvars.ContextVar 记录当前标签，为每个 name 创建任务（任务内部先 await asyncio.sleep(0)、set 自己的 name、再 get 后返回），断言每个任务只看到自己的标签；再实现 async 函数 label_in_thread(value) 用 asyncio.to_thread 读取线程里的变量值。用 unittest 断言 labels_for([\"a\", \"b\"]) 返回 [\"a\", \"b\"]、线程里读到调用点设置的值，并断言父协程的取值不受子任务影响。",
+        "prompt": "实现 async 函数 labels_for(names)：用 contextvars.ContextVar 记录当前标签，为每个 name 创建任务（任务内部先 await asyncio.sleep(0)、set 自己的 name、再 get 后返回），返回 (每个任务看到的标签列表, 父协程自己的取值, 剩余任务数)；再实现 async 函数 label_in_thread(value) 用 asyncio.to_thread 读取线程里的变量值。用 unittest 断言 labels_for([\"a\", \"b\"]) 的标签列表是 [\"a\", \"b\"]、父协程取值不受子任务影响、剩余任务数为 0，并断言线程里读到调用点设置的值。",
         "acceptance": [
           "labels_for([\"a\", \"b\"]) 返回 [\"a\", \"b\"]，每个任务只看到自己 set 的标签",
           "父协程在创建任务前后设置的值不受子任务 set 影响（父协程自己的 get 保持原值）",
@@ -1693,7 +1686,7 @@
       "concept": {
         "prompt": "为什么异步实验里要用 asyncio.Event 排序？裸 await event.wait() 有什么风险？",
         "answer": [
-          "asyncio.Event 是协程侧的“一次性信号”：wait() 会挂起直到 set()，set() 一次唤醒所有等待者；它只依赖调度，不依赖真实时间",
+          "asyncio.Event 是协程侧的“可复位信号”：wait() 会挂起直到 set()，set() 一次唤醒所有等待者，clear() 之后可以再次等待同一个对象；它只依赖调度，不依赖真实时间",
           "用 Event 把“谁先发生”写进代码，比用 sleep 猜顺序更可靠：观察到的现象与机器速度无关，可以反复运行得到同一结果",
           "常见顺序写法是 create_task 起所有角色，再 await asyncio.sleep(0) 把控制权交给它们，然后在确定的位置 set() 放行",
           "裸 await event.wait() 没有任何超时：一旦 set() 永远不发生，协程就永久挂起；作为实验/测试代码应写成 await asyncio.wait_for(event.wait(), timeout=0.1) 并在 TimeoutError 分支打印可观测结论",
@@ -1716,14 +1709,14 @@
         "fix": "给等待加超时并处理结果：await asyncio.wait_for(gate.wait(), timeout=0.1)，捕获 TimeoutError 打印可观测结论；修复后进程在 0.1 秒内结束并打印 gate timed out: True。"
       },
       "code_task": {
-        "prompt": "实现 async 函数 ordered_handoff(payload)：用 asyncio.Event 让消费者按确定顺序处理一次交接（生产者先 await asyncio.sleep(0) 后 set 门并把 payload 放进列表，消费者用带超时的 wait_for 等门），返回 (事件顺序日志, 是否被放行)；再用 unittest 断言顺序日志固定、放行为 True，并另写一个用例断言门没有 set 时 wait_for 超时返回 False 且日志里出现 \"timed-out\"（整个用例在 0.5 秒内结束）。",
+        "prompt": "实现 async 函数 ordered_handoff(payload, open_gate=True)：用 asyncio.Event 让消费者按确定顺序处理一次交接（生产者先 await asyncio.sleep(0) 后 set 门并把 payload 放进列表，消费者用带超时的 wait_for 等门），返回 (事件顺序日志, 是否被放行, payload, 剩余任务数)；再用 unittest 断言顺序日志固定、放行为 True，并另写一个用例断言门没有 set 时 wait_for 超时返回 False 且日志里出现 \"timed-out\"（整个用例在 0.5 秒内结束）。",
         "acceptance": [
           "被放行时日志恰为 [\"waiting\", \"released\"]，且返回 True",
           "门未被设置时 wait_for 抛出 TimeoutError 被捕获，日志里出现 \"timed-out\" 并返回 False",
           "两种场景都使用有界超时（不超过 0.2 秒），测试总耗时小于 1 秒",
           "返回后没有除当前任务以外的存活任务"
         ],
-        "reference": "import asyncio\nimport unittest\n\n\nasync def consumer(gate, log):\n    log.append(\"waiting\")\n    try:\n        await asyncio.wait_for(gate.wait(), timeout=0.2)\n    except TimeoutError:\n        log.append(\"timed-out\")\n        return False\n    log.append(\"released\")\n    return True\n\n\nasync def ordered_handoff(payload, open_gate=True):\n    gate = asyncio.Event()\n    log = []\n    task = asyncio.create_task(consumer(gate, log))\n    await asyncio.sleep(0)\n    if open_gate:\n        gate.set()\n        payload.append(\"handed-over\")\n    result = await task\n    current = asyncio.current_task()\n    left = [item for item in asyncio.all_tasks() if item is not current]\n    return log, result, payload, len(left)\n\n\nclass EventOrderingTest(unittest.TestCase):\n    def test_consumer_is_released_with_a_fixed_log(self):\n        log, result, payload, left = asyncio.run(ordered_handoff([], open_gate=True))\n        self.assertEqual(log, [\"waiting\", \"released\"])\n        self.assertTrue(result)\n        self.assertEqual(payload, [\"handed-over\"])\n        self.assertEqual(left, 0)\n\n    def test_missing_signal_times_out_instead_of_hanging(self):\n        log, result, _, _ = asyncio.run(ordered_handoff([], open_gate=False))\n        self.assertEqual(log, [\"waiting\", \"timed-out\"])\n        self.assertFalse(result)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+        "reference": "import asyncio\nimport time\nimport unittest\n\n\nasync def consumer(gate, log):\n    log.append(\"waiting\")\n    try:\n        await asyncio.wait_for(gate.wait(), timeout=0.2)\n    except TimeoutError:\n        log.append(\"timed-out\")\n        return False\n    log.append(\"released\")\n    return True\n\n\nasync def ordered_handoff(payload, open_gate=True):\n    gate = asyncio.Event()\n    log = []\n    task = asyncio.create_task(consumer(gate, log))\n    await asyncio.sleep(0)\n    if open_gate:\n        gate.set()\n        payload.append(\"handed-over\")\n    result = await task\n    current = asyncio.current_task()\n    left = [item for item in asyncio.all_tasks() if item is not current]\n    return log, result, payload, len(left)\n\n\nclass EventOrderingTest(unittest.TestCase):\n    def test_consumer_is_released_with_a_fixed_log(self):\n        started = time.perf_counter()\n        log, result, payload, left = asyncio.run(ordered_handoff([], open_gate=True))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(log, [\"waiting\", \"released\"])\n        self.assertTrue(result)\n        self.assertEqual(payload, [\"handed-over\"])\n        self.assertEqual(left, 0)\n        self.assertLess(elapsed, 1.0)\n\n    def test_missing_signal_times_out_instead_of_hanging(self):\n        started = time.perf_counter()\n        log, result, _, _ = asyncio.run(ordered_handoff([], open_gate=False))\n        elapsed = time.perf_counter() - started\n        self.assertEqual(log, [\"waiting\", \"timed-out\"])\n        self.assertFalse(result)\n        self.assertLess(elapsed, 1.0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
       },
       "pitfalls": [
         "裸 await event.wait() 没有超时",
