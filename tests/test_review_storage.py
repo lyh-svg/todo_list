@@ -1,3 +1,6 @@
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -195,6 +198,58 @@ class SummaryTests(unittest.TestCase):
         review_storage.apply_grade("py.a.b", "concept", 3, today="2026-09-15")
         review_storage.apply_grade("py.a.b", "predict", 3, today="2026-09-16")
         self.assertEqual(review_storage.streak_days("2026-09-16"), 2)
+
+
+class MultiWeekContentImportTests(unittest.TestCase):
+    """多周课程库：扫描 py-week*.json 逐个导入；单个文件损坏只跳过，不阻断启动。"""
+
+    def setUp(self) -> None:
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            connection.execute("DELETE FROM review_points")
+            connection.execute("DELETE FROM review_point_tasks")
+
+    @staticmethod
+    def write_week(directory: str, name: str, week: int, codes: list[str]) -> Path:
+        payload = {"schemaVersion": 1, "week": week, "level": "实用",
+                   "points": [point(code=code, title=code) for code in codes]}
+        path = Path(directory) / name
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def test_scans_every_week_file_sorted_by_name(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="todo-review-weeks-") as work:
+            self.write_week(work, "py-week2.json", 2, ["py.w2.b", "py.w2.a"])
+            self.write_week(work, "py-week1.json", 1, ["py.w1.a"])
+            with mock.patch.object(review_storage, "WEEK1_PATH", Path(work) / "py-week1.json"):
+                total = review_storage.ensure_content_imported()
+        self.assertEqual(total, 3)
+        self.assertEqual(review_storage.list_points()["total"], 3)
+
+    def test_repeat_scan_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="todo-review-weeks-") as work:
+            self.write_week(work, "py-week1.json", 1, ["py.w1.a"])
+            self.write_week(work, "py-week2.json", 2, ["py.w2.a"])
+            with mock.patch.object(review_storage, "WEEK1_PATH", Path(work) / "py-week1.json"):
+                first = review_storage.ensure_content_imported()
+                second = review_storage.ensure_content_imported()
+        self.assertEqual(first, 2)
+        self.assertEqual(second, 0)
+
+    def test_broken_file_is_skipped_and_others_still_import(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="todo-review-weeks-") as work:
+            good = self.write_week(work, "py-week1.json", 1, ["py.w1.a"])
+            (Path(work) / "py-week2.json").write_text("{ 不是 JSON", encoding="utf-8")
+            warning = io.StringIO()
+            with mock.patch.object(review_storage, "WEEK1_PATH", good), \
+                    contextlib.redirect_stderr(warning):
+                total = review_storage.ensure_content_imported()
+                ready = review_storage.ensure_review_content_ready()
+        self.assertEqual(total, 1)
+        self.assertEqual(ready, 0)
+        self.assertIn("py-week2.json", warning.getvalue())
+        self.assertIn("跳过", warning.getvalue())
+        self.assertEqual(review_storage.list_points()["total"], 1)
 
 
 if __name__ == "__main__":

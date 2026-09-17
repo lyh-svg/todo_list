@@ -1,0 +1,2183 @@
+{
+  "schemaVersion": 1,
+  "week": 2,
+  "level": "实用",
+  "points": [
+    {
+      "code": "py.class.namespace",
+      "title": "类对象、实例的独立命名空间",
+      "minutes": 20,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2101",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "类本身是什么对象？类属性和实例属性分别存在哪里？读一个属性时按什么顺序查找？",
+        "answer": [
+          "类也是对象，由元类 type 实例化得到：type(Point) is type 为 True，type(p) 才是 Point",
+          "类属性存在类自己的命名空间 vars(Point)（即 Point.__dict__，一个只读 mappingproxy）里",
+          "实例属性存在实例自己的命名空间 vars(p)（一个真正的 dict）里，每个实例一份，互不相通",
+          "读 p.x 时先查实例 __dict__，找不到再沿 MRO 查类 __dict__ 与基类，最后才 AttributeError",
+          "给实例赋值 p.x = 1 只写进实例 __dict__，类 __dict__ 完全不变；类的 __dict__ 不能直接写入"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每个名字落在哪个命名空间里",
+        "code": "class Point:\n    kind = \"2d\"\n\n    def __init__(self, x):\n        self.x = x\n\n\np = Point(3)\nq = Point(4)\nprint(sorted(vars(p)))\nprint(sorted(vars(q)))\nprint(\"x\" in vars(Point))\nprint(\"kind\" in vars(Point))\nprint(sorted(name for name in vars(Point) if not name.startswith(\"__\")))\nprint(p.kind, q.kind)\nprint(type(Point) is type)\nprint(type(p).__name__)",
+        "expected": [
+          "['x']",
+          "['x']",
+          "False",
+          "True",
+          "['kind']",
+          "2d 2d",
+          "True",
+          "Point"
+        ],
+        "explain": "self.x 写的是实例命名空间，所以 vars(p) 与 vars(q) 各有一个 'x'，而 Point 的命名空间里没有 'x'。kind 定义在类体里，属于类命名空间。p.kind 在实例 __dict__ 里找不到，才回退到类 __dict__ 读到 '2d'。类 Point 自己是 type 的实例，而 p 是 Point 的实例，所以 type(Point) is type 为 True、type(p).__name__ 是 'Point'。vars(Point) 过滤掉双下划线名字后只剩类体里写的 kind。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Config:\n    mode = \"debug\"\n\n    def set_mode(self, value):\n        self.mode = value\n\n\nc = Config()\nc.set_mode(\"release\")\nprint(Config.mode)    # 期望 \"release\"\nprint(c.mode)         # 期望 \"release\"\nprint(\"mode\" in vars(Config))",
+        "rootCause": "self.mode = value 写的是实例命名空间，只会新建/更新 c 自己的 __dict__ 条目，类命名空间里的 Config.mode 仍然是 'debug'。属性查找会先命中实例属性，所以 c.mode 看似改成功了，但 Config.mode 和其他实例读到的都还是旧值——把一次实例赋值误当成修改类。",
+        "fix": "先明确 mode 的归属：若它是每个实例各自的配置，就在 __init__ 里 self.mode = \"debug\" 初始化，set_mode 保持写 self；若它确实属于整个类，就写 type(self).mode = value（或 Config.mode = value），并用 @classmethod 明确表达这个语义。不要靠 self.mode = value 去改类属性。"
+      },
+      "code_task": {
+        "prompt": "实现函数 namespace_report(cls, *instances)：返回一个字典，包含 \"class\"（cls.__name__）、\"classAttrs\"（cls 自身命名空间里非双下划线的属性名，已排序）、\"instanceAttrs\"（按传入顺序，每个实例的 vars() 键名排序后的列表）。只统计类自身命名空间，不要混入基类。",
+        "acceptance": [
+          "namespace_report(Point)[\"class\"] 等于 \"Point\"",
+          "classAttrs 只含类体里定义的非双下划线名字（如 ['kind']），不含 object 带来的成员",
+          "instanceAttrs 按参数顺序返回每个实例的 vars() 键名排序列表，如 [['x', 'y'], ['x', 'y']]",
+          "实例属性名（如 'x'）绝不出现在 classAttrs 里",
+          "不传实例时 instanceAttrs 为空列表"
+        ],
+        "reference": "import unittest\n\n\ndef namespace_report(cls, *instances):\n    class_attrs = sorted(\n        name for name in vars(cls)\n        if not (name.startswith(\"__\") and name.endswith(\"__\"))\n    )\n    return {\n        \"class\": cls.__name__,\n        \"classAttrs\": class_attrs,\n        \"instanceAttrs\": [sorted(vars(instance)) for instance in instances],\n    }\n\n\nclass Point:\n    kind = \"2d\"\n\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n\n\nclass NamespaceReportTest(unittest.TestCase):\n    def test_class_name(self):\n        self.assertEqual(namespace_report(Point)[\"class\"], \"Point\")\n\n    def test_own_class_attrs(self):\n        self.assertEqual(namespace_report(Point)[\"classAttrs\"], [\"kind\"])\n\n    def test_instance_attrs(self):\n        self.assertEqual(\n            namespace_report(Point, Point(1, 2), Point(3, 4))[\"instanceAttrs\"],\n            [[\"x\", \"y\"], [\"x\", \"y\"]],\n        )\n\n    def test_instance_attr_is_not_class_attr(self):\n        report = namespace_report(Point, Point(1, 2))\n        self.assertNotIn(\"x\", report[\"classAttrs\"])\n\n    def test_no_instances(self):\n        self.assertEqual(namespace_report(Point)[\"instanceAttrs\"], [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为 self.x = 1 会写进类命名空间，其他实例也能看到",
+        "想直接给 C.__dict__[\"x\"] = 1，但它是 mappingproxy，赋值会抛 TypeError",
+        "把每个实例都不同的状态写成类属性，导致实例之间互相干扰",
+        "混淆 vars(instance) 与 vars(Class)，看到类里没写 x 就以为实例也没有 x"
+      ]
+    },
+    {
+      "code": "py.class.attrs",
+      "title": "类属性、实例属性的覆盖关系",
+      "minutes": 20,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2102",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "同名属性同时存在于实例和类时读哪个？给实例赋值会不会改到类？可变类属性有什么陷阱？",
+        "answer": [
+          "读取时先实例后类：实例 __dict__ 里的同名条目遮蔽类属性，这就是覆盖（shadowing）",
+          "self.x = v 永远写实例 __dict__（新建或更新），类属性 x 保持不变",
+          "只有读操作才走遮蔽；写操作不会去改类，想改类必须显式写 Class.x = v 或 type(self).x = v",
+          "可变类属性（list/dict）的所有实例共享同一个对象，self.items.append(...) 是原地修改，会波及全体实例",
+          "要每实例独立状态，就在 __init__ 里 self.items = []；self.items += [...] 对 list 仍是原地修改，同样会串数据"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并指出哪些行读的是共享的类列表",
+        "code": "class Team:\n    members = []\n\n    def __init__(self, name):\n        self.name = name\n\n    def join(self, who):\n        self.members.append(who)\n\n\na = Team(\"a\")\nb = Team(\"b\")\na.join(\"amy\")\nb.join(\"bob\")\nprint(a.members)\nprint(b.members)\nprint(a.members is Team.members)\na.members = [\"carol\"]\nprint(a.members)\nprint(b.members)\nprint(Team.members)\nprint(\"members\" in vars(a))",
+        "expected": [
+          "['amy', 'bob']",
+          "['amy', 'bob']",
+          "True",
+          "['carol']",
+          "['amy', 'bob']",
+          "['amy', 'bob']",
+          "True"
+        ],
+        "explain": "members = [] 写在类体里，只创建了一个列表对象，a 与 b 都没有自己的 members，self.members 一路回退到类属性，所以 append 改的是同一个列表，a 与 b 读到 ['amy', 'bob']，a.members is Team.members 为 True。之后 a.members = [\"carol\"] 是给实例赋值，在 a 的 __dict__ 里新建了遮蔽类属性的成员，因此 a 变成 ['carol']，而 b 与 Team.members 仍然读那个共享列表。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Cart:\n    items = []\n\n    def add(self, name):\n        self.items.append(name)\n\n    def total(self):\n        return len(self.items)\n\n\nc1 = Cart()\nc2 = Cart()\nc1.add(\"apple\")\nprint(c2.total())    # 期望 0，实际 1",
+        "rootCause": "items 定义在类体里，全类只有一个 list 对象；self.items.append(name) 是属性读取后原地修改，并没有给实例赋值，所以 c1 与 c2 改的是同一个列表，c2.total() 读到了 c1 加进去的 'apple'。把可变对象当类属性做默认值，等于所有实例共享同一份状态。",
+        "fix": "在 __init__ 里为每个实例建独立列表：self.items = []，类体不再留 items。注意不要用 self.items += [name] 代替 append——list 的 __iadd__ 仍是原地修改，共享问题照旧；若确实想在类上留一份不可变的默认值，用元组或只读常量。"
+      },
+      "code_task": {
+        "prompt": "实现 Bag 类：每个实例有自己独立的 items 列表；add(name) 追加一项并返回 self 以支持链式调用；count() 返回当前条数。要求不同实例之间互不影响，且类上不出现共享的列表。",
+        "acceptance": [
+          "两个不同 Bag 实例互不影响：a.add('apple') 之后 b.count() 仍是 0",
+          "add 返回 self，因此 a.add('x').add('y') is a 且 count() 为 2",
+          "Bag 类自身命名空间里没有 items，items 是每个实例的 __dict__ 条目",
+          "新增实例的 items 初始为空列表，且 a.items 与 b.items 不是同一个对象"
+        ],
+        "reference": "import unittest\n\n\nclass Bag:\n    def __init__(self):\n        self.items = []\n\n    def add(self, name):\n        self.items.append(name)\n        return self\n\n    def count(self):\n        return len(self.items)\n\n\nclass BagTest(unittest.TestCase):\n    def test_instances_are_isolated(self):\n        first = Bag()\n        second = Bag()\n        first.add(\"apple\")\n        self.assertEqual(second.count(), 0)\n\n    def test_chaining_returns_self(self):\n        bag = Bag()\n        self.assertIs(bag.add(\"x\").add(\"y\"), bag)\n        self.assertEqual(bag.count(), 2)\n\n    def test_items_are_per_instance(self):\n        first = Bag()\n        second = Bag()\n        self.assertIsNot(first.items, second.items)\n        self.assertEqual(first.items, [])\n\n    def test_items_not_on_class(self):\n        self.assertNotIn(\"items\", vars(Bag))\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "self.items.append(...) 其实改的是共享的类列表",
+        "以为 self.items += [...] 会新建实例列表（list 的 __iadd__ 原地修改）",
+        "在类体里写 items = [] 或 config = {} 当默认值",
+        "忘记在 __init__ 里初始化每实例可变状态，直到多个实例互相串数据才发现"
+      ]
+    },
+    {
+      "code": "py.class.mro",
+      "title": "MRO 的 C3 线性化",
+      "minutes": 25,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2101",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "Python 按什么顺序去类里找方法？菱形继承中 super() 会调到谁？",
+        "answer": [
+          "每个类都有 __mro__（等于 mro() 的结果），是 C3 线性化算出的元组，形如 自己 → 各基类 → object",
+          "属性查找从 MRO 最前面开始，第一个定义了该名字的类生效，所以靠前的类覆盖靠后的",
+          "super().m() 不是“调用父类方法”，而是从 MRO 中当前类的下一站继续向后找 m，因此会跳过已被前面的类处理过的部分",
+          "菱形继承 D(B, C) 且 B、C 都继承 A 时，MRO 是 D → B → C → A → object；每层都写 super().m() 时 A 只会执行一次",
+          "用 [c.__name__ for c in C.__mro__] 可以直接观察顺序；C3 会保证子类排在其基类之前，冲突时直接抛 TypeError"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 super() 每一步跳到了哪个类",
+        "code": "class A:\n    def tag(self):\n        return \"A\"\n\n\nclass B(A):\n    def tag(self):\n        return \"B\" + super().tag()\n\n\nclass C(A):\n    def tag(self):\n        return \"C\" + super().tag()\n\n\nclass D(B, C):\n    def tag(self):\n        return \"D\" + super().tag()\n\n\nprint([cls.__name__ for cls in D.__mro__])\nprint(D().tag())\nprint(B().tag())\nprint(isinstance(D(), A))",
+        "expected": [
+          "['D', 'B', 'C', 'A', 'object']",
+          "DBCA",
+          "BA",
+          "True"
+        ],
+        "explain": "D(B, C) 的 C3 线性化结果是 D → B → C → A → object。D().tag() 里 super() 从 D 的下一站 B 开始，B.tag 又往后找到 C，C.tag 再找到 A，于是拼出 D + B + C + A = DBCA，A 只出现一次。B().tag() 的 MRO 是 B → A → object，所以是 BA。D 是 A 的后代，isinstance 沿继承链判断为 True。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class A:\n    def tag(self):\n        return \"A\"\n\n\nclass B(A):\n    def tag(self):\n        return \"B\" + A.tag(self)\n\n\nclass C(A):\n    def tag(self):\n        return \"C\" + A.tag(self)\n\n\nclass D(B, C):\n    def tag(self):\n        return \"D\" + B.tag(self)\n\n\nprint(D().tag())    # 期望 DBCA，实际 DBA",
+        "rootCause": "每一层都用具体类名硬编码调用（A.tag(self)、B.tag(self)），把查找路径写死了，完全绕过了 MRO。D 的 MRO 里 C 排在 A 前面，但 D.tag 直接调 B.tag、B.tag 又直接调 A.tag，C.tag 被整体跳过，输出 DBA；同理 A 在更复杂的菱形里还可能被重复执行。",
+        "fix": "每层改用零参 super()：B.tag 里 return \"B\" + super().tag()，C、D 同理。super() 会按实例的 MRO 往后找，菱形继承里每个类都恰好执行一次。如果确实只需要某一个类的实现而不要链式协作，那应该用组合而不是继承。"
+      },
+      "code_task": {
+        "prompt": "实现一条协作式继承链：A.tag() 返回 ['A']；B(A)、C(A) 各自把自己的名字插到结果最前面并调用 super().tag()；D(B, C) 同样插 \"D\" 后调用 super().tag()。另外实现 lineage(cls)，返回 [c.__name__ for c in cls.__mro__]。",
+        "acceptance": [
+          "D().tag() 等于 ['D', 'B', 'C', 'A']，顺序与 D 的 MRO 一致",
+          "D().tag() 中 'A' 只出现一次（协作式 super 链不重复执行共同祖先）",
+          "lineage(D) 等于 ['D', 'B', 'C', 'A', 'object']",
+          "lineage(B) 等于 ['B', 'A', 'object']"
+        ],
+        "reference": "import unittest\n\n\nclass A:\n    def tag(self):\n        return [\"A\"]\n\n\nclass B(A):\n    def tag(self):\n        return [\"B\"] + super().tag()\n\n\nclass C(A):\n    def tag(self):\n        return [\"C\"] + super().tag()\n\n\nclass D(B, C):\n    def tag(self):\n        return [\"D\"] + super().tag()\n\n\ndef lineage(cls):\n    return [base.__name__ for base in cls.__mro__]\n\n\nclass MroTest(unittest.TestCase):\n    def test_diamond_order(self):\n        self.assertEqual(D().tag(), [\"D\", \"B\", \"C\", \"A\"])\n\n    def test_common_ancestor_runs_once(self):\n        self.assertEqual(D().tag().count(\"A\"), 1)\n\n    def test_lineage_of_diamond(self):\n        self.assertEqual(lineage(D), [\"D\", \"B\", \"C\", \"A\", \"object\"])\n\n    def test_lineage_of_single_inheritance(self):\n        self.assertEqual(lineage(B), [\"B\", \"A\", \"object\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为 super() 一定调用“直接父类”，忽略 MRO 里的下一站",
+        "菱形继承里用 A.tag(self) 这类显式类调用，把中间的类整个跳过",
+        "混用硬编码类名与 super()，执行顺序与 __mro__ 不一致",
+        "以为 D(B, C) 与 D(C, B) 的解析顺序相同（基类书写顺序会改变 MRO）"
+      ]
+    },
+    {
+      "code": "py.method.binding",
+      "title": "实例方法的绑定过程、self",
+      "minutes": 20,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2101",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2104",
+          "relation": "exercises"
+        },
+        {
+          "taskId": "2504",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "类里定义的函数为什么 a.f() 不用手写 self？A.f 与 a.f 有什么区别？",
+        "answer": [
+          "定义在类里的函数是描述符（实现 __get__）：通过类访问得到的还是普通 function，通过实例访问得到绑定方法 method",
+          "绑定方法把实例记在 __self__ 里，调用时自动作为第一个参数传入，所以 a.f() 等价于 A.f(a)",
+          "A.f 是 function，必须显式传实例；a.f 是 method，可用 a.f.__func__ is A.f 与 a.f.__self__ is a 验证",
+          "绑定只发生在“通过实例读取类属性”的那一刻；把函数赋给实例属性（a.f = A.f）后它只是普通属性，不再绑定",
+          "因此把带 self 的普通函数挂到实例上再调用会抛 TypeError: missing 1 required positional argument: 'self'；把已绑定的 a.f 存起来则仍能正确调用"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并解释每一行是 function 还是绑定方法",
+        "code": "class Greeter:\n    def hello(self):\n        return \"hello\"\n\n\ng = Greeter()\nprint(Greeter.hello(g))\nprint(g.hello())\nprint(g.hello.__self__ is g)\nprint(g.hello.__func__ is Greeter.hello)\ng.hello = lambda: \"instance\"\nprint(g.hello())\nprint(Greeter().hello())\n\nholder = Greeter()\nholder.hello = Greeter.hello\ntry:\n    holder.hello()\nexcept TypeError:\n    print(\"TypeError: self 缺失\")",
+        "expected": [
+          "hello",
+          "hello",
+          "True",
+          "True",
+          "instance",
+          "hello",
+          "TypeError: self 缺失"
+        ],
+        "explain": "Greeter.hello 是普通函数，所以 Greeter.hello(g) 必须自己传实例；g.hello 是绑定方法，__self__ 就是 g、__func__ 就是 Greeter.hello，它自动把 g 当作 self，所以两种写法都输出 hello。g.hello = lambda: \"instance\" 是在实例上新建属性，lambda 没有被绑定，调用时不传参数正好匹配，输出 instance；类上的方法没变，Greeter().hello() 仍是 hello。holder.hello = Greeter.hello 把普通函数存成实例属性，读取时不再触发描述符绑定，调用只传了 0 个参数而函数需要 self，于是捕获到 TypeError。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Handler:\n    def handle(self, event):\n        return \"handled:\" + event\n\n\nclass Router:\n    def __init__(self):\n        self.routes = {}\n\n    def register(self, name, func):\n        self.routes[name] = func\n\n    def dispatch(self, name, event):\n        return self.routes[name](event)\n\n\nrouter = Router()\nrouter.register(\"create\", Handler.handle)\nprint(router.dispatch(\"create\", \"x\"))",
+        "rootCause": "register 里传的是从类上取的 Handler.handle，它是未绑定的普通函数，需要两个参数 (self, event)。注册表把函数存起来后，dispatch 只传了 event，self 缺失，调用时抛 TypeError: handle() missing 1 required positional argument: 'self'。绑定只发生在通过实例访问类属性的那一刻，函数一旦被取出来存进字典，绑定就不会再补上。",
+        "fix": "注册时保存已经绑定的方法：router.register(\"create\", handler.handle)（handler 是 Handler 实例）；若必须保存未绑定函数，就连实例一起保存，dispatch 里写 self.routes[name][1](self.routes[name][0], event)，或者用 functools.partial(Handler.handle, handler) 把 self 先固定住。"
+      },
+      "code_task": {
+        "prompt": "实现两个工具：bind(func, instance) 返回一个可调用对象，调用它等价于把 instance 作为第一个参数传给 func；is_bound_to(method, instance) 判断 method 是否是绑定到 instance 的方法（非方法对象返回 False）。",
+        "acceptance": [
+          "bind(Greeter.hello, g)('amy') 与 g.hello('amy') 结果相同",
+          "bind 的返回值可以反复调用，且不需要再手写 self",
+          "is_bound_to(g.hello, g) 为 True（通过 __self__ 判断）",
+          "is_bound_to(Greeter.hello, g) 为 False（普通函数没有 __self__）"
+        ],
+        "reference": "import unittest\nfrom functools import partial\n\n\nclass Greeter:\n    def hello(self, name):\n        return \"hello,\" + name\n\n\ndef bind(func, instance):\n    return partial(func, instance)\n\n\ndef is_bound_to(method, instance):\n    return getattr(method, \"__self__\", None) is instance\n\n\nclass BindingTest(unittest.TestCase):\n    def test_bind_passes_instance_as_self(self):\n        greeter = Greeter()\n        self.assertEqual(bind(Greeter.hello, greeter)(\"amy\"), \"hello,amy\")\n\n    def test_bind_matches_bound_method(self):\n        greeter = Greeter()\n        self.assertEqual(bind(Greeter.hello, greeter)(\"amy\"), greeter.hello(\"amy\"))\n\n    def test_reusable(self):\n        greeter = Greeter()\n        hello = bind(Greeter.hello, greeter)\n        self.assertEqual([hello(\"a\"), hello(\"b\")], [\"hello,a\", \"hello,b\"])\n\n    def test_is_bound_to(self):\n        greeter = Greeter()\n        self.assertTrue(is_bound_to(greeter.hello, greeter))\n        self.assertFalse(is_bound_to(Greeter.hello, greeter))\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为 A.f 与 a.f 是同一个对象（一个是 function，一个是绑定 method）",
+        "把函数赋给实例属性后还期待调用时自动补 self",
+        "从类上取方法存进字典/列表备用，调用时忘了 self",
+        "对绑定方法做类型判断时用 types.FunctionType，结果 method 不匹配"
+      ]
+    },
+    {
+      "code": "py.method.class-static",
+      "title": "classmethod、staticmethod 的绑定差异",
+      "minutes": 15,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2102",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2104",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "classmethod 与 staticmethod 在绑定上有什么差别？继承时它们各自拿到什么？",
+        "answer": [
+          "普通实例方法绑定到实例，第一参数是 self；classmethod 绑定到类，第一参数是 cls，是实实在在传进来的类对象",
+          "classmethod 无论用类还是实例调用，拿到的 cls 都是“实际发起调用的那个类”，所以子类调用时 cls 是子类",
+          "staticmethod 不做任何绑定，就是普通函数，调用时必须自己传全部参数，没有 self 也没有 cls",
+          "三种方法都能用 类.名字 / 实例.名字 调用，区别只在有没有隐式传入第一个参数",
+          "典型用途：classmethod 做可继承的替代构造器与工厂（返回 cls(...)），staticmethod 放与本类相关但不依赖类状态的工具函数"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明每次调用 cls 究竟是谁",
+        "code": "class Base:\n    label = \"base\"\n\n    @classmethod\n    def make(cls):\n        return cls.__name__ + \":\" + cls.label\n\n    @staticmethod\n    def describe(value):\n        return \"value=\" + str(value)\n\n\nclass Child(Base):\n    label = \"child\"\n\n\nprint(Base.make())\nprint(Child.make())\nprint(Child().make())\nprint(Base.describe(3))\nprint(Child().describe(3))\nprint(Base.make.__self__ is Base)\nprint(Child.make.__self__ is Child)\nprint(type(Child.describe).__name__)",
+        "expected": [
+          "Base:base",
+          "Child:child",
+          "Child:child",
+          "value=3",
+          "value=3",
+          "True",
+          "True",
+          "function"
+        ],
+        "explain": "classmethod 绑定到类：Base.make 的 __self__ 是 Base，Child.make 与 Child().make 的 __self__ 都是 Child，因此 cls.__name__ 与 cls.label 都取到子类的值，输出 Child:child，这正是替代构造器能返回子类实例的原因。staticmethod 不绑定，Child.describe 取到的就是普通函数（type(...).__name__ 为 function），用类还是实例调用都一样，参数必须自己传全。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Temperature:\n    unit = \"C\"\n\n    @classmethod\n    def describe(cls):\n        return \"unit=\" + self.unit\n\n\nprint(Temperature.describe())",
+        "rootCause": "classmethod 隐式传入的第一个参数是类对象，约定名为 cls；函数体里却引用了 self。self 在函数内既不是参数也不是全局名，执行时抛 NameError: name 'self' is not defined。把 classmethod 当成实例方法写，是 cls/self 混淆的典型后果。",
+        "fix": "统一改用 cls：return \"unit=\" + cls.unit。如果这个方法确实需要读实例状态，就不要再标 classmethod，改成普通实例方法 def describe(self)；做替代构造器时也应返回 cls(...) 而不是硬编码类名。"
+      },
+      "code_task": {
+        "prompt": "实现 Duration 类：__init__(seconds) 保存秒数；classmethod from_minutes(minutes) 返回 cls(minutes * 60)；classmethod from_hours(hours) 通过 cls.from_minutes(...) 复用；staticmethod is_valid_seconds(value) 判断是否为非负整数（bool 不算）。再写一个子类验证 from_minutes 返回的是子类实例。",
+        "acceptance": [
+          "Duration.from_minutes(2).seconds 等于 120",
+          "Duration.from_hours(1).seconds 等于 3600，且复用 from_minutes 而不是硬编码类名",
+          "子类 Half(Duration) 重写 from_minutes 后，Half.from_hours(1) 也走子类逻辑（cls 是 Half）",
+          "Duration.is_valid_seconds(0) 为 True，对 True、-1、'3' 返回 False"
+        ],
+        "reference": "import unittest\n\n\nclass Duration:\n    def __init__(self, seconds):\n        self.seconds = seconds\n\n    @classmethod\n    def from_minutes(cls, minutes):\n        return cls(minutes * 60)\n\n    @classmethod\n    def from_hours(cls, hours):\n        return cls.from_minutes(hours * 60)\n\n    @staticmethod\n    def is_valid_seconds(value):\n        return isinstance(value, int) and not isinstance(value, bool) and value >= 0\n\n\nclass Half(Duration):\n    @classmethod\n    def from_minutes(cls, minutes):\n        return cls(minutes * 30)\n\n\nclass DurationTest(unittest.TestCase):\n    def test_from_minutes(self):\n        self.assertEqual(Duration.from_minutes(2).seconds, 120)\n\n    def test_from_hours(self):\n        self.assertEqual(Duration.from_hours(1).seconds, 3600)\n\n    def test_subclass_receives_subclass(self):\n        self.assertIsInstance(Duration.from_minutes(1), Duration)\n        half = Half.from_hours(1)\n        self.assertIsInstance(half, Half)\n        self.assertEqual(half.seconds, 1800)\n\n    def test_staticmethod_valid_seconds(self):\n        self.assertTrue(Duration.is_valid_seconds(0))\n        self.assertFalse(Duration.is_valid_seconds(True))\n        self.assertFalse(Duration.is_valid_seconds(-1))\n        self.assertFalse(Duration.is_valid_seconds(\"3\"))\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "在 classmethod 里写 self，运行时报 NameError",
+        "以为 staticmethod 会隐式拿到 cls 或 self",
+        "替代构造器里硬编码类名（return Duration(...)），子类调用拿不到子类实例",
+        "把 @classmethod 忘了写，结果 cls 被当成普通参数，调用时报缺参数"
+      ]
+    },
+    {
+      "code": "py.class.inherit",
+      "title": "继承、super() 转发、方法覆盖",
+      "minutes": 25,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2102",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2104",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "子类如何扩展父类的 __init__？super() 到底做了什么？覆盖方法要注意什么？",
+        "answer": [
+          "子类定义同名方法即覆盖：实例调用时沿 MRO 从子类开始找，命中第一个定义就停止，不会自动调用父类实现",
+          "super().__init__(...) 会从“当前类在 MRO 中的下一站”继续查找 __init__，所以多继承下它不等于写死某个父类",
+          "覆盖 __init__ 时必须显式调用 super().__init__(...)，否则父类负责的那部分实例状态根本不会被建立",
+          "方法内的零参 super() 依赖编译器生成的 __class__ 单元与首个位置参数，把它整段复制到别的类里会指向错误的起点",
+          "常见写法是先 super().m(...) 复用父类逻辑，再补充子类特有的行为；属性覆盖时注意父类方法读到的可能是子类重新赋的值"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 d 的 __dict__ 里有哪些键",
+        "code": "class Animal:\n    def __init__(self, name):\n        self.name = name\n        self.tags = [\"animal\"]\n\n    def speak(self):\n        return \"...\"\n\n\nclass Dog(Animal):\n    def __init__(self, name, breed):\n        super().__init__(name)\n        self.breed = breed\n        self.tags.append(\"dog\")\n\n    def speak(self):\n        return \"woof\"\n\n\nd = Dog(\"rex\", \"pug\")\nprint(d.name, d.breed)\nprint(d.tags)\nprint(d.speak())\nprint(Animal(\"x\").speak())\nprint(isinstance(d, Animal))\nprint(Dog.__mro__[1] is Animal)\nprint(sorted(vars(d)))",
+        "expected": [
+          "rex pug",
+          "['animal', 'dog']",
+          "woof",
+          "...",
+          "True",
+          "True",
+          "['breed', 'name', 'tags']"
+        ],
+        "explain": "Dog.__init__ 先用 super().__init__(name) 复用 Animal 的初始化，建立 name 与 tags，再补上 breed，所以 d.name 是 rex、d.breed 是 pug，tags 从 ['animal'] 追加成 ['animal', 'dog']。speak 被子类覆盖，d.speak() 从 MRO 最前面的 Dog 命中返回 woof；Animal 实例没有覆盖，仍是 ...。Dog 是 Animal 的子类，isinstance 与 Dog.__mro__[1] 都为 True，实例 __dict__ 里就是三个实例属性。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Animal:\n    def __init__(self, name):\n        self.name = name\n\n    def label(self):\n        return \"animal:\" + self.name\n\n\nclass Dog(Animal):\n    def __init__(self, name, breed):\n        self.breed = breed\n\n\nd = Dog(\"rex\", \"pug\")\nprint(d.label())",
+        "rootCause": "Dog 覆盖了 __init__ 却没有调用 super().__init__(name)，父类的初始化被整体跳过，实例 __dict__ 里只有 breed 没有 name；继承来的 label() 访问 self.name 时抛 AttributeError: 'Dog' object has no attribute 'name'。覆盖构造函数并不会自动执行父类构造函数。",
+        "fix": "在 Dog.__init__ 开头调用 super().__init__(name)，再设置 self.breed = breed。如果确实想完全替换父类初始化，就不该继续使用依赖父类状态的方法（label），要么自己补齐 name，要么重新设计父类接口。"
+      },
+      "code_task": {
+        "prompt": "实现形状继承链：Shape(name) 保存 name，area() 抛 NotImplementedError，describe() 返回 \"名字:面积\"；Rect(width, height) 覆盖 __init__ 并用 super().__init__ 传名字，实现 area；Square(side) 继承 Rect，用 super().__init__(side, side) 复用，并把名字改成 'square'。",
+        "acceptance": [
+          "Rect(2, 3).describe() 返回 'rect:6'",
+          "Square(4).area() 返回 16，且 Square 没有重复实现面积公式",
+          "Shape('s').area() 抛 NotImplementedError",
+          "每个实例的 width/height/name 各自独立，Rect(1, 1) 与 Rect(2, 2) 的面积互不影响"
+        ],
+        "reference": "import unittest\n\n\nclass Shape:\n    def __init__(self, name):\n        self.name = name\n\n    def area(self):\n        raise NotImplementedError\n\n    def describe(self):\n        return self.name + \":\" + str(self.area())\n\n\nclass Rect(Shape):\n    def __init__(self, width, height):\n        super().__init__(\"rect\")\n        self.width = width\n        self.height = height\n\n    def area(self):\n        return self.width * self.height\n\n\nclass Square(Rect):\n    def __init__(self, side):\n        super().__init__(side, side)\n        self.name = \"square\"\n\n\nclass InheritTest(unittest.TestCase):\n    def test_rect_describe(self):\n        self.assertEqual(Rect(2, 3).describe(), \"rect:6\")\n\n    def test_square_reuses_rect(self):\n        square = Square(4)\n        self.assertEqual(square.area(), 16)\n        self.assertEqual(square.describe(), \"square:16\")\n        self.assertEqual(square.width, 4)\n\n    def test_base_area_not_implemented(self):\n        with self.assertRaises(NotImplementedError):\n            Shape(\"s\").area()\n\n    def test_state_is_per_instance(self):\n        first = Rect(1, 1)\n        second = Rect(2, 2)\n        self.assertEqual((first.area(), second.area()), (1, 4))\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "覆盖 __init__ 时忘记调用 super().__init__，父类状态缺失后报 AttributeError",
+        "把 super() 理解成“父类”，在多继承里以为它总跳到写死的那个基类",
+        "把零参 super() 的代码复制到不相关的类里，__class__ 单元指向错误的起点",
+        "子类重新给同名属性赋值，父类方法读到的是子类版本，行为与预期不一致"
+      ]
+    },
+    {
+      "code": "py.design.composition",
+      "title": "组合、委托、继承的取舍",
+      "minutes": 20,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2103",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "什么时候该用继承，什么时候该改成组合？委托解决了什么问题？",
+        "answer": [
+          "继承表达 is-a：子类复用父类接口并可在需要父类型的地方被替换；组合表达 has-a：持有另一个对象并使用它的能力",
+          "组合通过显式转发（委托）复用实现，只暴露自己需要的方法，父对象的其他接口不会自动变成自己的",
+          "组合避免脆弱基类问题：被持有对象的内部改动不会因为方法重名而意外改变调用方的行为",
+          "代价是多写转发方法、且组合对象不会被当作被持有类型（isinstance 不成立）；需要多态替换时仍要继承或实现同一接口",
+          "判断经验：只是为了复用一两个方法而继承，通常说明该改成组合；只有当“是一种”关系稳定存在时才用继承"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 Car 与 Engine 之间是什么关系",
+        "code": "class Engine:\n    def start(self):\n        return \"engine start\"\n\n\nclass Turbo(Engine):\n    def start(self):\n        return \"turbo \" + super().start()\n\n\nclass Car:\n    def __init__(self, engine):\n        self.engine = engine\n\n    def start(self):\n        return \"car: \" + self.engine.start()\n\n\nprint(Car(Engine()).start())\nprint(Car(Turbo()).start())\nprint([cls.__name__ for cls in Car.__mro__])\nprint(isinstance(Car(Engine()).engine, Engine))",
+        "expected": [
+          "car: engine start",
+          "car: turbo engine start",
+          "['Car', 'object']",
+          "True"
+        ],
+        "explain": "Car 不继承 Engine，而是把 engine 存为属性并在 start 里显式转发调用，这就是委托：换入 Engine 得到 'car: engine start'，换入 Turbo 得到 'car: turbo engine start'，行为可替换但 Car 的 MRO 里只有 Car 与 object。isinstance 检查的是持有的 engine 对象，它确实是 Engine（或其后代），所以为 True。组合让 Engine 的接口不会污染 Car，也不会被 Car 的方法名意外覆盖。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class ItemList:\n    def __init__(self, items):\n        self.items = list(items)\n\n    def size(self):\n        return len(self.items)\n\n    def summary(self):\n        return \"size=\" + str(self.size())\n\n\nclass Inventory(ItemList):\n    def size(self):\n        return \"big\" if len(self.items) > 2 else \"small\"\n\n\ninventory = Inventory([\"a\", \"b\", \"c\"])\nprint(inventory.size())\nprint(inventory.summary())    # 期望 size=3，实际 size=big",
+        "rootCause": "Inventory 只是为了复用列表能力就继承了 ItemList，同时用同名方法 size() 覆盖了父类方法。父类 summary() 内部依赖 self.size() 返回整数，现在拿到的是字符串 'big'，输出变成 size=big，任何基于该数值的比较或运算都会出错。继承把父类的内部实现细节（这里是对 size() 的调用）变成了子类必须遵守的隐式契约，即脆弱基类问题。",
+        "fix": "改成组合：Inventory 持有 ItemList 实例，需要的能力显式转发（如 self._items.summary()），自己的档位方法换成不冲突的名字（如 level()）；或者若必须继承，就把父类的数值接口与展示接口分开命名，避免子类覆盖内部依赖的方法。"
+      },
+      "code_task": {
+        "prompt": "用组合实现 Service：构造时接收一个 logger 对象并保存为属性；log(message) 显式委托给 logger.log(message)；process(items) 逐个记录 \"item:\" + str(item) 并返回处理条数。Service 不继承任何 logger 类型，且能接受任何具备 log(message) 方法的对象。",
+        "acceptance": [
+          "Service(logger).log('hello') 返回 'log:hello'，并且 logger.entries 里出现 'hello'",
+          "process(['a', 'b']) 返回 2，且 logger.entries 为 ['item:a', 'item:b']",
+          "Service 的 MRO 是 ['Service', 'object']，没有继承 logger",
+          "换一个同样实现 log(message) 的假 logger 也能正常工作（鸭子类型）"
+        ],
+        "reference": "import unittest\n\n\nclass ListLogger:\n    def __init__(self):\n        self.entries = []\n\n    def log(self, message):\n        self.entries.append(message)\n        return \"log:\" + message\n\n\nclass Service:\n    def __init__(self, logger):\n        self.logger = logger\n\n    def log(self, message):\n        return self.logger.log(message)\n\n    def process(self, items):\n        count = 0\n        for item in items:\n            self.logger.log(\"item:\" + str(item))\n            count += 1\n        return count\n\n\nclass CompositionTest(unittest.TestCase):\n    def test_delegates_to_logger(self):\n        logger = ListLogger()\n        self.assertEqual(Service(logger).log(\"hello\"), \"log:hello\")\n        self.assertEqual(logger.entries, [\"hello\"])\n\n    def test_process_counts_and_logs(self):\n        logger = ListLogger()\n        self.assertEqual(Service(logger).process([\"a\", \"b\"]), 2)\n        self.assertEqual(logger.entries, [\"item:a\", \"item:b\"])\n\n    def test_service_does_not_inherit_logger(self):\n        self.assertEqual([base.__name__ for base in Service.__mro__], [\"Service\", \"object\"])\n\n    def test_accepts_any_logger(self):\n        class CollectingLogger:\n            def __init__(self):\n                self.seen = []\n\n            def log(self, message):\n                self.seen.append(message.upper())\n                return \"ok\"\n\n        logger = CollectingLogger()\n        self.assertEqual(Service(logger).log(\"hi\"), \"ok\")\n        self.assertEqual(logger.seen, [\"HI\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "只为复用一两个方法就继承，子类方法名与父类内部依赖的方法撞车",
+        "子类覆盖父类方法后改变了返回类型，父类其余方法悄悄出错（脆弱基类）",
+        "组合里绕过对方的方法直接改其内部状态，破坏了封装",
+        "以为组合对象也能通过 isinstance 被当作被持有的类型使用"
+      ]
+    },
+    {
+      "code": "py.attr.lookup",
+      "title": "属性查找顺序",
+      "minutes": 25,
+      "module": "属性与描述符",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2201",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2504",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "执行 obj.attr 时 Python 按什么顺序查找？__getattr__ 究竟什么时候才会被调用？",
+        "answer": [
+          "入口是 type(obj).__getattribute__，整条查找链都由它实现，重写它就重写了所有属性读取",
+          "先在 type(obj) 及其 MRO 上找数据描述符（定义了 __set__ 或 __delete__ 的类属性），命中就直接返回",
+          "然后看 obj.__dict__（即实例字典）里有没有同名键",
+          "再找非数据描述符或普通类属性，按 MRO 顺序取第一个",
+          "以上全部失败才调用 __getattr__ 兜底；若没有 __getattr__，抛 AttributeError"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，并说明 __getattr__ 被调用的时机",
+        "code": "class Box:\n    kind = \"class-attr\"\n\n    def __init__(self):\n        self.size = 3\n\n    def __getattr__(self, name):\n        return \"fallback:\" + name\n\n\nb = Box()\nprint(b.size)\nprint(b.kind)\nprint(b.missing)\nb.size = 9\nprint(b.size)\nprint(type(b).__getattribute__(b, \"size\"))\nprint(\"size\" in b.__dict__, \"kind\" in b.__dict__)",
+        "expected": [
+          "3",
+          "class-attr",
+          "fallback:missing",
+          "9",
+          "9",
+          "True False"
+        ],
+        "explain": "b.size 命中实例字典，b.kind 命中类属性，两条路径都不会走到 __getattr__；只有 b.missing 在实例字典、类字典里都找不到时才触发 __getattr__ 兜底。kind 是类属性所以不在 b.__dict__ 里。"
+      },
+      "debug": {
+        "prompt": "下面代码想给缺省字段兜底，但隐藏了拼写错误，找出根因并给出修法",
+        "code": "class Settings:\n    def __init__(self, **values):\n        self.__dict__.update(values)\n\n    def __getattr__(self, name):\n        return None\n\n\ncfg = Settings(debug=True)\nprint(cfg.dbug)\nprint(hasattr(cfg, \"anything\"))",
+        "rootCause": "__getattr__ 对任何名字都返回 None，而它只在常规查找失败时触发，于是拼错的 cfg.dbug 被静默当成“值为 None 的合法属性”，hasattr 也永远为 True，真实错误被掩盖。根因不在查找顺序，而在这条无差别兜底分支。",
+        "fix": "只对白名单名字兜底，其余显式抛 AttributeError：if name in self.defaults: return self.defaults[name]；并且不要吞掉以双下划线开头/结尾的名字（copy、pickle 依赖 AttributeError）。"
+      },
+      "code_task": {
+        "prompt": "写一个 Config 类：构造时用关键字参数写入实例字典；读取未设置的属性时返回字符串 \"<missing:名字>\"；但读取下划线开头的名字必须抛 AttributeError。用 unittest 覆盖“实例字典优先”“类属性可用”“缺失属性走兜底”三种情况。",
+        "acceptance": [
+          "Config(debug=True).debug 是 True，且值存在实例字典里",
+          "没有实例值时能读到类属性 default == 0",
+          "Config().theme 返回 \"<missing:theme>\"",
+          "读取 Config()._hidden 抛 AttributeError",
+          "文件可直接 python3 运行，退出码 0"
+        ],
+        "reference": "import unittest\n\n\nclass Config:\n    default = 0\n\n    def __init__(self, **values):\n        self.__dict__.update(values)\n\n    def __getattr__(self, name):\n        if name.startswith(\"_\"):\n            raise AttributeError(name)\n        return \"<missing:{}>\".format(name)\n\n\nclass ConfigTests(unittest.TestCase):\n    def test_instance_dict_wins(self):\n        cfg = Config(debug=True)\n        self.assertIs(cfg.debug, True)\n        self.assertIn(\"debug\", cfg.__dict__)\n\n    def test_class_attribute_is_used(self):\n        self.assertEqual(Config().default, 0)\n\n    def test_missing_attribute_falls_back(self):\n        self.assertEqual(Config().theme, \"<missing:theme>\")\n\n    def test_private_name_raises(self):\n        with self.assertRaises(AttributeError):\n            Config()._hidden\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为每次 obj.attr 都会先调用 __getattr__",
+        "把 __getattr__ 与 __getattribute__ 混为一谈",
+        "在 __getattr__ 里对所有名字返回默认值，让 hasattr 恒为 True",
+        "忘记数据描述符的优先级高于实例字典"
+      ]
+    },
+    {
+      "code": "py.desc.data-vs-nondata",
+      "title": "数据描述符对比非数据描述符",
+      "minutes": 20,
+      "module": "描述符",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2202",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "数据描述符与非数据描述符怎么区分？实例字典什么时候能遮蔽类属性？",
+        "answer": [
+          "同时实现 __get__ 与 __set__（或 __delete__）的是数据描述符",
+          "只实现 __get__ 的是非数据描述符（函数、classmethod、cached_property 都是）",
+          "数据描述符优先级高于实例 __dict__：即使实例字典写了同名键，读取时描述符照样胜出",
+          "非数据描述符优先级低于实例 __dict__：obj.attr = v 会写进实例字典并遮蔽描述符",
+          "因此想强制走校验逻辑就用数据描述符；想允许被实例属性覆盖就用非数据描述符"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，注意两个描述符在赋值后的读取结果",
+        "code": "class DataDesc:\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return obj.__dict__.get(\"_stored\", \"unset\")\n\n    def __set__(self, obj, value):\n        obj.__dict__[\"_stored\"] = \"data:\" + str(value)\n\n\nclass NonDataDesc:\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return \"nondata\"\n\n\nclass Model:\n    data = DataDesc()\n    plain = NonDataDesc()\n\n\nm = Model()\nm.data = 1\nm.plain = 2\nprint(m.data)\nprint(m.plain)\nm.__dict__[\"data\"] = \"shadow\"\nprint(m.data)\nprint(m.plain)\nprint(sorted(m.__dict__))",
+        "expected": [
+          "data:1",
+          "2",
+          "data:1",
+          "2",
+          "['_stored', 'data', 'plain']"
+        ],
+        "explain": "DataDesc 定义了 __set__，是数据描述符：m.data = 1 走 __set__ 把值存进 _stored，之后即使往实例字典塞了 data 键，读取仍优先走描述符，所以两次都是 data:1。NonDataDesc 只有 __get__，m.plain = 2 直接把 2 写进实例字典，读取时实例字典优先，所以是 2 而不是 nondata。"
+      },
+      "debug": {
+        "prompt": "下面想用描述符记录字段的赋值次数，但实例数量一多就串数据，找出根因并给出修法",
+        "code": "class Counted:\n    def __init__(self):\n        self.count = 0\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return self.value\n\n    def __set__(self, obj, value):\n        self.value = value\n        self.count += 1\n\n\nclass Order:\n    qty = Counted()\n\n\nfirst = Order()\nsecond = Order()\nfirst.qty = 1\nsecond.qty = 2\nprint(first.qty, second.qty)",
+        "rootCause": "描述符实例是类属性，qty = Counted() 全类只有一个。self.value 写在了描述符对象自己身上，而不是 obj 上，于是 first 与 second 共享同一份数据，second 的赋值覆盖了 first。",
+        "fix": "把数据存到实例身上：__set__ 里写 obj.__dict__[\"_qty\"] = value，__get__ 里读 obj.__dict__[\"_qty\"]；计数这类全局信息若确实要共享，也应显式放在描述符上并说明它是共享状态。"
+      },
+      "code_task": {
+        "prompt": "实现两个描述符：Typed 同时定义 __get__ 与 __set__，把值存到实例字典的私有键里；Label 只定义 __get__，固定返回 \"label\"。再写一个 Item 类，属性 price 用 Typed，属性 tag 用 Label，用 unittest 分别验证谁的优先级更高。",
+        "acceptance": [
+          "item.price = 5 后 item.__dict__[\"price\"] = 999，读取 item.price 仍是 5",
+          "item.tag 首次读为 \"label\"，item.tag = \"custom\" 后读为 \"custom\"",
+          "两个 Item 实例的 price 互不影响",
+          "文件可直接 python3 运行，退出码 0"
+        ],
+        "reference": "import unittest\n\n\nclass Typed:\n    \"\"\"数据描述符：同时定义 __get__ 与 __set__，优先级高于实例字典。\"\"\"\n\n    def __set_name__(self, owner, name):\n        self.storage = \"_\" + name\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return obj.__dict__[self.storage]\n\n    def __set__(self, obj, value):\n        obj.__dict__[self.storage] = value\n\n\nclass Label:\n    \"\"\"非数据描述符：只有 __get__，可被实例字典遮蔽。\"\"\"\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return \"label\"\n\n\nclass Item:\n    price = Typed()\n    tag = Label()\n\n\nclass DescriptorTests(unittest.TestCase):\n    def test_data_descriptor_beats_instance_dict(self):\n        item = Item()\n        item.price = 5\n        item.__dict__[\"price\"] = 999\n        self.assertEqual(item.price, 5)\n\n    def test_non_data_descriptor_is_shadowed(self):\n        item = Item()\n        self.assertEqual(item.tag, \"label\")\n        item.tag = \"custom\"\n        self.assertEqual(item.tag, \"custom\")\n\n    def test_values_are_per_instance(self):\n        first, second = Item(), Item()\n        first.price = 1\n        second.price = 2\n        self.assertEqual((first.price, second.price), (1, 2))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "只写了 __get__ 却以为能拦截属性赋值",
+        "把值存到描述符实例上，导致所有实例互相覆盖",
+        "以为实例 __dict__ 总能遮蔽类属性",
+        "在 __set__ 里用 setattr(obj, name, value) 触发自身造成无限递归"
+      ]
+    },
+    {
+      "code": "py.desc.validated",
+      "title": "自定义校验描述符",
+      "minutes": 25,
+      "module": "描述符",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2202",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "怎么用一个描述符给多个字段复用校验逻辑？为什么值不能存在描述符自己身上？",
+        "answer": [
+          "把校验写进 __set__：类型不对抛 TypeError，取值不合法抛 ValueError，不合法时不写任何数据",
+          "描述符是类属性，全类共享同一个描述符对象，把值存 self.value 会让所有实例串数据",
+          "合法值要存到 obj 身上：obj.__dict__[\"_\" + name]，或用 __set_name__ 自动生成这个专用键",
+          "每个实例在自己的 __dict__ 里各存一份，__get__ 从同一位置读回，因此天然互不干扰",
+          "未赋值时 __get__ 可抛 AttributeError，让“字段还没设置”在读取时立刻暴露"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，注意被拒绝的赋值之后属性值有没有变化",
+        "code": "class PositiveInt:\n    def __set_name__(self, owner, name):\n        self.storage = \"_\" + name\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return obj.__dict__[self.storage]\n\n    def __set__(self, obj, value):\n        if isinstance(value, bool) or not isinstance(value, int):\n            raise TypeError(\"need int\")\n        if value <= 0:\n            raise ValueError(\"need positive\")\n        obj.__dict__[self.storage] = value\n\n\nclass Order:\n    qty = PositiveInt()\n\n\norder = Order()\norder.qty = 5\nprint(order.qty)\norder.qty = 7\nprint(order.qty)\ntry:\n    order.qty = -1\nexcept ValueError as exc:\n    print(type(exc).__name__, exc)\nprint(order.qty)\ntry:\n    order.qty = \"9\"\nexcept TypeError as exc:\n    print(type(exc).__name__, exc)\nprint(order.qty)\nother = Order()\nother.qty = 2\nprint(order.qty, other.qty)",
+        "expected": [
+          "5",
+          "7",
+          "ValueError need positive",
+          "7",
+          "TypeError need int",
+          "7",
+          "7 2"
+        ],
+        "explain": "__set__ 先校验后写入，抛错的两次调用没有改到 obj.__dict__，所以 order.qty 一直是 7；每个实例用自己的 _qty 键存值，other 的赋值不影响 order。bool 是 int 的子类，要显式排除，否则 True 会被当成 1 通过校验。"
+      },
+      "debug": {
+        "prompt": "下面描述符想校验端口范围，但校验形同虚设，找出根因并给出修法",
+        "code": "class Port:\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return self.value\n\n    def __set__(self, obj, value):\n        self.value = value\n        if not 1 <= value <= 65535:\n            raise ValueError(\"端口越界\")\n\n\nclass Server:\n    port = Port()\n\n\nsrv = Server()\ntry:\n    srv.port = 70000\nexcept ValueError:\n    pass\nprint(srv.port)",
+        "rootCause": "两个问题叠在一起：一是先赋值后校验，越界值已经落到描述符对象上；二是值存在 self.value（描述符自身是类属性，被所有实例共享），所以即使抛了 ValueError，之后 srv.port 还是读到 70000。核心根因是写入位置与校验顺序都错了。",
+        "fix": "先校验再写入，并把值写到实例上：if not 1 <= value <= 65535: raise ValueError(\"端口越界\")；然后 obj.__dict__[self.storage] = value（storage 由 __set_name__ 生成），__get__ 也改成读 obj.__dict__。另外端口值应先做 isinstance(value, int) 检查，避免字符串比较抛 TypeError。"
+      },
+      "code_task": {
+        "prompt": "写一个 PositiveInt 数据描述符：只接受正整数（bool 要拒绝），类型不符抛 TypeError、非正数抛 ValueError，合法值按实例分别存储；再给 Order 类挂上 qty 与 price 两个字段，用 unittest 覆盖通过、拒绝、多实例隔离三种情况。",
+        "acceptance": [
+          "order.qty = 3 后 order.qty == 3",
+          "order.qty = \"3\" 抛 TypeError，order.qty = 0 抛 ValueError",
+          "两个实例的 qty 互不影响",
+          "未赋值的 instance.qty 抛 AttributeError 或 KeyError",
+          "文件可直接 python3 运行，退出码 0"
+        ],
+        "reference": "import unittest\n\n\nclass PositiveInt:\n    def __set_name__(self, owner, name):\n        self.storage = \"_\" + name\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return obj.__dict__[self.storage]\n\n    def __set__(self, obj, value):\n        if isinstance(value, bool) or not isinstance(value, int):\n            raise TypeError(\"需要 int，收到 {}\".format(type(value).__name__))\n        if value <= 0:\n            raise ValueError(\"必须为正整数\")\n        obj.__dict__[self.storage] = value\n\n\nclass Order:\n    qty = PositiveInt()\n    price = PositiveInt()\n\n\nclass PositiveIntTests(unittest.TestCase):\n    def test_accepts_positive_int(self):\n        order = Order()\n        order.qty = 3\n        self.assertEqual(order.qty, 3)\n\n    def test_rejects_non_int(self):\n        order = Order()\n        with self.assertRaises(TypeError):\n            order.qty = \"3\"\n\n    def test_rejects_bool(self):\n        order = Order()\n        with self.assertRaises(TypeError):\n            order.qty = True\n\n    def test_rejects_non_positive(self):\n        order = Order()\n        with self.assertRaises(ValueError):\n            order.qty = 0\n\n    def test_failed_assignment_keeps_old_value(self):\n        order = Order()\n        order.qty = 7\n        with self.assertRaises(ValueError):\n            order.qty = -1\n        self.assertEqual(order.qty, 7)\n\n    def test_storage_is_per_instance(self):\n        first, second = Order(), Order()\n        first.qty, second.qty = 1, 2\n        self.assertEqual((first.qty, second.qty), (1, 2))\n\n    def test_read_before_assignment(self):\n        with self.assertRaises((AttributeError, KeyError)):\n            Order().qty\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在 __set__ 里写 self.value = value，让所有实例共享同一份数据",
+        "先赋值后校验，抛错时数据已经被写坏",
+        "__get__ 里返回 self.value，永远读不到实例数据",
+        "忘记处理 obj is None 的类访问场景，导致 Foo.field 直接报错"
+      ]
+    },
+    {
+      "code": "py.desc.set-name",
+      "title": "__set_name__ 记录描述符归属",
+      "minutes": 15,
+      "module": "描述符",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2202",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "__set_name__ 在什么时候被调用？拿到 owner 与 name 之后能做什么？",
+        "answer": [
+          "类创建时由 type.__new__ 自动调用：遍历类命名空间里每个定义了 __set_name__ 的值",
+          "参数是 owner（拥有该属性的类对象）与 name（它在类体里绑定的变量名）",
+          "按类体里的定义顺序依次调用，且只处理当前类命名空间里的对象，父类描述符的 owner 仍是父类",
+          "典型用途是据此生成实例字典的存储键，如 self.storage = \"_\" + name，省掉手工写死名字",
+          "只有类创建时就放在类体里的对象会触发；类建好后再赋值不会调用"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "class Field:\n    def __set_name__(self, owner, name):\n        self.owner = owner\n        self.name = name\n        print(\"set_name\", owner.__name__, name)\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return obj.__dict__.get(self.name.upper(), \"empty\")\n\n    def __set__(self, obj, value):\n        obj.__dict__[self.name.upper()] = value\n\n\nclass Config:\n    host = Field()\n    port = Field()\n\n\nprint(Config.host.name)\ncfg = Config()\nprint(cfg.host)\ncfg.port = 8080\nprint(cfg.port)\nprint(sorted(cfg.__dict__))",
+        "expected": [
+          "set_name Config host",
+          "set_name Config port",
+          "host",
+          "empty",
+          "8080",
+          "['PORT']"
+        ],
+        "explain": "类体执行完 Field() 两次后，创建 Config 类时 type.__new__ 按定义顺序调用 __set_name__，所以先 host 后 port；描述符把 name 记下来当作存储键，__set__ 写的是 name.upper()，__get__ 也从同一个键读。Config.host 是类访问（obj is None），按约定返回描述符自身，才能取到 .name。另外只有真正赋值过的字段才会在实例字典里建键：cfg.host 只读过，所以字典里只有 PORT。"
+      },
+      "debug": {
+        "prompt": "下面想用 __set_name__ 自动生成存储键，但两个字段互相污染，找出根因并给出修法",
+        "code": "class Field:\n    storage = None\n\n    def __set_name__(self, owner, name):\n        Field.storage = \"_\" + name\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return obj.__dict__.get(Field.storage)\n\n    def __set__(self, obj, value):\n        obj.__dict__[Field.storage] = value\n\n\nclass Profile:\n    nickname = Field()\n    city = Field()\n\n\nprofile = Profile()\nprofile.nickname = \"ada\"\nprofile.city = \"london\"\nprint(profile.nickname, profile.city)",
+        "rootCause": "storage 被存成类属性 Field.storage，是描述符类的共享槽位。第二个字段 city 调用 __set_name__ 时把它覆盖成 \"_city\"，于是 nickname 也去读 _city，两个字段指向同一个键，互相覆盖。",
+        "fix": "storage 必须是每个描述符实例自己的：在 __set_name__ 里写 self.storage = \"_\" + name，__get__/__set__ 里用 self.storage 而不是 Field.storage。记录 owner/name 同理，都要挂在 self 上而不是类上。"
+      },
+      "code_task": {
+        "prompt": "写一个 Field 描述符：在 __set_name__ 里记录 owner、name，并自动生成存储键 \"_field_\" + name；__set__ 按该键写入实例字典，__get__ 按该键读取、未赋值时返回 None。给 Profile 类挂 nickname 与 city 两个字段并用 unittest 验证。",
+        "acceptance": [
+          "Profile.nickname.owner 是 Profile，Profile.nickname.name 是 \"nickname\"",
+          "存储键自动生成为 \"_field_city\" 这类形式，不需要手写属性名",
+          "两个字段的值互不干扰，instance.__dict__ 中出现两个不同的键",
+          "文件可直接 python3 运行，退出码 0"
+        ],
+        "reference": "import unittest\n\n\nclass Field:\n    def __set_name__(self, owner, name):\n        self.owner = owner\n        self.name = name\n        self.storage = \"_field_\" + name\n\n    def __get__(self, obj, owner=None):\n        if obj is None:\n            return self\n        return obj.__dict__.get(self.storage)\n\n    def __set__(self, obj, value):\n        obj.__dict__[self.storage] = value\n\n\nclass Profile:\n    nickname = Field()\n    city = Field()\n\n\nclass SetNameTests(unittest.TestCase):\n    def test_owner_and_name_are_recorded(self):\n        self.assertIs(Profile.nickname.owner, Profile)\n        self.assertEqual(Profile.nickname.name, \"nickname\")\n\n    def test_storage_key_is_generated(self):\n        self.assertEqual(Profile.city.storage, \"_field_city\")\n\n    def test_default_is_none_before_assignment(self):\n        self.assertIsNone(Profile().nickname)\n\n    def test_fields_do_not_share_values(self):\n        profile = Profile()\n        profile.nickname = \"ada\"\n        profile.city = \"london\"\n        self.assertEqual(profile.nickname, \"ada\")\n        self.assertEqual(profile.city, \"london\")\n        self.assertEqual(sorted(profile.__dict__), [\"_field_city\", \"_field_nickname\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "以为类建好之后再给类属性赋值也会重新触发 __set_name__",
+        "把 name/owner 记到描述符类上，多个字段互相覆盖",
+        "同一个描述符实例赋给两个类属性，导致 name 只剩最后一个",
+        "忘记只有类体里直接定义的对象才会收到 owner 与 name"
+      ]
+    },
+    {
+      "code": "py.prop.property",
+      "title": "property 读写删三件套",
+      "minutes": 20,
+      "module": "描述符",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2203",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "property 由哪几部分组成？只写 getter 会怎样？setter 里为什么习惯写 self._x = value？",
+        "answer": [
+          "property 把 getter/setter/deleter 组合成一个数据描述符，所以优先级高于实例字典",
+          "只给 getter 就是只读属性：赋值抛 AttributeError（3.11+ 的消息会说明没有 setter）",
+          "setter 里若写 self.x = value 会再次进入 setter 自身，形成无限递归",
+          "约定用同名私有属性 self._x 真正存值，setter 里做校验与转换，getter 里做计算",
+          "deleter 用 @x.deleter 注册，配合 del obj.x 使用，适合把值重置为默认"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "class Temperature:\n    def __init__(self):\n        self._celsius = 0\n\n    @property\n    def celsius(self):\n        return self._celsius\n\n    @celsius.setter\n    def celsius(self, value):\n        self._celsius = value\n\n    @celsius.deleter\n    def celsius(self):\n        self._celsius = 0\n\n    @property\n    def fahrenheit(self):\n        return self._celsius * 9 // 5 + 32\n\n\nt = Temperature()\nt.celsius = 25\nprint(t.celsius)\nprint(t.fahrenheit)\ndel t.celsius\nprint(t.celsius)\ntry:\n    t.fahrenheit = 100\nexcept AttributeError as exc:\n    print(type(exc).__name__)\nprint(t.fahrenheit)",
+        "expected": [
+          "25",
+          "77",
+          "0",
+          "AttributeError",
+          "32"
+        ],
+        "explain": "celsius 有 setter，赋值走 setter 写 _celsius，读取走 getter；fahrenheit 只有 getter，是只读属性，赋值抛 AttributeError（3.11+ 消息里提示 can't set attribute）；del t.celsius 走 deleter 把 _celsius 重置为 0，所以之后两个读数分别是 0 与 32。"
+      },
+      "debug": {
+        "prompt": "下面的 property 一赋值就报 RecursionError，找出根因并给出修法",
+        "code": "class Account:\n    def __init__(self, balance=0):\n        self.balance = balance\n\n    @property\n    def balance(self):\n        return self.balance\n\n    @balance.setter\n    def balance(self, value):\n        if value < 0:\n            raise ValueError(\"余额不能为负\")\n        self.balance = value\n\n\naccount = Account(10)\nprint(account.balance)",
+        "rootCause": "getter 与 setter 都用 self.balance，而 balance 正是这个 property 的名字：读 self.balance 又调用 getter，写 self.balance 又调用 setter，两个方向都自我递归，最终 RecursionError。",
+        "fix": "真正的存储换成私有名：__init__ 里 self._balance = balance（或直接 self._balance = 0 后调用 setter），getter 返回 self._balance，setter 校验后写 self._balance = value。"
+      },
+      "code_task": {
+        "prompt": "写 Temperature 类：celsius 是可读写属性（setter 拒绝低于 -273 的值并抛 ValueError），deleter 把温度重置为 0；kelvin 是只读属性（celsius + 273）。用 unittest 覆盖读写、越界、删除、只读赋值四种情况。",
+        "acceptance": [
+          "temp.celsius = 25 后 temp.celsius == 25",
+          "temp.celsius = -300 抛 ValueError，且原值不变",
+          "del temp.celsius 后 temp.celsius == 0",
+          "temp.kelvin = 300 抛 AttributeError",
+          "文件可直接 python3 运行，退出码 0"
+        ],
+        "reference": "import unittest\n\n\nclass Temperature:\n    def __init__(self, celsius=0):\n        self._celsius = celsius\n\n    @property\n    def celsius(self):\n        return self._celsius\n\n    @celsius.setter\n    def celsius(self, value):\n        if value < -273:\n            raise ValueError(\"低于绝对零度\")\n        self._celsius = value\n\n    @celsius.deleter\n    def celsius(self):\n        self._celsius = 0\n\n    @property\n    def kelvin(self):\n        return self._celsius + 273\n\n\nclass TemperatureTests(unittest.TestCase):\n    def test_setter_and_getter(self):\n        temp = Temperature()\n        temp.celsius = 25\n        self.assertEqual(temp.celsius, 25)\n        self.assertEqual(temp.kelvin, 298)\n\n    def test_rejects_below_absolute_zero(self):\n        temp = Temperature(20)\n        with self.assertRaises(ValueError):\n            temp.celsius = -300\n        self.assertEqual(temp.celsius, 20)\n\n    def test_deleter_resets(self):\n        temp = Temperature(30)\n        del temp.celsius\n        self.assertEqual(temp.celsius, 0)\n\n    def test_read_only_property(self):\n        temp = Temperature()\n        with self.assertRaises(AttributeError):\n            temp.kelvin = 300\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "setter 里写 self.celsius = value，与 getter 互相递归",
+        "以为只给 getter 的属性还能靠约定赋值",
+        "私有存储名与 property 名重名",
+        "忘记 property 是类属性，Foo.celsius 读到的是 property 对象"
+      ]
+    },
+    {
+      "code": "py.prop.cached",
+      "title": "cached_property 缓存失效",
+      "minutes": 20,
+      "module": "描述符",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2203",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "functools.cached_property 为什么能做到只算一次？数据变了怎么让它失效？",
+        "answer": [
+          "它是非数据描述符：只定义 __get__，第一次访问时调用函数并把结果写进 instance.__dict__",
+          "之后同名查找在实例字典先命中，描述符不再参与，所以函数只跑一次",
+          "失效方式就是删掉实例字典里的那个键：del obj.__dict__[\"name\"]；下次访问重新计算",
+          "它要求实例有 __dict__：用 __slots__ 且没写 \"__dict__\" 的类无法缓存，访问会报错",
+          "适合开销大且依赖不可变输入的计算；被缓存的数据发生变动时必须手动失效"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出，注意只计算一次的证据与删除缓存后的变化",
+        "code": "from functools import cached_property\n\n\nclass Report:\n    def __init__(self, rows):\n        self.rows = rows\n        self.calls = 0\n\n    @cached_property\n    def total(self):\n        self.calls += 1\n        return sum(self.rows)\n\n\nreport = Report([1, 2, 3])\nprint(report.total)\nprint(report.total)\nprint(report.calls)\nprint(\"total\" in report.__dict__)\ndel report.__dict__[\"total\"]\nreport.rows.append(4)\nprint(report.total)\nprint(report.calls)\nprint(sorted(report.__dict__))",
+        "expected": [
+          "6",
+          "6",
+          "1",
+          "True",
+          "10",
+          "2",
+          "['calls', 'rows', 'total']"
+        ],
+        "explain": "第一次访问 report.total 时函数执行并把 6 写进 instance.__dict__，calls 变成 1；第二次直接命中实例字典，函数不再执行。删掉 total 键以后缓存失效，再次访问重新计算，此时 rows 已被追加 4，得到 10，calls 变成 2。注意 cached_property 是类上的非数据描述符，实例字典里的 total 反而是有效缓存。"
+      },
+      "debug": {
+        "prompt": "下面的类在改动数据后仍返回旧结果，找出根因并给出修法",
+        "code": "from functools import cached_property\n\n\nclass Cart:\n    def __init__(self):\n        self.items = []\n\n    @cached_property\n    def total(self):\n        return sum(item[\"price\"] for item in self.items)\n\n    def add(self, name, price):\n        self.items.append({\"name\": name, \"price\": price})\n\n\ncart = Cart()\ncart.add(\"pen\", 3)\nprint(cart.total)\ncart.add(\"book\", 10)\nprint(cart.total)",
+        "rootCause": "total 第一次访问后结果被写进实例字典，之后读取都在实例字典命中，add() 只改了 items，没有让缓存失效，所以第二次仍然打印旧值 3，而不是 13。",
+        "fix": "在所有改变 items 的方法里显式失效：self.__dict__.pop(\"total\", None)；或者干脆不用 cached_property，把 total 写成普通 property 每次重算；也可以让缓存的键包含版本号，数据一变就换键。"
+      },
+      "code_task": {
+        "prompt": "写 Inventory 类：items 是列表，total 用 functools.cached_property 求元素之和并统计计算次数，另提供 invalidate() 删除实例字典里的缓存键。用 unittest 验证只算一次、缓存位置、失效后重算。",
+        "acceptance": [
+          "连续读两次 inv.total，值相同且 computations == 1",
+          "读过一次后 \"total\" 出现在 inv.__dict__ 中",
+          "调用 invalidate() 后重新读取会重算，computations 增加",
+          "invalidate() 在没有缓存时也能安全调用",
+          "文件可直接 python3 运行，退出码 0"
+        ],
+        "reference": "import unittest\nfrom functools import cached_property\n\n\nclass Inventory:\n    def __init__(self, items):\n        self.items = list(items)\n        self.computations = 0\n\n    @cached_property\n    def total(self):\n        self.computations += 1\n        return sum(self.items)\n\n    def invalidate(self):\n        self.__dict__.pop(\"total\", None)\n\n\nclass CachedPropertyTests(unittest.TestCase):\n    def test_computed_once(self):\n        inv = Inventory([1, 2, 3])\n        self.assertEqual(inv.total, 6)\n        self.assertEqual(inv.total, 6)\n        self.assertEqual(inv.computations, 1)\n\n    def test_value_is_cached_in_instance_dict(self):\n        inv = Inventory([1])\n        inv.total\n        self.assertIn(\"total\", inv.__dict__)\n\n    def test_invalidate_forces_recompute(self):\n        inv = Inventory([1, 2])\n        self.assertEqual(inv.total, 3)\n        inv.items.append(3)\n        self.assertEqual(inv.total, 3)\n        inv.invalidate()\n        self.assertEqual(inv.total, 6)\n        self.assertEqual(inv.computations, 2)\n\n    def test_invalidate_without_cache_is_safe(self):\n        inv = Inventory([1])\n        inv.invalidate()\n        self.assertEqual(inv.total, 1)\n\n    def test_slots_class_without_dict_cannot_cache(self):\n        class Slotted:\n            __slots__ = (\"value\",)\n\n            def __init__(self):\n                self.value = 1\n\n            @cached_property\n            def doubled(self):\n                return self.value * 2\n\n        with self.assertRaises((AttributeError, TypeError)):\n            Slotted().doubled\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在 __slots__ 且没有 __dict__ 的类上用 cached_property",
+        "以为修改内部数据后缓存会自动失效",
+        "把缓存键写成函数名之外的名字，del 时找不到",
+        "对开销很小的计算也加缓存，反而增加失效负担"
+      ]
+    },
+    {
+      "code": "py.attr.recursion",
+      "title": "__getattribute__ 递归陷阱",
+      "minutes": 20,
+      "module": "属性与描述符",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2204",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "重写 __getattribute__ 时为什么 self.x 会导致 RecursionError？正确写法是什么？",
+        "answer": [
+          "__getattribute__ 是所有属性读取的入口，在它内部写 self.x 会再次调用 __getattribute__ 自身",
+          "__setattr__ 是所有属性赋值的入口，在它内部写 self.x = v 会再次进入 __setattr__",
+          "读取用 object.__getattribute__(self, name) 或 super().__getattribute__(name) 绕开重写",
+          "写入用 object.__setattr__(self, name, value) 或 super().__setattr__(name, value)",
+          "另一种思路是把内部状态放 __slots__ 或闭包里，并让下划线开头的名字直接走 object 实现，避免副作用"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面正确实现的输出（它会打印每次读取的属性名）",
+        "code": "class Safe:\n    def __init__(self):\n        object.__setattr__(self, \"value\", 10)\n\n    def __getattribute__(self, name):\n        print(\"get\", name)\n        return object.__getattribute__(self, name)\n\n    def __setattr__(self, name, value):\n        print(\"set\", name, value)\n        super().__setattr__(name, value)\n\n\ns = Safe()\ns.value = 20\nprint(s.value)\nprint(sorted(s.__dict__))",
+        "expected": [
+          "set value 20",
+          "get value",
+          "20",
+          "get __dict__",
+          "['value']"
+        ],
+        "explain": "__init__ 里用 object.__setattr__ 直接写入，绕开重写的 __setattr__，所以没有打印；s.value = 20 进入重写的 __setattr__，它用 super().__setattr__ 完成真正写入；print(s.value) 先由 __getattribute__ 打印 get value，再用 object.__getattribute__ 取值 20；最后 sorted(s.__dict__) 同样会经过 __getattribute__，故先打印 get __dict__。两条路径都显式绕开重写方法，因此不会自我递归。"
+      },
+      "debug": {
+        "prompt": "下面的类想做属性代理，一创建实例就抛 RecursionError，找出根因并给出修法",
+        "code": "class Config:\n    def __init__(self):\n        self.data = {}\n\n    def __getattribute__(self, name):\n        return self.data.get(name)\n\n    def __setattr__(self, name, value):\n        self.data[name] = value\n\n\ncfg = Config()\ncfg.mode = \"fast\"\nprint(cfg.mode)",
+        "rootCause": "__init__ 里的 self.data = {} 进入重写的 __setattr__，其中 self.data 是属性读取，又进入重写的 __getattribute__，其中 self.data 再次读取……读写两条路都在用 self.data 访问同一个内部字典，互相触发对方，形成无限递归。根因就是把内部状态也放在被代理的属性协议上。",
+        "fix": "内部字典用 object 的机制存取并跳过重写逻辑：读取用 object.__getattribute__(self, \"data\")，写入用 object.__setattr__(self, \"data\", {})；并对下划线开头的名字直接 return object.__getattribute__(self, name)，避免内部属性也走代理分支（同时注意 __getattribute__ 里不要再写 self.xxx）。"
+      },
+      "code_task": {
+        "prompt": "写 Tracked 类：支持 Tracked(score=1) 这样初始化；读取非下划线开头的属性时把名字追加到内部 _log 列表，写入非下划线属性时把 \"set:名字\" 追加进去；内部状态一律用 object.__getattribute__/object.__setattr__ 访问，保证不递归。用 unittest 验证。",
+        "acceptance": [
+          "Tracked(score=1) 能正常构造，不抛 RecursionError",
+          "obj.score 返回 1，且 _log 中出现 \"score\"",
+          "obj.score = 5 后 _log 中出现 \"set:score\"，obj.score == 5",
+          "读取 obj._log 本身不会被记入日志",
+          "文件可直接 python3 运行，退出码 0"
+        ],
+        "reference": "import unittest\n\n\nclass Tracked:\n    def __init__(self, **values):\n        object.__setattr__(self, \"_log\", [])\n        for key, value in values.items():\n            setattr(self, key, value)\n\n    def __getattribute__(self, name):\n        if name.startswith(\"_\"):\n            return object.__getattribute__(self, name)\n        log = object.__getattribute__(self, \"_log\")\n        log.append(name)\n        return object.__getattribute__(self, name)\n\n    def __setattr__(self, name, value):\n        if not name.startswith(\"_\"):\n            object.__getattribute__(self, \"_log\").append(\"set:\" + name)\n        object.__setattr__(self, name, value)\n\n\nclass TrackedTests(unittest.TestCase):\n    def test_init_does_not_recurse(self):\n        obj = Tracked(score=1)\n        self.assertEqual(object.__getattribute__(obj, \"_log\"), [\"set:score\"])\n\n    def test_read_is_logged(self):\n        obj = Tracked(score=1)\n        self.assertEqual(obj.score, 1)\n        self.assertIn(\"score\", obj._log)\n\n    def test_write_is_logged(self):\n        obj = Tracked()\n        obj.score = 5\n        self.assertIn(\"set:score\", obj._log)\n        self.assertEqual(obj.score, 5)\n\n    def test_internal_read_is_not_logged(self):\n        obj = Tracked()\n        before = len(obj._log)\n        obj._log\n        self.assertEqual(len(obj._log), before)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "pitfalls": [
+        "在 __getattribute__ 里用 self.x 访问属性",
+        "在 __setattr__ 里用 self.x = v 写属性",
+        "用 getattr(self, name) 代替 object.__getattribute__",
+        "在 __getattribute__ 里加副作用却不排除下划线开头的内部属性"
+      ]
+    },
+    {
+      "code": "py.dunder.repr-str",
+      "title": "__repr__、__str__ 协议",
+      "minutes": 15,
+      "module": "数据模型",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "__repr__ 和 __str__ 各自服务谁？容器打印自定义对象时走哪一个？缺一个会怎样？",
+        "answer": [
+          "__repr__ 面向开发者，目标是给出无歧义、最好能 eval 重建对象的字符串，repr(obj) 和交互式回显用它。",
+          "__str__ 面向使用者，追求可读；print(obj)、str(obj)、f\"{obj}\"（无格式说明时）调用它。",
+          "容器打印元素时统一走 repr，所以 print([obj]) 只受 __repr__ 影响，与 __str__ 无关。",
+          "缺省情况下 str(obj) 回退到 __repr__；反之不成立，没有 __repr__ 时容器会打印 <Point object at 0x...>。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（按行）",
+        "code": "class Point:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n\n    def __repr__(self):\n        return f\"Point({self.x}, {self.y})\"\n\n    def __str__(self):\n        return f\"({self.x}, {self.y})\"\n\n\nclass Wrap:\n    def __init__(self, value):\n        self.value = value\n\n    def __repr__(self):\n        return f\"Wrap({self.value!r})\"\n\n\np = Point(1, 2)\nw = Wrap(\"a\")\nprint(p)\nprint([p])\nprint(repr(p))\nprint(f\"{p}\")\nprint(w)\nprint([w])\nprint(f\"{w!r}\")",
+        "expected": [
+          "(1, 2)",
+          "[Point(1, 2)]",
+          "Point(1, 2)",
+          "(1, 2)",
+          "Wrap('a')",
+          "[Wrap('a')]",
+          "Wrap('a')"
+        ],
+        "explain": "print(p) 与 f\"{p}\" 走 __str__ 得到 (1, 2)，repr(p) 走 __repr__ 得到 Point(1, 2)，而列表打印元素一律用 repr。Wrap 只定义了 __repr__，str(w) 回退到 __repr__，所以 print(w) 与 print([w]) 都是 Wrap('a')。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class User:\n    def __init__(self, name):\n        self.name = name\n\n    def __str__(self):\n        return f\"User({self.name})\"\n\n\nu = User(\"ada\")\nprint(u)\nprint([u])\nprint(u)",
+        "rootCause": "只定义了 __str__ 而没有 __repr__。print(u) 正常，但列表、字典等容器打印元素时走 repr，于是 __repr__ 继承 object 的实现，输出里出现 <User object at 0x7f...> 这种带内存地址的字符串，日志不可复现、无法用于断言。",
+        "fix": "补上返回可重建字符串的 __repr__，例如 def __repr__(self): return f\"User({self.name!r})\"；__str__ 可以保留，也可以删掉让它回退到 __repr__。"
+      },
+      "code_task": {
+        "prompt": "实现 Vector(x, y)：__repr__ 返回可 eval 重建的 \"Vector(x, y)\" 形式（用 !r 保证字符串参数也安全），__str__ 返回 \"<x, y>\"；再验证 repr([v]) 用的是 __repr__。",
+        "acceptance": [
+          "repr(Vector(1, 2)) == \"Vector(1, 2)\"，str(Vector(1, 2)) == \"<1, 2>\"",
+          "f\"{v}\" 得到 \"<1, 2>\"，f\"{v!r}\" 得到 \"Vector(1, 2)\"",
+          "repr([v]) == \"[Vector(1, 2)]\"（容器走 repr）",
+          "eval(repr(v)) 得到的对象属性与 v 相同"
+        ],
+        "reference": "class Vector:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n\n    def __repr__(self):\n        return f\"Vector({self.x!r}, {self.y!r})\"\n\n    def __str__(self):\n        return f\"<{self.x}, {self.y}>\"\n\n\nif __name__ == \"__main__\":\n    v = Vector(1, 2)\n    assert str(v) == \"<1, 2>\"\n    assert repr(v) == \"Vector(1, 2)\"\n    assert f\"{v}\" == \"<1, 2>\"\n    assert f\"{v!r}\" == \"Vector(1, 2)\"\n    assert repr([v]) == \"[Vector(1, 2)]\"\n    clone = eval(repr(v))\n    assert (clone.x, clone.y) == (1, 2)\n    print(\"ok\")"
+      },
+      "pitfalls": [
+        "只写 __str__，print(obj) 看着正常，print([obj]) 却打印带内存地址的默认形式。",
+        "__repr__ 里塞内存地址、时间戳或随机 id，破坏可重建性与测试稳定性。",
+        "__repr__ 忘记 return（返回 None），触发 TypeError: __repr__ returned non-string。",
+        "在 __repr__/__str__ 里做修改状态的操作，打印产生副作用。"
+      ]
+    },
+    {
+      "code": "py.eq.hash",
+      "title": "__eq__、__hash__ 不变量",
+      "minutes": 25,
+      "module": "数据模型",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2301",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2302",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2304",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "为什么自定义 __eq__ 后类会突然变得不可哈希？相等与哈希之间必须满足什么不变量？",
+        "answer": [
+          "默认 object.__eq__ 比较身份，object.__hash__ 由 id 派生；一旦类里定义了 __eq__ 而没定义 __hash__，Python 会把 __hash__ 置为 None，实例立刻不可哈希。",
+          "不变量：a == b 为真时必须 hash(a) == hash(b)；反过来不要求，哈希相等只是允许再比较相等。",
+          "违反的后果：set 里出现\"重复\"元素、dict 用相等的新对象查不到键、in 判断失败。",
+          "__hash__ 只能用不可变字段计算；参与 __eq__ 的字段一旦改动，哈希随之变化，对象就不再适合当 set/dict 的键，可变对象应保持不可哈希（__hash__ = None）。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（按行）",
+        "code": "class Money:\n    def __init__(self, amount):\n        self.amount = amount\n\n    def __eq__(self, other):\n        return isinstance(other, Money) and self.amount == other.amount\n\n\nclass Coin:\n    def __init__(self, amount):\n        self.amount = amount\n\n    def __eq__(self, other):\n        return isinstance(other, Coin) and self.amount == other.amount\n\n    def __hash__(self):\n        return hash(self.amount)\n\n\nprint(Money.__hash__)\nm1 = Money(10)\nm2 = Money(10)\nprint(m1 == m2)\ntry:\n    {m1}\nexcept TypeError as error:\n    print(type(error).__name__)\n\nc1 = Coin(5)\nc2 = Coin(5)\nprint(c1 == c2)\nprint(len({c1, c2}))\nprint(len({Coin(5), Coin(6)}))",
+        "expected": [
+          "None",
+          "True",
+          "TypeError",
+          "True",
+          "1",
+          "2"
+        ],
+        "explain": "Money 只定义了 __eq__，Python 把 Money.__hash__ 设为 None，所以 print(Money.__hash__) 输出 None，m1 == m2 仍为 True，但放进 set 时抛 TypeError（被捕获后打印类型名）。Coin 同时定义了 __hash__，c1 与 c2 相等且哈希相同，集合去重后长度为 1；Coin(5) 与 Coin(6) 不等，集合长度为 2。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Ticket:\n    def __init__(self, code):\n        self.code = code\n\n    def __eq__(self, other):\n        return isinstance(other, Ticket) and self.code == other.code\n\n\ntickets = {Ticket(\"A01\"), Ticket(\"A01\")}\nprint(len(tickets))",
+        "rootCause": "定义了 __eq__ 却没有定义 __hash__，Python 自动把 Ticket.__hash__ 置为 None，Ticket 实例不可哈希；用它们构造 set 直接抛 TypeError: unhashable type: 'Ticket'。",
+        "fix": "同时定义与 __eq__ 一致的 __hash__，如 def __hash__(self): return hash(self.code)；这就要求 code 参与相等判断且在对象存活期间不被修改。"
+      },
+      "code_task": {
+        "prompt": "实现 Money(amount, currency=\"CNY\")：__eq__ 在类型与两个字段都相等时返回 True（类型不符返回 NotImplemented），__hash__ 对 (amount, currency) 元组求哈希，并保证相等对象哈希一致、可安全放进 set 与 dict。",
+        "acceptance": [
+          "Money(10) == Money(10) 为 True，Money(10) != Money(10, \"USD\")",
+          "hash(Money(10)) == hash(Money(10))，len({Money(10), Money(10)}) == 1",
+          "d = {Money(10): \"ten\"} 时 d[Money(10)] == \"ten\"",
+          "Money(10) == 10 为 False（不抛异常，类型不符返回 NotImplemented）"
+        ],
+        "reference": "class Money:\n    def __init__(self, amount, currency=\"CNY\"):\n        self.amount = amount\n        self.currency = currency\n\n    def __eq__(self, other):\n        if not isinstance(other, Money):\n            return NotImplemented\n        return (self.amount, self.currency) == (other.amount, other.currency)\n\n    def __hash__(self):\n        return hash((self.amount, self.currency))\n\n    def __repr__(self):\n        return f\"Money({self.amount!r}, {self.currency!r})\"\n\n\nif __name__ == \"__main__\":\n    a = Money(10)\n    b = Money(10)\n    c = Money(10, \"USD\")\n    assert a == b\n    assert hash(a) == hash(b)\n    assert a != c\n    assert len({a, b}) == 1\n    assert len({a, c}) == 2\n    lookup = {a: \"ten\"}\n    assert lookup[b] == \"ten\"\n    assert a != 10\n    print(\"ok\")"
+      },
+      "pitfalls": [
+        "自定义 __eq__ 后忘记 __hash__，类变成不可哈希，set/dict 直接 TypeError。",
+        "用可变字段算哈希，字段改动后 set 里查不到、dict 取不到值，甚至出现多个\"相同\"键。",
+        "把哈希相等当成相等，用 hash 值代替 __eq__ 做判断（碰撞必然发生）。",
+        "只实现 __hash__ 不实现 __eq__，内容相同的对象仍各占一个槽位。"
+      ]
+    },
+    {
+      "code": "py.dunder.bool",
+      "title": "__bool__ 真值协议",
+      "minutes": 15,
+      "module": "数据模型",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2301",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "bool(x) 的判定顺序是什么？同时定义 __bool__ 与 __len__ 时谁说了算？",
+        "answer": [
+          "bool(x) 先找 __bool__，没有再看 __len__（返回 0 视为假，非 0 为真），两者都没有则任何实例都为真。",
+          "__bool__ 必须返回 bool；返回列表、整数等其它类型会抛 TypeError: __bool__ should return bool。",
+          "只要定义了 __bool__，__len__ 就不再参与真值判定，即使 __len__ 返回 0 也没用。",
+          "if x、while x、not x、and/or、bool(x) 全部走这套真值协议，行为保持一致。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（按行）",
+        "code": "class Box:\n    def __init__(self, items):\n        self.items = list(items)\n\n    def __len__(self):\n        return len(self.items)\n\n\nclass Crate:\n    def __init__(self, items):\n        self.items = list(items)\n\n    def __len__(self):\n        return len(self.items)\n\n    def __bool__(self):\n        return True\n\n\nclass Empty:\n    pass\n\n\nprint(bool(Box([])))\nprint(bool(Box([1])))\nprint(bool(Crate([])))\nprint(bool(Crate([1])))\nprint(bool(Empty()))\nprint(len(Box([])))",
+        "expected": [
+          "False",
+          "True",
+          "True",
+          "True",
+          "True",
+          "0"
+        ],
+        "explain": "Box 只有 __len__：空列表长度为 0，bool 为 False；非空为 True。Crate 额外定义了 __bool__ 且恒返回 True，于是 __len__ 被忽略，空 Crate 的真值也是 True。Empty 两个方法都没有，实例恒为真。len(Box([])) 仍是 0，说明 __len__ 依然可用，只是不参与 Crate 的真值判定。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Queue:\n    def __init__(self, items):\n        self.items = list(items)\n\n    def __len__(self):\n        return len(self.items)\n\n    def __bool__(self):\n        return self.items\n\n\nq = Queue([])\nif q:\n    print(\"has work\")\nelse:\n    print(\"empty\")",
+        "rootCause": "__bool__ 返回的是 list 而不是 bool。真值协议要求 __bool__ 的返回值是 bool，CPython 会对结果做严格检查并抛 TypeError: __bool__ should return bool, returned list；同时这个错误的 __bool__ 还覆盖了本来能正确工作的 __len__。",
+        "fix": "返回真正的布尔值，例如 def __bool__(self): return len(self.items) > 0 或 return bool(self.items)；如果语义就是\"非空为真\"，也可以直接删掉 __bool__ 让 __len__ 生效。"
+      },
+      "code_task": {
+        "prompt": "实现 Basket(items)：用 __len__ 表示元素个数，使空篮子为假、非空为真；再实现子类 AlwaysBasket 用 __bool__ 恒为真，验证 __bool__ 优先于 __len__。",
+        "acceptance": [
+          "bool(Basket([])) is False，bool(Basket([1])) is True，len(Basket([])) == 0",
+          "bool(AlwaysBasket([])) is True，说明 __bool__ 覆盖了 __len__",
+          "__bool__ 返回严格的 bool 类型（不是列表或整数）",
+          "空篮子参与 or 表达式时返回后备值，如 (Basket([]) or \"fallback\") == \"fallback\""
+        ],
+        "reference": "class Basket:\n    def __init__(self, items):\n        self.items = list(items)\n\n    def __len__(self):\n        return len(self.items)\n\n\nclass AlwaysBasket(Basket):\n    def __bool__(self):\n        return True\n\n\nif __name__ == \"__main__\":\n    assert bool(Basket([])) is False\n    assert bool(Basket([1])) is True\n    assert len(Basket([])) == 0\n    assert bool(AlwaysBasket([])) is True\n    assert bool(AlwaysBasket([1])) is True\n    assert (Basket([]) or \"fallback\") == \"fallback\"\n    print(\"ok\")"
+      },
+      "pitfalls": [
+        "__bool__ 返回非布尔值（列表、整数），bool(x) 直接抛 TypeError。",
+        "以为定义了 __len__ 就一定按长度判真假，同时又定义了 __bool__ 时以 __bool__ 为准。",
+        "用 __len__ 表示容量而不是元素个数，导致真假语义与直觉不符。"
+      ]
+    },
+    {
+      "code": "py.dunder.container",
+      "title": "len、contains、getitem 的迭代回退",
+      "minutes": 25,
+      "module": "数据模型",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2303",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2304",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "只实现 __getitem__ 的类为什么还能被 for 遍历和 in 判断？迭代什么时候停止？",
+        "answer": [
+          "__len__ 让 len(x) 可用，在没有 __bool__ 时也参与真值判定；__contains__ 决定 `in` 的行为；__getitem__ 支持下标取值。",
+          "for 循环优先调用 __iter__；没有 __iter__ 时退化为旧式序列协议：从下标 0 开始反复调用 __getitem__(0)、__getitem__(1)……直到抛 IndexError 才结束。",
+          "没有 __contains__ 时，`in` 同样退化为这套 __getitem__ 迭代，逐个比较元素；实现了 __contains__ 则直接用它，不再逐个迭代。",
+          "回退要求下标从 0 连续递增，且越界必须抛 IndexError；抛 KeyError、ValueError、StopIteration 都不会被当成迭代结束，异常会直接冒泡。",
+          "__getitem__ 同时支撑 x[i] 与切片 x[a:b]（是否支持切片由实现决定），列表自己会正确处理切片与负下标。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（按行）",
+        "code": "class Row:\n    def __init__(self, data):\n        self.data = list(data)\n\n    def __getitem__(self, index):\n        return self.data[index]\n\n\nclass Tagged:\n    def __init__(self, tags):\n        self.tags = list(tags)\n\n    def __len__(self):\n        return len(self.tags)\n\n    def __contains__(self, item):\n        return item in self.tags\n\n    def __getitem__(self, index):\n        return self.tags[index]\n\n\nr = Row([10, 20, 30])\nfor value in r:\n    print(value)\nprint(20 in r)\nprint(list(r))\nt = Tagged([\"a\", \"b\"])\nprint(len(t))\nprint(bool(t))\nprint(\"a\" in t)\nprint(t[1])",
+        "expected": [
+          "10",
+          "20",
+          "30",
+          "True",
+          "[10, 20, 30]",
+          "2",
+          "True",
+          "True",
+          "b"
+        ],
+        "explain": "Row 只有 __getitem__，for 从下标 0 开始取值，取到 30 后下一次调用抛 IndexError 结束循环；`20 in r` 没有 __contains__，同样靠 __getitem__ 迭代找到 20 返回 True；list(r) 也走这套回退，得到 [10, 20, 30]。Tagged 实现了三个协议：len(t) 与 bool(t) 来自 __len__，\"a\" in t 直接走 __contains__，t[1] 走 __getitem__ 返回 \"b\"。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Ring:\n    def __init__(self, data):\n        self.data = list(data)\n\n    def __getitem__(self, index):\n        if index >= len(self.data):\n            raise ValueError(\"out of range\")\n        return self.data[index]\n\n\nfor value in Ring([1, 2, 3]):\n    print(value)",
+        "rootCause": "没有 __iter__ 时 for 依赖 __getitem__ 回退，并且只能靠 IndexError 判断序列结束。这里越界抛的是 ValueError，for 不认为迭代该停止，异常直接向上传播，程序中断（只打印 1 2 3 后报 ValueError: out of range）。",
+        "fix": "越界时改为 raise IndexError(index)（或 return 后由下一层抛出 IndexError）；更稳妥的做法是显式实现 __iter__ 返回 iter(self.data)，不再依赖回退。"
+      },
+      "code_task": {
+        "prompt": "实现 History(items)，只用一个内部列表，提供 __len__、__contains__、__getitem__；验证 len、in、下标（含负下标）、list()、列表推导式都能工作，其中迭代依赖 __getitem__ 回退。",
+        "acceptance": [
+          "len(History([3, 1, 4])) == 3，1 in h 为 True，9 not in h 为 True",
+          "h[0] == 3，h[-1] == 4（负下标可用）",
+          "list(History([3, 1, 4])) == [3, 1, 4]，说明 for 回退正常且在 IndexError 处停止",
+          "[v * 2 for v in h] == [6, 2, 8]"
+        ],
+        "reference": "class History:\n    def __init__(self, items):\n        self._items = list(items)\n\n    def __len__(self):\n        return len(self._items)\n\n    def __contains__(self, item):\n        return item in self._items\n\n    def __getitem__(self, index):\n        return self._items[index]\n\n\nif __name__ == \"__main__\":\n    h = History([3, 1, 4])\n    assert len(h) == 3\n    assert 1 in h\n    assert 9 not in h\n    assert h[0] == 3\n    assert h[-1] == 4\n    assert list(h) == [3, 1, 4]\n    assert [value * 2 for value in h] == [6, 2, 8]\n    print(\"ok\")"
+      },
+      "pitfalls": [
+        "__getitem__ 越界抛 KeyError/ValueError，for 迭代无法正常结束。",
+        "以为回退能处理任意键或不连续下标：旧式协议只会按 0、1、2……递增取值。",
+        "越界时不抛 IndexError 而返回默认值，导致 for 永远不结束（死循环）。",
+        "只实现 __contains__ 就以为可迭代，for 仍会走 __getitem__ 回退，没有 __getitem__ 时直接 TypeError。"
+      ]
+    },
+    {
+      "code": "py.dunder.format",
+      "title": "__format__ 格式化协议",
+      "minutes": 15,
+      "module": "数据模型",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2301",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2304",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "f-string 里的格式说明（冒号后面的部分）是怎么作用到对象上的？只定义 __str__ 为什么还不够？",
+        "answer": [
+          "format(x, spec) 与 f\"{x:spec}\" 都调用 type(x).__format__(x, spec)，spec 是冒号后面的完整字符串；没有冒号时 spec 为空串。",
+          "object.__format__ 对空 spec 返回 str(self)，对非空 spec 抛 TypeError: unsupported format string，因此自定义类想支持格式说明必须自己实现 __format__。",
+          "__str__ 只影响空 spec 的转换（str(x)、f\"{x}\"）；有 spec 时不会自动退回 __str__，而是直接进入 __format__。",
+          "常见实现：spec 为空返回 str(self)，否则委托 format(str(self), spec) 复用字符串的填充/对齐能力，或按自定义规格解析（如 \"hex\"、\"f\"）。",
+          "!r/!s 先按转换符生成字符串，再把 spec 作用到那个字符串上，例如 f\"{x!r:>8}\"。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（按行）",
+        "code": "class Celsius:\n    def __init__(self, value):\n        self.value = value\n\n    def __str__(self):\n        return f\"{self.value} C\"\n\n\nclass Hex:\n    def __init__(self, value):\n        self.value = value\n\n    def __str__(self):\n        return str(self.value)\n\n    def __format__(self, spec):\n        if spec == \"hex\":\n            return format(self.value, \"x\")\n        return str(self)\n\n\nc = Celsius(25)\nprint(str(c))\nprint(f\"{c}\")\ntry:\n    print(f\"{c:>8}\")\nexcept TypeError as error:\n    print(type(error).__name__)\nh = Hex(255)\nprint(f\"{h}\")\nprint(f\"{h:hex}\")",
+        "expected": [
+          "25 C",
+          "25 C",
+          "TypeError",
+          "255",
+          "ff"
+        ],
+        "explain": "Celsius 只定义了 __str__：str(c) 与 f\"{c}\"（空 spec）都得到 \"25 C\"；f\"{c:>8}\" 带非空 spec，__format__ 继承自 object，直接抛 TypeError（捕获后只打印类型名）。Hex 定义了 __format__：f\"{h}\" 传空 spec，返回 str(self) 即 \"255\"；f\"{h:hex}\" 传 \"hex\"，返回 format(255, \"x\") 即 \"ff\"。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Duration:\n    def __init__(self, seconds):\n        self.seconds = seconds\n\n    def __str__(self):\n        return f\"{self.seconds}s\"\n\n\nd = Duration(90)\nprint(format(d, \">8\"))",
+        "rootCause": "类只定义了 __str__，没有定义 __format__，于是继承 object.__format__。非空格式说明 \">8\" 会让 object.__format__ 抛 TypeError: unsupported format string passed to Duration.__format__；__str__ 只对空 spec 生效。",
+        "fix": "实现 __format__：空 spec 返回 str(self)，非空 spec 委托给字符串，例如 def __format__(self, spec): return format(str(self), spec)（想支持自定义规格则先解析 spec）。"
+      },
+      "code_task": {
+        "prompt": "实现 Temperature(celsius)：空格式说明返回 \"25C\"（走 __str__），spec 为 \"f\" 时返回华氏温度字符串，其它 spec 抛 ValueError；验证 f-string 三种写法。",
+        "acceptance": [
+          "str(t) == \"25C\" 且 f\"{t}\" == \"25C\"（空 spec 走 __str__）",
+          "format(Temperature(25), \"f\") == \"77.0F\"（25 * 9/5 + 32）",
+          "format(Temperature(25), \"x\") 抛 ValueError，而不是继承 object 的 TypeError",
+          "__format__ 能收到 spec 参数并按 spec 分支，而不是一律返回 str(self)"
+        ],
+        "reference": "class Temperature:\n    def __init__(self, celsius):\n        self.celsius = celsius\n\n    def __str__(self):\n        return f\"{self.celsius}C\"\n\n    def __format__(self, spec):\n        if spec == \"\":\n            return str(self)\n        if spec == \"f\":\n            return f\"{self.celsius * 9 / 5 + 32}F\"\n        raise ValueError(f\"unsupported format spec: {spec!r}\")\n\n\nif __name__ == \"__main__\":\n    t = Temperature(25)\n    assert str(t) == \"25C\"\n    assert f\"{t}\" == \"25C\"\n    assert format(t, \"f\") == \"77.0F\"\n    try:\n        format(t, \"x\")\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"expected ValueError for unknown spec\")\n    print(\"ok\")"
+      },
+      "pitfalls": [
+        "只定义 __str__，以为 f\"{x:>8}\" 也能用，实际 object.__format__ 抛 TypeError。",
+        "__format__ 忽略 spec 直接返回 str(self)，让对齐、宽度等格式参数静默失效。",
+        "把转换符和格式说明的顺序写反，如 f\"{x:spec!r}\" 是语法错误，正确写法是 f\"{x!r:spec}\"。"
+      ]
+    },
+    {
+      "code": "py.value.immutable",
+      "title": "不可变值对象的相等性、哈希一致性",
+      "minutes": 25,
+      "module": "数据模型",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2302",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2304",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "怎么做一个既能安全放进 set/dict、语义又是\"值\"的对象？为什么字段必须只读？",
+        "answer": [
+          "值对象按字段内容判等：__eq__ 逐个比较所有参与语义的字段（常写成元组比较），并先做 isinstance 检查、类型不符返回 NotImplemented。",
+          "只读手段有三类：只读 property（不给 setter）、__slots__ 限制属性清单、dataclass(frozen=True) 或重写 __setattr__ 拒绝赋值；组合使用最稳。",
+          "__hash__ 对参与相等的字段元组求哈希：return hash((self._x, self._y))，这样 a == b 时必然 hash(a) == hash(b)。",
+          "字段只读是哈希安全的前提：对象进入 set/dict 后哈希必须保持不变，否则再按新哈希查找就会找不到、去重失效。",
+          "__slots__ 省内存并禁止动态新增属性，但它本身不阻止修改已有属性，要只读仍需 property 或 __setattr__ 配合。"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（按行）",
+        "code": "class Point:\n    __slots__ = (\"_x\", \"_y\")\n\n    def __init__(self, x, y):\n        self._x = x\n        self._y = y\n\n    @property\n    def x(self):\n        return self._x\n\n    @property\n    def y(self):\n        return self._y\n\n    def __eq__(self, other):\n        if not isinstance(other, Point):\n            return NotImplemented\n        return (self._x, self._y) == (other._x, other._y)\n\n    def __hash__(self):\n        return hash((self._x, self._y))\n\n    def __repr__(self):\n        return f\"Point({self._x!r}, {self._y!r})\"\n\n\na = Point(1, 2)\nb = Point(1, 2)\nc = Point(3, 2)\nprint(a == b)\nprint(a == c)\nprint(len({a, b}))\nprint(len({a, c}))\nlookup = {a: \"red\"}\nprint(lookup[b])\ntry:\n    a.x = 9\nexcept AttributeError as error:\n    print(type(error).__name__)",
+        "expected": [
+          "True",
+          "False",
+          "1",
+          "2",
+          "red",
+          "AttributeError"
+        ],
+        "explain": "a 与 b 字段相同，__eq__ 返回 True；a 与 c 字段不同返回 False。__hash__ 基于 (_x, _y)，所以 a、b 哈希相同，集合 {a, b} 去重后长度为 1，而 {a, c} 长度为 2。dict 用 a 作键后可以用相等的 b 取到 \"red\"。x 是只读 property，赋值 a.x = 9 抛 AttributeError（只打印类型名）。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class Item:\n    def __init__(self, name):\n        self.name = name\n\n    def __eq__(self, other):\n        return isinstance(other, Item) and self.name == other.name\n\n    def __hash__(self):\n        return hash(self.name)\n\n\nbag = {Item(\"pen\")}\nitem = Item(\"pen\")\nitem.name = \"cup\"\nprint(item in bag)",
+        "rootCause": "哈希基于可变字段 name。对象入 set 时按 \"pen\" 计算并放进对应槽位，之后把 name 改成 \"cup\"，哈希值变了，集合会去 \"cup\" 的槽位查找，于是 `item in bag` 返回 False，去重和查找全部失效——违反\"进入 set/dict 后哈希不得变化\"的不变量。",
+        "fix": "让参与哈希的字段只读：把 name 改成只读 property（内部 _name）并加 __slots__，或使用 frozen dataclass；字段需要变化时不要修改原对象，而是创建新对象，也不要再用可变对象当 set/dict 的键。"
+      },
+      "code_task": {
+        "prompt": "实现不可变值对象 Point(x, y)：用 __slots__ 加只读 property 固定字段，__eq__ 比较两个字段（类型不符返回 NotImplemented），__hash__ 对字段元组求哈希，并验证集合去重、dict 查找与只读约束。",
+        "acceptance": [
+          "Point(1, 2) == Point(1, 2) 为 True，hash 相同，len({Point(1, 2), Point(1, 2)}) == 1",
+          "Point(1, 2) != Point(3, 2)",
+          "d = {Point(1, 2): \"red\"} 时 d[Point(1, 2)] == \"red\"",
+          "p.x = 9 与 p.z = 3 都抛 AttributeError（property 无 setter，__slots__ 拒绝新属性）"
+        ],
+        "reference": "class Point:\n    __slots__ = (\"_x\", \"_y\")\n\n    def __init__(self, x, y):\n        self._x = x\n        self._y = y\n\n    @property\n    def x(self):\n        return self._x\n\n    @property\n    def y(self):\n        return self._y\n\n    def __eq__(self, other):\n        if not isinstance(other, Point):\n            return NotImplemented\n        return (self._x, self._y) == (other._x, other._y)\n\n    def __hash__(self):\n        return hash((self._x, self._y))\n\n    def __repr__(self):\n        return f\"Point({self._x!r}, {self._y!r})\"\n\n\nif __name__ == \"__main__\":\n    a = Point(1, 2)\n    b = Point(1, 2)\n    assert a == b\n    assert hash(a) == hash(b)\n    assert len({a, b}) == 1\n    assert a != Point(3, 2)\n    lookup = {a: \"red\"}\n    assert lookup[b] == \"red\"\n    try:\n        a.x = 9\n    except AttributeError:\n        pass\n    else:\n        raise AssertionError(\"Point must be immutable\")\n    try:\n        a.z = 3\n    except AttributeError:\n        pass\n    else:\n        raise AssertionError(\"__slots__ must reject unknown attributes\")\n    print(\"ok\")"
+      },
+      "pitfalls": [
+        "只把字段写成只读 property 却保留 __dict__，对象仍能被随意新增属性，破坏值语义。",
+        "__slots__ 只限制属性名，不阻止修改；不配合 property/__setattr__ 就不是真正只读。",
+        "__eq__ 只比较部分字段，或 __hash__ 用了没参与相等判断的字段，破坏相等与哈希一致性。",
+        "把可变容器（list/dict）直接放进哈希元组，容器内容一变哈希就变，对象作键立即失效。"
+      ]
+    },
+    {
+      "code": "py.with.protocol",
+      "title": "with 协议：__enter__/__exit__",
+      "minutes": 20,
+      "module": "上下文管理",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2401",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2502",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "with 语句在进入和退出时分别调用了对象的哪些方法？as 后面的名字拿到的是什么？",
+        "answer": [
+          "with 进入时调用 __enter__，它的返回值绑定给 as 目标；没有 return 就绑定 None",
+          "__exit__ 在离开 with 代码块时一定被调用，正常结束、return、break、抛异常都算",
+          "__exit__ 的签名固定为 (self, exc_type, exc, tb)，正常退出时三个参数都是 None",
+          "同一个管理器对象可以被多个 with 复用，但累积状态要自己维护",
+          "with 本身不捕获异常，异常要不要继续传播由 __exit__ 的返回值决定"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（先自己推一遍调用顺序）",
+        "code": "class Trace:\n    def __init__(self, name):\n        self.name = name\n        self.events = []\n\n    def __enter__(self):\n        self.events.append(\"enter\")\n        print(\"enter\", self.name)\n        return self.name.upper()\n\n    def __exit__(self, exc_type, exc, tb):\n        self.events.append(\"exit\")\n        print(\"exit\", self.name)\n        return False\n\n\nt = Trace(\"a\")\nwith t as value:\n    print(\"body\", value)\n    print(\"inside\", t.events)\nprint(\"after\", t.events)\n\nwith t as value:\n    print(\"body2\", value)\nprint(\"events2\", t.events)",
+        "expected": [
+          "enter a",
+          "body A",
+          "inside ['enter']",
+          "exit a",
+          "after ['enter', 'exit']",
+          "enter a",
+          "body2 A",
+          "exit a",
+          "events2 ['enter', 'exit', 'enter', 'exit']"
+        ],
+        "explain": "__enter__ 的返回值 name.upper() 绑给 as 目标，所以 value 是 \"A\"；块内 t.events 还只有 \"enter\"，说明 __exit__ 是块结束后才跑的。第二次用同一个 t，events 继续累积成四个元素，可见管理器对象的复用状态要由自己保证。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class DBConnection:\n    def __init__(self, dsn):\n        self.dsn = dsn\n        self.conn = None\n\n    def open(self):\n        self.conn = \"connected:\" + self.dsn\n\n    def __enter__(self):\n        self.open()\n\n    def __exit__(self, exc_type, exc, tb):\n        self.conn = None\n\n\nwith DBConnection(\"db://main\") as conn:\n    print(conn.query(\"select 1\"))",
+        "rootCause": "__enter__ 打开了连接却没有 return self，with 把它的返回值 None 绑给 as 目标 conn；于是 conn.query(...) 实际是 None.query(...)，抛 AttributeError: 'NoneType' object has no attribute 'query'。__exit__ 写对了也救不了，因为异常发生在绑定之后。",
+        "fix": "在 __enter__ 末尾 return self（或 return self.conn），让 with 交付真正要用的对象：\n    def __enter__(self):\n        self.open()\n        return self\n必要时再补一个 close()，让 __exit__ 调用它而不是直接清空属性。"
+      },
+      "code_task": {
+        "prompt": "写一个上下文管理器类 Section：构造参数是 name；__enter__ 向 self.events 追加 \"start:\" + name 并返回 name；__exit__ 向 self.events 追加 \"end:\" + name 并返回 False。要求块内抛异常时 __exit__ 仍然执行，且异常继续向外传播。用 unittest 覆盖正常路径与异常路径。",
+        "acceptance": [
+          "with Section(\"a\") as name 时 name 等于 \"a\"",
+          "正常退出后 section.events 等于 [\"start:a\", \"end:a\"]",
+          "块内抛 ValueError 时 __exit__ 仍执行，events 仍为 [\"start:a\", \"end:a\"]",
+          "__exit__ 返回 False，异常不被吞掉，外层 assertRaises(ValueError) 能捕获",
+          "可以再跑一次 with 复用同一对象，events 按顺序累积"
+        ],
+        "reference": "import unittest\n\n\nclass Section:\n    def __init__(self, name):\n        self.name = name\n        self.events = []\n\n    def __enter__(self):\n        self.events.append(\"start:\" + self.name)\n        return self.name\n\n    def __exit__(self, exc_type, exc, tb):\n        self.events.append(\"end:\" + self.name)\n        return False\n\n\nclass SectionTest(unittest.TestCase):\n    def test_normal_exit(self):\n        section = Section(\"a\")\n        with section as name:\n            self.assertEqual(name, \"a\")\n        self.assertEqual(section.events, [\"start:a\", \"end:a\"])\n\n    def test_exit_runs_on_error(self):\n        section = Section(\"a\")\n        with self.assertRaises(ValueError):\n            with section:\n                raise ValueError(\"boom\")\n        self.assertEqual(section.events, [\"start:a\", \"end:a\"])\n\n    def test_reuse_accumulates(self):\n        section = Section(\"b\")\n        with section:\n            pass\n        with section:\n            pass\n        self.assertEqual(section.events, [\"start:b\", \"end:b\", \"start:b\", \"end:b\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为 __exit__ 只在正常结束时调用，块内抛异常就不执行",
+        "把清理逻辑写在 with 语句之后，而不是放进 __exit__",
+        "__exit__ 没有声明 (exc_type, exc, tb) 三个参数，异常信息取不到",
+        "把 __enter__ 写成只做初始化、忘记 return 要交付的对象，as 拿到 None"
+      ]
+    },
+    {
+      "code": "py.with.suppress",
+      "title": "__exit__ 返回值控制异常抑制",
+      "minutes": 20,
+      "module": "上下文管理",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2401",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "__exit__ 的三个参数分别是什么？它的返回值怎样影响异常传播？",
+        "answer": [
+          "__exit__(exc_type, exc, tb) 依次是异常类型、异常实例和 traceback；块内没异常时三者都是 None",
+          "返回真值表示异常已被处理，with 之后的代码继续执行，异常消失",
+          "返回 None 或 False 表示不处理，异常在 __exit__ 返回后继续向外传播",
+          "__exit__ 内部抛出的新异常会替换掉块内原来的异常",
+          "contextlib.suppress(SomeError) 就是只对指定类型返回 True 的标准实现"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出（注意 __exit__ 返回值的差别）",
+        "code": "class Swallow:\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc, tb):\n        print(\"exit sees\", None if exc_type is None else exc_type.__name__)\n        return True\n\n\nclass Propagate:\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc, tb):\n        print(\"exit sees\", None if exc_type is None else exc_type.__name__)\n        return False\n\n\nwith Swallow():\n    print(\"raise 1\")\n    raise ValueError(\"boom\")\nprint(\"after suppressed\")\n\ntry:\n    with Propagate():\n        print(\"raise 2\")\n        raise KeyError(\"bad\")\nexcept KeyError as exc:\n    print(\"caught\", type(exc).__name__)\nprint(\"done\")",
+        "expected": [
+          "raise 1",
+          "exit sees ValueError",
+          "after suppressed",
+          "raise 2",
+          "exit sees KeyError",
+          "caught KeyError",
+          "done"
+        ],
+        "explain": "两段都先把异常交给 __exit__，因为它总能收到 exc_type。Swallow 返回 True，异常被吞掉，所以紧跟着执行 print(\"after suppressed\")；Propagate 返回 False，KeyError 继续向外传播，被外层 try/except 捕获并打印类型，最后才是 done。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "class IgnoreMissing:\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc, tb):\n        if exc_type is KeyError:\n            print(\"ignoring\", exc)\n\n\nwith IgnoreMissing():\n    value = {}[\"missing\"]\nprint(\"continued\")",
+        "rootCause": "__exit__ 里只打印了信息，没有 return True。函数隐式返回 None，等价于“不处理”，KeyError 继续向外传播，print(\"continued\") 根本不会执行，程序以 KeyError 退出。",
+        "fix": "在命中的分支里显式返回真值，并保留对其他异常放行：\n    def __exit__(self, exc_type, exc, tb):\n        if exc_type is KeyError:\n            return True\n        return False\n更简单的做法是直接用 contextlib.suppress(KeyError)，它内部就是这个语义。"
+      },
+      "code_task": {
+        "prompt": "写一个上下文管理器类 SuppressOnly，构造参数是若干异常类型；只有当块内异常属于给定类型（含子类）时，__exit__ 才返回 True 抑制它，其他异常一律返回 False 继续传播。用 unittest 覆盖被抑制、未被抑制、子类命中和正常退出四种情况。",
+        "acceptance": [
+          "with SuppressOnly(KeyError) 包裹 {}[\"missing\"] 时异常被抑制，代码继续执行",
+          "块内抛 ValueError 时不被抑制，外层 assertRaises(ValueError) 能捕获",
+          "SuppressOnly(LookupError) 能抑制 KeyError 子类",
+          "正常退出时 __exit__ 收到全 None，不报错，且 as 目标就是管理器自身"
+        ],
+        "reference": "import unittest\n\n\nclass SuppressOnly:\n    def __init__(self, *exc_types):\n        self.exc_types = exc_types\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc, tb):\n        if exc_type is None:\n            return False\n        return issubclass(exc_type, self.exc_types)\n\n\nclass SuppressOnlyTest(unittest.TestCase):\n    def test_suppresses_listed(self):\n        with SuppressOnly(KeyError):\n            {}[\"missing\"]\n\n    def test_propagates_unlisted(self):\n        with self.assertRaises(ValueError):\n            with SuppressOnly(KeyError):\n                raise ValueError(\"keep me\")\n\n    def test_suppresses_subclass(self):\n        with SuppressOnly(LookupError):\n            {}[\"missing\"]\n\n    def test_normal_exit(self):\n        with SuppressOnly(KeyError) as manager:\n            pass\n        self.assertIsInstance(manager, SuppressOnly)\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为定义了 __exit__ 就等于会吞异常，返回值才是开关",
+        "__exit__ 里 return False 和没有 return 效果相同，都不会抑制",
+        "想只忽略某一类异常，却对所有异常都返回 True",
+        "在 __exit__ 里返回某个对象，以为它会成为 with 的返回值（其实只被当真值判断）"
+      ]
+    },
+    {
+      "code": "py.with.contextmanager",
+      "title": "contextlib.contextmanager",
+      "minutes": 25,
+      "module": "上下文管理",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2402",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2502",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "@contextmanager 是怎么把一个生成器函数变成上下文管理器的？yield 处抛出的异常去了哪里？",
+        "answer": [
+          "yield 之前到 yield 之间的代码在 __enter__ 阶段执行，yield 出来的值就是 as 目标拿到的对象",
+          "yield 之后的代码在 __exit__ 阶段执行，清理逻辑放 finally 里最稳",
+          "块内抛出的异常会在 yield 那一行重新抛回生成器，可以用 try/except/finally 决定收还是放",
+          "生成器捕获异常后正常结束（不再抛出）等于 __exit__ 返回 True，异常被抑制",
+          "生成器必须只 yield 一次，多 yield 会抛 RuntimeError: generator didn't stop"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from contextlib import contextmanager\n\n\n@contextmanager\ndef managed(name):\n    print(\"enter\", name)\n    try:\n        yield name.upper()\n    except ValueError as exc:\n        print(\"caught\", exc)\n    finally:\n        print(\"exit\", name)\n\n\nwith managed(\"a\") as v:\n    print(\"body\", v)\nprint(\"---\")\nwith managed(\"b\") as v:\n    print(\"body\", v)\n    raise ValueError(\"oops\")\nprint(\"after\")",
+        "expected": [
+          "enter a",
+          "body A",
+          "exit a",
+          "---",
+          "enter b",
+          "body B",
+          "caught oops",
+          "exit b",
+          "after"
+        ],
+        "explain": "yield 之前打印 enter，yield 的值 \"A\" 绑给 as 目标；第一段正常结束，生成器被 next 推完，finally 打印 exit a。第二段 body 抛的 ValueError 在 yield 处抛回生成器，被 except 捕获，finally 仍执行，生成器正常结束等价于抑制异常，所以 after 会打印。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from contextlib import contextmanager\n\n\n@contextmanager\ndef locked(lock):\n    lock.acquire()\n    yield lock\n    lock.release()\n\n\nwith locked(my_lock):\n    do_work()  # 这里抛异常\nprint(\"finished\")",
+        "rootCause": "yield 之后没有 try/finally。块内异常会在 yield 那一行被抛回生成器，lock.release() 这行被跳过，生成器带着异常结束，锁永远不会释放；下一个线程再 acquire 就死锁。",
+        "fix": "把 yield 放进 try，释放动作放 finally：\n    lock.acquire()\n    try:\n        yield lock\n    finally:\n        lock.release()\n这样正常退出和异常退出都会释放，且不改变异常的传播。"
+      },
+      "code_task": {
+        "prompt": "用 @contextmanager 写 step(log, name)：进入时向 log 追加 \">\" + name，退出时追加 \"<\" + name；如果块内抛 ValueError，就追加 \"handled:\" + str(exc) 并抑制它，其他异常照常传播。用 unittest 覆盖正常、抑制 ValueError、传播 KeyError 三条路径。",
+        "acceptance": [
+          "正常退出后 log 等于 [\">write\", \"<write\"]，as 目标是 name 字符串",
+          "块内 raise ValueError(\"x\") 后 log 等于 [\">write\", \"handled:x\", \"<write\"]，且不向外抛",
+          "块内 raise KeyError 时异常传播，log 仍以 \"<write\" 结尾（finally 生效）",
+          "生成器只 yield 一次，with 结束后没有 RuntimeError 或残留 StopIteration"
+        ],
+        "reference": "import unittest\nfrom contextlib import contextmanager\n\n\n@contextmanager\ndef step(log, name):\n    log.append(\">\" + name)\n    try:\n        yield name\n    except ValueError as exc:\n        log.append(\"handled:\" + str(exc))\n    finally:\n        log.append(\"<\" + name)\n\n\nclass StepTest(unittest.TestCase):\n    def test_normal(self):\n        log = []\n        with step(log, \"write\") as name:\n            self.assertEqual(name, \"write\")\n        self.assertEqual(log, [\">write\", \"<write\"])\n\n    def test_suppresses_value_error(self):\n        log = []\n        with step(log, \"write\"):\n            raise ValueError(\"x\")\n        self.assertEqual(log, [\">write\", \"handled:x\", \"<write\"])\n\n    def test_propagates_key_error(self):\n        log = []\n        with self.assertRaises(KeyError):\n            with step(log, \"write\"):\n                raise KeyError(\"bad\")\n        self.assertEqual(log, [\">write\", \"<write\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "在生成器里写 return 而不是 yield，with 会直接报 __enter__ 缺失",
+        "yield 之后不写 try/finally，块内异常时清理代码被跳过",
+        "同一个生成器里 yield 两次，退出时抛 RuntimeError: generator didn't stop",
+        "把 yield 的值和函数返回值搞混，as 拿到的是 yield 出来的那个对象"
+      ]
+    },
+    {
+      "code": "py.dataclass.basics",
+      "title": "dataclass 的 field 默认工厂",
+      "minutes": 25,
+      "module": "dataclass",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2403",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "@dataclass 自动生成了哪些方法？为什么 items: list = [] 会在定义类的时候直接报错？",
+        "answer": [
+          "@dataclass 按类型注解生成 __init__、__repr__、__eq__，字段声明顺序就是 __init__ 的参数顺序",
+          "可变默认值（list/dict/set）会被所有实例共享，dataclass 直接抛 ValueError 阻止这种写法",
+          "要可变默认值就用 field(default_factory=list)，每个实例各调用一次工厂，得到独立对象",
+          "没有默认值的字段必须排在带默认值的字段前面，否则生成 __init__ 时抛 TypeError",
+          "默认 eq=True 会把 __hash__ 置为 None，未 frozen 的 dataclass 实例不能放进 set 或当字典键"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from dataclasses import dataclass, field\n\n\n@dataclass\nclass Team:\n    name: str\n    members: list = field(default_factory=list)\n    score: int = 0\n\n\na = Team(\"red\")\nb = Team(\"blue\")\na.members.append(\"ann\")\na.score += 1\n\nprint(a)\nprint(b)\nprint(a == Team(\"red\", [\"ann\"], 1))\nprint(a.members is b.members)\ntry:\n    hash(a)\nexcept TypeError as exc:\n    print(\"unhashable\", type(exc).__name__)",
+        "expected": [
+          "Team(name='red', members=['ann'], score=1)",
+          "Team(name='blue', members=[], score=0)",
+          "True",
+          "False",
+          "unhashable TypeError"
+        ],
+        "explain": "生成的 __repr__ 固定按字段顺序输出 name=、members=、score=；default_factory=list 让每个实例各自建一个列表，所以改 a.members 不影响 b，a.members is b.members 为 False。__eq__ 按字段值比较，字段全等就为 True。因为 eq=True 且没有 frozen，__hash__ 被置为 None，hash(a) 抛 TypeError。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from dataclasses import dataclass\n\n\n@dataclass\nclass Cart:\n    items: list = []\n\n\nc1 = Cart()\nc2 = Cart()\nc1.items.append(\"apple\")\nprint(c1.items, c2.items)",
+        "rootCause": "可变的类属性 [] 被当作默认值写进 __init__ 签名，dataclass 在定义类时就抛 ValueError: mutable default <class 'list'> for field items is not allowed。即使绕过这个检查，类级别列表也会被所有实例共享，c1.items.append 会污染 c2。",
+        "fix": "改用默认工厂，让每个实例拿到新列表：\n    from dataclasses import dataclass, field\n\n    @dataclass\n    class Cart:\n        items: list = field(default_factory=list)\ndict、set 同理，用 field(default_factory=dict) 或 field(default_factory=set)。"
+      },
+      "code_task": {
+        "prompt": "定义 dataclass Playlist：字段 name: str、tracks: list（默认工厂，默认空列表）、plays: int（默认 0）。repr 与相等性交给 dataclass 生成，两个实例的 tracks 不能共享。用 unittest 验证默认值、repr、独立性、相等性。",
+        "acceptance": [
+          "Playlist(\"mix\") 的 tracks 为 []、plays 为 0",
+          "repr(Playlist(\"mix\")) 等于 \"Playlist(name='mix', tracks=[], plays=0)\"",
+          "两个默认实例的 tracks 互不影响，一个 append 后另一个仍为空",
+          "Playlist(\"mix\", [\"a\"], 1) 与字段值相同的另一实例相等，与字段值不同的实例不等"
+        ],
+        "reference": "import unittest\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass Playlist:\n    name: str\n    tracks: list = field(default_factory=list)\n    plays: int = 0\n\n\nclass PlaylistTest(unittest.TestCase):\n    def test_defaults(self):\n        playlist = Playlist(\"mix\")\n        self.assertEqual(playlist.tracks, [])\n        self.assertEqual(playlist.plays, 0)\n\n    def test_repr(self):\n        self.assertEqual(repr(Playlist(\"mix\")), \"Playlist(name='mix', tracks=[], plays=0)\")\n\n    def test_independent_lists(self):\n        first = Playlist(\"a\")\n        second = Playlist(\"b\")\n        first.tracks.append(\"song\")\n        self.assertEqual(first.tracks, [\"song\"])\n        self.assertEqual(second.tracks, [])\n\n    def test_equality(self):\n        self.assertEqual(Playlist(\"mix\", [\"a\"], 1), Playlist(\"mix\", [\"a\"], 1))\n        self.assertNotEqual(Playlist(\"mix\"), Playlist(\"other\"))\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "用 items: list = [] 当默认值，类一被定义就 ValueError",
+        "以为 dataclass 会为每个实例深拷贝默认值，其实默认对象是共享的",
+        "把带默认值的字段写在无默认值字段前面，生成 __init__ 时 TypeError",
+        "忘了未 frozen 的 dataclass 实例不可哈希，拿它当字典键或 set 元素"
+      ]
+    },
+    {
+      "code": "py.dataclass.options",
+      "title": "dataclass 的 frozen、slots、order 选项",
+      "minutes": 20,
+      "module": "dataclass",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2403",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "frozen=True、slots=True、order=True 分别给 dataclass 加了什么行为？",
+        "answer": [
+          "frozen=True 生成拦截赋值的 __setattr__，改字段抛 FrozenInstanceError，并与 eq=True 配合自动生成 __hash__",
+          "slots=True 生成 __slots__，实例不再有 __dict__，内存更省，但不能挂任意新属性",
+          "order=True 按字段声明顺序生成 __lt__/__le__/__gt__/__ge__，列表可以直接 sorted",
+          "frozen 只冻结字段的重新绑定，字段指向的 list/dict 内容照样能改，不是深不可变",
+          "slots=True 与 frozen=True 可以叠加，常用于做值对象或配置项"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass Point:\n    x: int\n    y: int\n\n\n@dataclass(order=True)\nclass Version:\n    major: int\n    minor: int\n\n\n@dataclass(slots=True)\nclass Box:\n    value: int\n\n\np = Point(1, 2)\ntry:\n    p.x = 10\nexcept Exception as exc:\n    print(type(exc).__name__)\n\nprint(len({Point(1, 2), Point(1, 2)}))\nprint([str(v) for v in sorted([Version(1, 10), Version(1, 2), Version(0, 9)])])\n\nbox = Box(5)\ntry:\n    box.extra = 1\nexcept AttributeError as exc:\n    print(type(exc).__name__)\nprint(hasattr(box, \"__dict__\"))",
+        "expected": [
+          "FrozenInstanceError",
+          "1",
+          "['Version(major=0, minor=9)', 'Version(major=1, minor=2)', 'Version(major=1, minor=10)']",
+          "AttributeError",
+          "False"
+        ],
+        "explain": "frozen 拦截赋值，抛的是 dataclasses.FrozenInstanceError；它同时让实例可哈希，两个字段相同的 Point 在 set 里合并成 1 个。order=True 按 (major, minor) 字典序排序。slots=True 后实例没有 __dict__，赋值新属性抛 AttributeError，hasattr(box, \"__dict__\") 为 False。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass Counter:\n    value: int = 0\n\n    def bump(self):\n        self.value += 1\n        return self.value\n\n\ncounter = Counter()\nprint(counter.bump())",
+        "rootCause": "frozen=True 改写了 __setattr__，方法内的 self.value += 1 也是字段赋值，会抛 FrozenInstanceError（它是 AttributeError 的子类）。不可变对象上不该有原地修改方法。",
+        "fix": "让方法返回新实例，而不是改自己：\n    def bump(self):\n        return Counter(self.value + 1)\n确实需要内部可变字段（缓存、派生值）时，用 object.__setattr__(self, \"value\", ...) 显式绕过冻结，或将该字段设为 field(compare=False) 并去掉 frozen。"
+      },
+      "code_task": {
+        "prompt": "定义 frozen dataclass Temp（字段 celsius: int），提供方法 adjust(delta) 返回新的 Temp 而不修改自身；再定义 order=True 的 dataclass Score（字段 points: int）。用 unittest 验证冻结赋值报错、可哈希去重、adjust 返回新对象、Score 列表可排序。",
+        "acceptance": [
+          "给 Temp 实例的 celsius 赋值抛 FrozenInstanceError",
+          "字段相同的两个 Temp 能放进 set 并去重为 1 个，不同字段的保留 2 个",
+          "Temp(20).adjust(5) 等于 Temp(25)，原对象仍是 Temp(20) 且不是同一个对象",
+          "[Score(3), Score(1), Score(2)] 排序后 points 依次为 1、2、3"
+        ],
+        "reference": "import unittest\nfrom dataclasses import dataclass, FrozenInstanceError\n\n\n@dataclass(frozen=True)\nclass Temp:\n    celsius: int\n\n    def adjust(self, delta):\n        return Temp(self.celsius + delta)\n\n\n@dataclass(order=True)\nclass Score:\n    points: int\n\n\nclass OptionsTest(unittest.TestCase):\n    def test_frozen_blocks_assignment(self):\n        temp = Temp(20)\n        with self.assertRaises(FrozenInstanceError):\n            temp.celsius = 30\n\n    def test_frozen_hashable(self):\n        self.assertEqual(len({Temp(20), Temp(20)}), 1)\n        self.assertEqual(len({Temp(20), Temp(21)}), 2)\n\n    def test_adjust_returns_new(self):\n        temp = Temp(20)\n        warmer = temp.adjust(5)\n        self.assertEqual(warmer, Temp(25))\n        self.assertEqual(temp, Temp(20))\n        self.assertIsNot(temp, warmer)\n\n    def test_order(self):\n        scores = [Score(3), Score(1), Score(2)]\n        self.assertEqual([score.points for score in sorted(scores)], [1, 2, 3])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为 frozen=True 连字段指向的 list/dict 内容也冻结",
+        "在 frozen 类的普通方法里写 self.x = ...，运行时抛 FrozenInstanceError",
+        "开了 slots=True 还想给实例动态挂属性",
+        "以为 order=True 会挑“最合理”的字段比较，其实严格按声明顺序逐字段比"
+      ]
+    },
+    {
+      "code": "py.dataclass.derived",
+      "title": "__post_init__ 生成派生字段",
+      "minutes": 20,
+      "module": "dataclass",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2403",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "__post_init__ 什么时候执行？想让派生字段不出现在 __init__ 参数里该怎么做？",
+        "answer": [
+          "生成的 __init__ 设置完所有字段后调用 __post_init__，适合做校验与派生计算",
+          "field(init=False) 让字段不进 __init__ 签名，通常配合 __post_init__ 给它赋值",
+          "init=False 的字段默认仍出现在 __repr__ 和 __eq__ 里，不要它参与就再设 repr=False / compare=False",
+          "frozen=True 时普通赋值会被拦截，派生字段要用 object.__setattr__(self, name, value) 写入",
+          "__post_init__ 里抛异常会让构造失败，是校验不变量最自然的入口"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from dataclasses import dataclass, field\n\n\n@dataclass\nclass Rect:\n    w: int\n    h: int\n    area: int = field(init=False)\n\n    def __post_init__(self):\n        if self.w <= 0 or self.h <= 0:\n            raise ValueError(\"positive sides required\")\n        self.area = self.w * self.h\n\n\nr = Rect(3, 4)\nprint(r)\nprint(r.area)\nprint(r == Rect(4, 3))\ntry:\n    Rect(0, 5)\nexcept ValueError as exc:\n    print(\"rejected\", exc)",
+        "expected": [
+          "Rect(w=3, h=4, area=12)",
+          "12",
+          "False",
+          "rejected positive sides required"
+        ],
+        "explain": "area 用 field(init=False) 声明，不在 __init__ 参数里，由 __post_init__ 在 w、h 赋好值之后算出，默认仍参与 repr，所以打印出 area=12。__eq__ 逐字段比较，Rect(3, 4) 与 Rect(4, 3) 的 w/h 不同，结果 False。参数不合法时 __post_init__ 直接抛 ValueError，对象根本构造不出来。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from dataclasses import dataclass, field\n\n\n@dataclass(frozen=True)\nclass Circle:\n    r: int\n    area: float = field(init=False)\n\n    def __post_init__(self):\n        self.area = 3.14159 * self.r ** 2\n\n\ncircle = Circle(2)\nprint(circle.area)",
+        "rootCause": "frozen=True 改写的 __setattr__ 同样作用于 __post_init__，self.area = ... 抛 FrozenInstanceError，实例构造不出来。frozen 并不区分“用户赋值”和“初始化内部赋值”。",
+        "fix": "在 __post_init__ 里用 object.__setattr__ 绕过冻结：\n    def __post_init__(self):\n        object.__setattr__(self, \"area\", 3.14159 * self.r ** 2)\n这是 frozen dataclass 写派生字段/缓存的标准写法；不要为此去掉 frozen。"
+      },
+      "code_task": {
+        "prompt": "定义 dataclass Order：字段 items: list（默认工厂，元素是价格整数）、total: int（field(init=False)）；__post_init__ 把 total 算成 items 之和（空列表为 0）。用 unittest 验证计算、空列表、repr 包含 total，以及 total 不能作为构造参数传入。",
+        "acceptance": [
+          "Order([100, 20]).total 等于 120",
+          "Order() 的 items 为 []、total 为 0",
+          "repr(Order([1])) 等于 \"Order(items=[1], total=1)\"",
+          "Order([1], 5) 抛 TypeError，因为 total 是 field(init=False)"
+        ],
+        "reference": "import unittest\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass Order:\n    items: list = field(default_factory=list)\n    total: int = field(init=False)\n\n    def __post_init__(self):\n        self.total = sum(self.items)\n\n\nclass OrderTest(unittest.TestCase):\n    def test_total(self):\n        self.assertEqual(Order([100, 20]).total, 120)\n\n    def test_empty(self):\n        order = Order()\n        self.assertEqual(order.items, [])\n        self.assertEqual(order.total, 0)\n\n    def test_repr_contains_total(self):\n        self.assertEqual(repr(Order([1])), \"Order(items=[1], total=1)\")\n\n    def test_total_not_in_init(self):\n        with self.assertRaises(TypeError):\n            Order([1], 5)\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为 field(init=False) 的字段会从 repr 和 eq 里消失",
+        "在 frozen 类的 __post_init__ 里直接 self.x = ... 导致构造失败",
+        "把派生字段写成普通字段，让调用方可以传入与 items 对不上的 total",
+        "把校验逻辑散落在调用方，而不是放进 __post_init__ 让非法对象无法构造"
+      ]
+    },
+    {
+      "code": "py.enum.basics",
+      "title": "Enum 成员唯一性",
+      "minutes": 20,
+      "module": "类型系统",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2404",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "Enum 成员怎么按名和按值取？为什么 for 循环遍历不到别名？",
+        "answer": [
+          "Color.RED 是单例成员，Color[\"RED\"] 按名查，Color(1) 按值查，找不到分别抛 KeyError 和 ValueError",
+          "值相同的多个名字默认只保留第一个为规范成员，其余成为它的别名（alias）",
+          "遍历 Enum 类只产出规范成员，别名不重复出现，len(list(Color)) 不含别名",
+          "@unique 装饰器禁止别名，定义时发现重复值直接抛 ValueError",
+          "auto() 按定义顺序自动赋 1、2、3……，遇到已占用的值会跳过"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from enum import Enum, auto, unique\n\n\nclass Color(Enum):\n    RED = 1\n    GREEN = 2\n    BLUE = 3\n    CRIMSON = 1\n\n\nclass Auto(Enum):\n    A = auto()\n    B = auto()\n\n\nprint([c.name for c in Color])\nprint(Color.CRIMSON is Color.RED)\nprint(Color.__members__[\"CRIMSON\"] is Color.RED)\nprint(Color[\"BLUE\"].value)\nprint(Color(2).name)\ntry:\n    Color(99)\nexcept ValueError as exc:\n    print(\"bad value\", type(exc).__name__)\ntry:\n    @unique\n    class Bad(Enum):\n        X = 1\n        Y = 1\nexcept ValueError as exc:\n    print(\"duplicate\", type(exc).__name__)\nprint([m.value for m in Auto])",
+        "expected": [
+          "['RED', 'GREEN', 'BLUE']",
+          "True",
+          "True",
+          "3",
+          "GREEN",
+          "bad value ValueError",
+          "duplicate ValueError",
+          "[1, 2]"
+        ],
+        "explain": "CRIMSON 的值和 RED 相同，被当成别名：它是同一个对象，在 __members__ 里也能按名查到，但迭代只输出规范成员，所以列表里没有 CRIMSON。按值查不存在的 99 抛 ValueError；@unique 让重复值在定义类时就抛 ValueError。auto() 依次给出 1 和 2。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "from enum import Enum\n\n\nclass Status(Enum):\n    ACTIVE = 1\n    ENABLED = 1\n    DISABLED = 0\n\n\nfor status in Status:\n    print(status.name)\n\nprint(Status.ENABLED.name)",
+        "rootCause": "ENABLED 和 ACTIVE 值相同，默认被解析成别名，不是独立成员：for 循环只会打印 ACTIVE 和 DISABLED，而 Status.ENABLED.name 返回 \"ACTIVE\"。按 name 做分支判断时，ENABLED 这个名字会被悄悄归并掉。",
+        "fix": "要两个独立成员就给定不同取值（ENABLED = 2）；如果重复值本身就是错误，加 @unique 让它在定义时立刻失败：\n    from enum import Enum, unique\n\n    @unique\n    class Status(Enum):\n        ACTIVE = 1\n        DISABLED = 0\n确实需要别名时，用 Status.__members__ 遍历，而不是 for x in Status。"
+      },
+      "code_task": {
+        "prompt": "定义 Enum HttpStatus：OK=200、CREATED=201、NO_CONTENT=204，再加一个别名 OK_ALIAS=200；另定义一个用 auto() 的 Enum Priority（LOW、NORMAL、HIGH）。写函数 normalize(value)：接受成员、名字字符串或整数值，返回对应 HttpStatus 成员，无法识别返回 None（bool 要当成无效输入）。用 unittest 覆盖三种入参与别名解析。",
+        "acceptance": [
+          "normalize(HttpStatus.OK) 返回同一个成员对象",
+          "normalize(\"CREATED\") 与 normalize(204) 分别按名、按值返回正确成员",
+          "normalize(\"OK_ALIAS\") 返回 HttpStatus.OK（别名解析到规范成员）",
+          "normalize(404)、normalize(\"MISSING\")、normalize(True) 都返回 None",
+          "Priority 用 auto() 依次得到 1、2、3"
+        ],
+        "reference": "import unittest\nfrom enum import Enum, auto\n\n\nclass HttpStatus(Enum):\n    OK = 200\n    CREATED = 201\n    NO_CONTENT = 204\n    OK_ALIAS = 200\n\n\nclass Priority(Enum):\n    LOW = auto()\n    NORMAL = auto()\n    HIGH = auto()\n\n\ndef normalize(value):\n    if isinstance(value, HttpStatus):\n        return value\n    if isinstance(value, str):\n        return HttpStatus.__members__.get(value)\n    if isinstance(value, int) and not isinstance(value, bool):\n        try:\n            return HttpStatus(value)\n        except ValueError:\n            return None\n    return None\n\n\nclass HttpStatusTest(unittest.TestCase):\n    def test_member_passthrough(self):\n        self.assertIs(normalize(HttpStatus.OK), HttpStatus.OK)\n\n    def test_by_name_and_value(self):\n        self.assertIs(normalize(\"CREATED\"), HttpStatus.CREATED)\n        self.assertIs(normalize(204), HttpStatus.NO_CONTENT)\n\n    def test_alias_resolves(self):\n        self.assertIs(normalize(\"OK_ALIAS\"), HttpStatus.OK)\n\n    def test_unknown(self):\n        self.assertIsNone(normalize(404))\n        self.assertIsNone(normalize(\"MISSING\"))\n        self.assertIsNone(normalize(True))\n\n    def test_auto_values(self):\n        self.assertEqual([p.value for p in Priority], [1, 2, 3])\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "以为值相同的两个名字是两个独立成员，其实后者是别名",
+        "用 for x in Color 期待遍历到别名",
+        "拿裸字符串或整数直接当成员用，忘了 Color(value) / Color[name] 转换",
+        "以为 value 为 0 的成员在 if 里是假值（Enum 成员默认恒为真）"
+      ]
+    },
+    {
+      "code": "py.enum.when-not",
+      "title": "Enum 的适用边界",
+      "minutes": 15,
+      "module": "类型系统",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2404",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "什么时候该用 Enum，什么时候该用 StrEnum 或普通字符串常量？",
+        "answer": [
+          "有限、封闭、互斥的状态集合最适合 Enum：成员固定，拼错名字在访问时就报错",
+          "枚举值要直接当字符串用（JSON、数据库、日志）时用 StrEnum，或显式写 .value",
+          "普通 Enum 成员不等于它的值，str(Plain.OPEN) 是 \"Plain.OPEN\"，序列化前必须取 .value",
+          "Enum 只描述“有哪些取值”，状态之间的合法迁移要单独用字典或校验函数表达",
+          "只是给开放常量起名字（取值会不断增加）时，用模块级常量或 Final 比 Enum 更合适"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from enum import Enum, StrEnum\n\n\nclass Status(StrEnum):\n    OPEN = \"open\"\n    CLOSED = \"closed\"\n\n\nclass Plain(Enum):\n    OPEN = \"open\"\n\n\nprint(Status.OPEN == \"open\")\nprint(f\"{Status.OPEN}\")\nprint(Status(\"closed\") is Status.CLOSED)\nprint(Status.OPEN.upper())\nprint(Plain.OPEN == \"open\")\nprint(str(Plain.OPEN))\nprint(Plain.OPEN.value)",
+        "expected": [
+          "True",
+          "open",
+          "True",
+          "OPEN",
+          "False",
+          "Plain.OPEN",
+          "open"
+        ],
+        "explain": "StrEnum 的成员本身就是 str 子类，所以能和字符串相等、f-string 直接给出 \"open\"、还能调用 upper()；按值构造 Status(\"closed\") 命中的是同一个单例。普通 Enum 的成员不是字符串，既不等于 \"open\"，str() 也只给 \"Plain.OPEN\"，要和外部系统交互必须显式取 .value。"
+      },
+      "debug": {
+        "prompt": "找出下面代码的问题，说明根因并给出修法",
+        "code": "import json\nfrom enum import Enum\n\n\nclass Status(Enum):\n    OPEN = \"open\"\n    CLOSED = \"closed\"\n\n\npayload = {\"status\": Status.OPEN}\nprint(json.dumps(payload))",
+        "rootCause": "json 模块只会序列化基本类型，普通 Enum 成员对它来说既不是 str 也不是 int，json.dumps 抛 TypeError: Object of type Status is not JSON serializable。问题出在把领域类型直接交给序列化边界，而不是先转换成值。",
+        "fix": "在边界处显式转换：json.dumps({\"status\": Status.OPEN.value})；如果成员本来就该当字符串用，把基类换成 enum.StrEnum，或给 json.dumps 传 default=lambda o: o.value 统一兜底。"
+      },
+      "code_task": {
+        "prompt": "定义 StrEnum Channel：EMAIL=\"email\"、SMS=\"sms\"。写 parse_channel(raw)：接受成员、字符串（大小写不敏感、允许首尾空白）或 None，返回 Channel 成员，无法识别返回 None。再用模块级字典 ALLOWED_NEXT 表达 EMAIL -> SMS 的合法迁移，写 allowed_next(current) 返回允许的下一状态元组。用 unittest 覆盖转换与迁移；迁移规则放在 Enum 之外维护。",
+        "acceptance": [
+          "parse_channel(Channel.SMS) 返回同一成员，parse_channel(\" EMAIL \") 返回 Channel.EMAIL",
+          "parse_channel(\"push\") 与 parse_channel(None) 返回 None",
+          "Channel.EMAIL == \"email\" 为 True（StrEnum 成员就是字符串）",
+          "allowed_next(Channel.EMAIL) 返回 (Channel.SMS,)，allowed_next(Channel.SMS) 返回 ()"
+        ],
+        "reference": "import unittest\nfrom enum import StrEnum\n\n\nclass Channel(StrEnum):\n    EMAIL = \"email\"\n    SMS = \"sms\"\n\n\nALLOWED_NEXT = {\n    Channel.EMAIL: (Channel.SMS,),\n    Channel.SMS: (),\n}\n\n\ndef parse_channel(raw):\n    if isinstance(raw, Channel):\n        return raw\n    if isinstance(raw, str):\n        try:\n            return Channel(raw.strip().lower())\n        except ValueError:\n            return None\n    return None\n\n\ndef allowed_next(current):\n    return ALLOWED_NEXT.get(current, ())\n\n\nclass ChannelTest(unittest.TestCase):\n    def test_member_passthrough(self):\n        self.assertIs(parse_channel(Channel.SMS), Channel.SMS)\n\n    def test_normalize_string(self):\n        self.assertIs(parse_channel(\"  EMAIL \"), Channel.EMAIL)\n\n    def test_strenum_is_str(self):\n        self.assertEqual(Channel.EMAIL, \"email\")\n\n    def test_unknown(self):\n        self.assertIsNone(parse_channel(\"push\"))\n        self.assertIsNone(parse_channel(None))\n\n    def test_transitions(self):\n        self.assertEqual(allowed_next(Channel.EMAIL), (Channel.SMS,))\n        self.assertEqual(allowed_next(Channel.SMS), ())\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+      },
+      "pitfalls": [
+        "把 Enum 成员直接塞进 JSON 或数据库，忘了 .value 或 StrEnum",
+        "用普通 Enum 又期待它等于字符串（Plain.OPEN == \"open\" 是 False）",
+        "把合法状态迁移写进 Enum 的方法，让枚举承担流程职责",
+        "为省事用裸字符串常量，拼错时到运行深处才暴露"
+      ]
+    },
+    {
+      "code": "py.class.new-init",
+      "title": "__new__ 创建实例 __init__ 初始化",
+      "minutes": 20,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2104",
+          "relation": "exercises"
+        },
+        {
+          "taskId": "2505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "__new__ 与 __init__ 各自负责什么？调用顺序如何？什么情况下 __init__ 不会被执行？",
+        "answer": [
+          "__new__ 是静态方法性质的方法，第一个参数是 cls，负责创建并返回实例对象",
+          "__init__ 的第一个参数是 self，它不创建对象，只对已经返回的实例做初始化",
+          "实例化 Item(...) 时先调用 __new__，只有 __new__ 返回 Item 类的实例才会接着调用 __init__",
+          "__new__ 返回其他类型的对象时，__init__ 被静默跳过，语句的结果就是那个其他类型的对象",
+          "常见用途：不可变类型（int、str、tuple 的子类）在 __new__ 里定值，或实现单例/缓存"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "class Factory:\n    def __new__(cls):\n        print(\"new: Factory\")\n        return \"只创建了字符串\"\n\n    def __init__(self):\n        print(\"init: Factory\")\n\nresult = Factory()\nprint(result)\nprint(type(result).__name__)",
+        "expected": [
+          "new: Factory",
+          "只创建了字符串",
+          "str"
+        ],
+        "explain": "__new__ 先被调用并打印 new: Factory，它返回的是 str 而不是 Factory 实例，所以 __init__ 被跳过（没有第二行 init: Factory）；赋值结果就是那个字符串，type(result).__name__ 是 str。"
+      },
+      "debug": {
+        "prompt": "下面代码想让 Counter 每次实例化都得到一个计数器实例，但运行直接报错。找出根因并给出修法",
+        "code": "class Counter:\n    def __new__(cls, start=0):\n        self = super().__new__(cls)\n        self.value = start\n\n    def increase(self):\n        self.value += 1\n        return self.value\n\nc = Counter(3)\nprint(c.increase())",
+        "rootCause": "__new__ 里只赋值没有 return，函数隐式返回 None；因为返回值不是 Counter 实例，Python 跳过 __init__ 并把 c 绑定到 None，c.increase() 于是抛 AttributeError: 'NoneType' object has no attribute 'increase'。",
+        "fix": "在 __new__ 末尾 return self；同时初始化状态更合适的落点是 __init__(self, start=0)，__new__ 只保留创建实例并返回的职责。"
+      },
+      "code_task": {
+        "prompt": "写一个缓存工厂类 CachedThing：第一次用某个名字创建时真正构造新实例，再次用同一个名字创建时直接返回已有实例；实例上用 calls 记录该实例被请求的总次数。要求用 __new__ 完成创建与缓存。",
+        "acceptance": [
+          "两个 CachedThing(\"A\") 是同一个对象（is 判等为 True）",
+          "CachedThing(\"B\") 与 CachedThing(\"A\") 不是同一个对象",
+          "每个实例的 calls 等于该名字被请求的总次数",
+          "所有实例的类型都是 CachedThing"
+        ],
+        "reference": "class CachedThing:\n    cache = {}\n\n    def __new__(cls, name):\n        if name in cls.cache:\n            return cls.cache[name]\n        instance = super().__new__(cls)\n        instance.name = name\n        instance.calls = 0\n        cls.cache[name] = instance\n        return instance\n\n    def __init__(self, name):\n        self.calls += 1\n\n\nif __name__ == \"__main__\":\n    a1 = CachedThing(\"A\")\n    a2 = CachedThing(\"A\")\n    b = CachedThing(\"B\")\n    assert a1 is a2\n    assert a1 is not b\n    assert a1.calls == 2\n    assert b.calls == 1\n    assert type(a1) is CachedThing and type(a2) is CachedThing\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "__new__ 忘记 return，实例变成 None 并在后续操作时报错",
+        "__init__ 里又 return 一个非 None 值，实例化时抛 TypeError",
+        "在 __new__ 里做初始化赋值，却忽略 __new__ 是隐式静态方法、第一参数必须是 cls",
+        "以为 __new__ 返回别的类型时 __init__ 仍会执行"
+      ]
+    },
+    {
+      "code": "py.slots.basics",
+      "title": "__slots__ 声明固定属性",
+      "minutes": 20,
+      "module": "类与对象",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2403",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "__slots__ 做了什么限制？它带来什么好处？子类为什么可能重新获得 __dict__？",
+        "answer": [
+          "__slots__ 是一个属性名序列，声明这个类允许存在的实例属性，类定义时据此生成固定布局",
+          "声明了 __slots__ 的类，实例通常不再有 __dict__，也就不能凭空新增未声明的属性",
+          "给未声明属性赋值会抛 AttributeError，拼错属性名会在第一时间暴露",
+          "没有实例 __dict__ 时每个实例更省内存，属性多、实例多时收益更明显",
+          "子类若没有定义自己的 __slots__，就会重新获得 __dict__，父类的限制在子类上失效"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "class Item:\n    __slots__ = (\"name\",)\n\n    def __init__(self, name):\n        self.name = name\n\nitem = Item(\"笔\")\nitem.name = \"钢笔\"\nprint(item.name)\nprint(hasattr(item, \"__dict__\"))\ntry:\n    item.price = 9.9\nexcept AttributeError:\n    print(\"AttributeError\")",
+        "expected": [
+          "钢笔",
+          "False",
+          "AttributeError"
+        ],
+        "explain": "name 在 __slots__ 里，可读可写；实例没有 __dict__ 所以 hasattr(item, \"__dict__\") 为 False；price 未声明，赋值抛 AttributeError，被 except 分支捕获后打印异常类型名。"
+      },
+      "debug": {
+        "prompt": "下面代码让 Order 的 total 随 price 变化，运行却报 AttributeError。找出根因并给出修法",
+        "code": "class Order:\n    __slots__ = (\"price\",)\n\n    def __init__(self, price):\n        self.price = price\n        self.total = price\n\n    def discount(self):\n        self.total = self.price * 0.9\n        return self.total\n\nprint(Order(100).discount())",
+        "rootCause": "Order.__slots__ 只声明了 price，total 不在其中，而实例没有 __dict__，所以 __init__ 里 self.total = price 就抛 AttributeError: 'Order' object has no attribute 'total'。",
+        "fix": "把 \"total\" 加进 __slots__（例如 __slots__ = (\"price\", \"total\")），或者不要把 total 作为实例状态，改成本地计算后返回。"
+      },
+      "code_task": {
+        "prompt": "写类 BankAccount：用 __slots__ 只允许 balance 这一个实例属性；balance 不允许为负数，初始化收到负数或后续把 balance 设成负数都要拒绝（抛 ValueError 或 AttributeError）。",
+        "acceptance": [
+          "类里定义了 __slots__，BankAccount(10) 的 balance 是 10",
+          "BankAccount(-1) 抛异常，不会留下半初始化的非法对象",
+          "account.balance = -5 抛异常，原值保持不变",
+          "account.owner = \"a\" 抛 AttributeError（未声明属性）"
+        ],
+        "reference": "class BankAccount:\n    __slots__ = (\"balance\",)\n\n    def __init__(self, balance):\n        self.balance = balance\n\n    def __setattr__(self, name, value):\n        if name == \"balance\" and value < 0:\n            raise ValueError(\"balance 不能为负数\")\n        super().__setattr__(name, value)\n\n\nif __name__ == \"__main__\":\n    account = BankAccount(10)\n    assert account.balance == 10\n    try:\n        BankAccount(-1)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"负数初始化应当被拒绝\")\n    try:\n        account.balance = -5\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"负数赋值应当被拒绝\")\n    assert account.balance == 10\n    try:\n        account.owner = \"a\"\n    except AttributeError:\n        pass\n    else:\n        raise AssertionError(\"未声明属性应当被拒绝\")\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "在 __slots__ 里同时写 \"__dict__\"，等于把省下的内存又加回来",
+        "继承时父类有 __slots__、子类忘了写，子类实例又拿到 __dict__，限制失效",
+        "以为 __slots__ 能限制类属性，它只管实例属性",
+        "属性名拼错时靠 getattr 默认值掩盖，而不是靠 AttributeError 及时发现"
+      ]
+    },
+    {
+      "code": "py.dunder.call",
+      "title": "__call__ 实现可调用对象",
+      "minutes": 15,
+      "module": "数据模型",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "什么样的实例能像函数一样被调用？__call__ 适合承载什么？callable() 依据什么判断？",
+        "answer": [
+          "类型实现了 __call__，它的实例就是可调用对象，obj(...) 会被翻译成 type(obj).__call__(obj, ...)",
+          "__call__ 适合把配置、状态、缓存一起放在对象上，同时保留函数式调用写法",
+          "callable(x) 判断的是 x 能否被调用：函数、方法、类、实现了 __call__ 的实例都返回 True",
+          "普通数据对象没有 __call__，callable() 返回 False，直接调用会抛 TypeError",
+          "__call__ 必须有返回值；写成无 return 的函数会返回 None，调用方拿到 None 而不是结果"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "class Multiplier:\n    def __init__(self, factor):\n        self.factor = factor\n\n    def __call__(self, *values):\n        return [value * self.factor for value in values]\n\ntriple = Multiplier(3)\nprint(triple(2))\nprint(triple(2, 4))\nprint(type(triple).__name__, callable(triple), end=\" \")\nprint(end=\" \")\n\nclass Data:\n    pass\n\nprint(callable(Data()))\n",
+        "expected": [
+          "[6]",
+          "[6, 12]",
+          "Multiplier True  False"
+        ],
+        "explain": "triple 的 __call__ 把每个参数乘 3，所以 triple(2) 是 [6]、triple(2, 4) 是 [6, 12]；triple 的类型 Multiplier 实现了 __call__ 所以 callable 为 True；Data 没有 __call__，其实例不可调用。三次 print 用 end=\" \" 串成同一行，中间两个空格分别来自两次 end=\" \"，行尾用 rstrip 比对时不影响。"
+      },
+      "debug": {
+        "prompt": "下面代码想用 Validator 实例做校验，调用后却输出 None。找出根因并给出修法",
+        "code": "class Validator:\n    def __init__(self, limit):\n        self.limit = limit\n\n    def __call__(self, text):\n        if len(text) > self.limit:\n            raise ValueError(\"过长\")\n        text.strip()\n\nvalidator = Validator(3)\nprint(validator(\"python\"))\nprint(validator(\"ok\"))",
+        "rootCause": "__call__ 没有 return，隐式返回 None；另外 text.strip() 的结果没有绑定也没有返回，校验通过时等于什么都没做。",
+        "fix": "在 __call__ 里显式返回规范化后的结果，例如 return text.strip()，让调用方拿到值而不是 None。"
+      },
+      "code_task": {
+        "prompt": "写类 Prefixer：构造时传入一个前缀字符串与一个可选的分隔符（默认 '-'），实例被调用时接收若干片段，返回拼接后的字符串把结果缓存到实例的 last 属性；没有片段时返回前缀本身。",
+        "acceptance": [
+          "Prefixer(\"log\") 调用一次得到 \"log\"，调用 Prefixer(\"log\", \":\")(\"a\", \"b\") 得到 \"log:a:b\"",
+          "实例可调用，callable(Prefixer(\"log\")) 为 True",
+          "实例的 last 保存最近一次调用结果",
+          "分隔符在构造时确定，调用之间互不影响"
+        ],
+        "reference": "class Prefixer:\n    def __init__(self, prefix, sep=\"-\"):\n        self.prefix = prefix\n        self.sep = sep\n        self.last = None\n\n    def __call__(self, *parts):\n        if not parts:\n            result = self.prefix\n        else:\n            result = self.sep.join((self.prefix, *parts))\n        self.last = result\n        return result\n\n\nif __name__ == \"__main__\":\n    plain = Prefixer(\"log\")\n    assert plain() == \"log\"\n    assert plain(\"a\", \"b\") == \"log-a-b\"\n    assert plain.last == \"log-a-b\"\n    assert callable(plain)\n    colon = Prefixer(\"log\", \":\")\n    assert colon(\"a\", \"b\") == \"log:a:b\"\n    assert plain(\"c\") == \"log-c\"\n    assert colon.sep == \":\"\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "在 __call__ 里忘记 return，调用方拿到 None 却以为拿到了结果",
+        "以为 callable(实例) 看实例数据，其实看的是类型上有没有 __call__",
+        "把 __call__ 写成需要显式传入 self 的普通函数调用方式",
+        "在 __call__ 里做耗时或副作用很大的工作，掩盖了它本该是普通调用的事实"
+      ]
+    },
+    {
+      "code": "py.model.invariants",
+      "title": "不变量在构造时校验",
+      "minutes": 25,
+      "module": "类型系统",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2501",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2503",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "什么是不变量？构造时怎么校验？冻结对象为什么能长期保住不变量？",
+        "answer": [
+          "不变量是对象从创建到销毁都必须成立的条件，例如余额非负、区间下界不大于上界",
+          "校验点要贴着状态变更：dataclass 用 __post_init__，属性用 setter/__setattr__，在构造时就拦住非法值",
+          "非法状态应当尽早抛 ValueError（值不合理）而不是拖到使用处才报 KeyError、AttributeError",
+          "frozen=True 的 dataclass 在没有对象锁定时能通过 object.__setattr__ 赋值，不变量只需在构造时校验一次",
+          "把不变量写进测试用例：构造合法对象成功，构造非法对象必须抛异常"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Temperature:\n    celsius: float\n\n    def __post_init__(self):\n        if self.celsius < -273.15:\n            raise ValueError(\"低于绝对零度\")\n\nprint(Temperature(20.0).celsius)\nprint(Temperature(20.0).celsius + 273.15)\ntry:\n    Temperature(-300)\nexcept ValueError as error:\n    print(type(error).__name__, error)",
+        "expected": [
+          "20.0",
+          "293.15",
+          "ValueError 低于绝对零度"
+        ],
+        "explain": "合法值直接构造成功，字段读回 20.0，加 273.15 得 293.15；-300 低于绝对零度，__post_init__ 抛 ValueError，except 打印异常类型名与消息。"
+      },
+      "debug": {
+        "prompt": "下面代码希望金额永远非负，但 print 出来是负数。找出根因并给出修法",
+        "code": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Payment:\n    amount: float\n\n    def __post_init__(self):\n        if self.amount < 0:\n            raise ValueError(\"金额不能为负\")\n\npayment = Payment(10.0)\npayment.amount = -10.0\nprint(payment.amount)",
+        "rootCause": "类型是 frozen=True 的 dataclass，普通属性赋值会被 __setattr__ 拦下抛 FrozenInstanceError，不变量本来靠“不可变”保住；一旦有人用 object.__setattr__ 绕过校验，负数就能写进去，__post_init__ 只在构造时跑过一次，事后不会再校验。",
+        "fix": "不要用 object.__setattr__ 绕开冻结；确需可变就用普通 dataclass，把校验放进 property 的 setter，让每次修改都走同一段校验逻辑。"
+      },
+      "code_task": {
+        "prompt": "写冻结 dataclass Temperature，字段 celsius: float，不变量：不小于 -273.15；提供方法 to_kelvin() 返回摄氏温度加 273.15；非法温度必须在构造时抛 ValueError。",
+        "acceptance": [
+          "Temperature(0.0).to_kelvin() 返回 273.15",
+          "Temperature(-273.15) 能正常构造（边界值合法）",
+          "Temperature(-273.16) 抛 ValueError",
+          "修改实例字段抛异常（frozen 生效，不变量不会被破坏）"
+        ],
+        "reference": "from dataclasses import FrozenInstanceError, dataclass\n\n\n@dataclass(frozen=True)\nclass Temperature:\n    celsius: float\n\n    def __post_init__(self):\n        if self.celsius < -273.15:\n            raise ValueError(\"低于绝对零度\")\n\n    def to_kelvin(self):\n        return self.celsius + 273.15\n\n\nif __name__ == \"__main__\":\n    assert Temperature(0.0).to_kelvin() == 273.15\n    assert Temperature(-273.15).to_kelvin() == 0.0\n    for bad in (-273.16, -300):\n        try:\n            Temperature(bad)\n        except ValueError:\n            pass\n        else:\n            raise AssertionError(f\"{bad} 应当被拒绝\")\n    try:\n        Temperature(1.0).celsius = 2.0\n    except FrozenInstanceError:\n        pass\n    else:\n        raise AssertionError(\"冻结实例不应允许赋值\")\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "只在 __init__ 里校验，setter 或后续修改路径漏校验",
+        "校验失败时用 assert，被 -O 优化掉后不变量直接失效",
+        "抛出通用 Exception 而不抛 ValueError，调用方无法区分“值非法”和“代码出错”",
+        "认为 frozen=True 等于绝对不可变，随手用 object.__setattr__ 绕开校验"
+      ]
+    },
+    {
+      "code": "py.model.result",
+      "title": "用值对象表达运行结果",
+      "minutes": 20,
+      "module": "类型系统",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2501",
+          "relation": "introduces"
+        },
+        {
+          "taskId": "2503",
+          "relation": "exercises"
+        }
+      ],
+      "concept": {
+        "prompt": "为什么用值对象表达成功与失败，比返回 None 或抛异常更好？失败信息放在哪？",
+        "answer": [
+          "成功与失败都是正常业务结果时，返回值对象能让调用方在类型上一眼看出两种可能，不必靠猜",
+          "失败携带错误信息（字段化的错误码与消息），比 None 或哨兵值信息量大得多",
+          "值对象用 frozen dataclass 做，结果不可变，可以安全地传递、比较、缓存与记录日志",
+          "is_ok 之类的判定属性放在结果对象上，调用方用 if result.is_ok 分支，不依赖 truthy 约定",
+          "真正的程序缺陷（参数类型错、环境缺失）仍用异常；异常与失败结果不要混用来表示同一件事"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Success:\n    value: int\n\n    @property\n    def is_ok(self):\n        return True\n\n@dataclass(frozen=True)\nclass Failure:\n    message: str\n\n    @property\n    def is_ok(self):\n        return False\n\nok = Success(2)\nbad = Failure(\"除数为零\")\nprint(ok)\nprint(bad)\nprint(ok.is_ok, bad.is_ok)",
+        "expected": [
+          "Success(value=2)",
+          "Failure(message='除数为零')",
+          "True False"
+        ],
+        "explain": "frozen dataclass 有确定的 repr，Success(value=2) 与 Failure(message='除数为零') 都是稳定输出；两个结果的 is_ok 分别是 True 与 False。"
+      },
+      "debug": {
+        "prompt": "下面代码用 None 表示“计算失败”，结果把合法的 0 也当成了失败。找出根因并给出修法",
+        "code": "def divide(a, b):\n    if b == 0:\n        return None\n    return a // b\n\ndef show(a, b):\n    result = divide(a, b)\n    if not result:\n        return \"失败\"\n    return str(result)\n\nprint(show(0, 5))\nprint(show(1, 0))",
+        "rootCause": "用 None 兼作失败标记，再配 if not result 判断真值，会把合法的 0、空字符串都误判为失败，show(0, 5) 输出“失败”。",
+        "fix": "让 divide 返回结果值对象（Success/Failure），调用方判断 result.is_ok 而不是判断真值；失败信息放进 Failure 的字段。"
+      },
+      "code_task": {
+        "prompt": "写冻结 dataclass 表示整数除法的结果：成功携带商，失败携带错误消息；再写函数 divide(a, b)，b 为 0 时返回失败结果，否则返回成功结果。要求区分成功与失败靠结果对象的属性，不靠真假值。",
+        "acceptance": [
+          "divide(7, 2) 的 is_ok 为 True，商是 3",
+          "divide(7, 0) 的 is_ok 为 False，并带有错误消息",
+          "divide(0, 5) 被视为成功，商是 0",
+          "结果对象不可变且可以放进集合去重"
+        ],
+        "reference": "from dataclasses import dataclass\nfrom typing import Union\n\n\n@dataclass(frozen=True)\nclass Success:\n    value: int\n\n    @property\n    def is_ok(self):\n        return True\n\n\n@dataclass(frozen=True)\nclass Failure:\n    message: str\n\n    @property\n    def is_ok(self):\n        return False\n\n\nResult = Union[Success, Failure]\n\n\ndef divide(a: int, b: int) -> Result:\n    if b == 0:\n        return Failure(\"除数不能为 0\")\n    return Success(a // b)\n\n\nif __name__ == \"__main__\":\n    ok = divide(7, 2)\n    assert ok.is_ok and isinstance(ok, Success) and ok.value == 3\n    bad = divide(7, 0)\n    assert not bad.is_ok and isinstance(bad, Failure) and bad.message\n    zero = divide(0, 5)\n    assert zero.is_ok and zero.value == 0\n    assert divide(6, 3) == divide(6, 3)\n    assert len({divide(6, 3), divide(6, 3)}) == 1\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "用 None 表示失败，再靠 if not result 判断，误伤 0、空串等合法结果",
+        "异常与失败结果混用，同一类问题有时抛异常有时返回失败",
+        "把失败结果写成可变对象，被调用方顺手改写后再返回",
+        "失败结果只带一句自由文本，没有可判断的字段或错误码"
+      ]
+    },
+    {
+      "code": "py.meta.type",
+      "title": "type 三参数动态建类",
+      "minutes": 20,
+      "module": "元类",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "type(name, bases, namespace) 三个参数分别是什么？它与 class 语句是什么关系？",
+        "answer": [
+          "type 的三参数形式是“动态创建类”的入口，一个参数时只是查类型，两种用法含义不同",
+          "name 是类名字符串，bases 是基类元组，namespace 是类体命名空间字典（里面的函数就是方法）",
+          "class 语句在底层就是收集名字、基类、命名空间后调用元类（默认 type）来创建类对象",
+          "命名空间里的函数作为方法时，第一个参数仍由实例化调用自动传入 self",
+          "type(instance) 返回它所属的类，type(Class) 返回元类，通常是 type"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "def double(self):\n    return self.value * 2\n\nnamespace = {\"value\": 21, \"double\": double, \"label\": \"demo\"}\nWidget = type(\"Widget\", (object,), namespace)\nw = Widget()\nprint(Widget.__name__)\nprint(Widget.__bases__[0].__name__)\nprint(w.double())\nprint(Widget.label)",
+        "expected": [
+          "Widget",
+          "object",
+          "42",
+          "demo"
+        ],
+        "explain": "type 用名字 Widget、基类 object 与命名空间建出类；类属性 value 作为默认值 21 被实例读到，方法 double 返回 42；namespace 里的 label 成为类属性。"
+      },
+      "debug": {
+        "prompt": "下面代码想动态建一个带 greet 方法的类，实例化却报 TypeError。找出根因并给出修法",
+        "code": "def greet(self):\n    return \"hi \" + self.name\n\nGreeter = type(\"Greeter\", object, {\"name\": \"x\", \"greet\": greet})\nprint(Greeter().greet())",
+        "rootCause": "type 的第二个参数必须是基类元组，这里传的是 object 这个类本身；类不是序列，于是抛 TypeError: type() argument 2 must be tuple, not type。",
+        "fix": "写成 type(\"Greeter\", (object,), {...})，基类只有一项时也要保留元组的逗号。"
+      },
+      "code_task": {
+        "prompt": "写函数 make_record(record_name, fields)：用 type 三参数形式动态创建一个 dataclass 类，类名由 record_name 给出，字段名与默认值来自 fields 字典，并让返回的类可以正常实例化与比较相等。",
+        "acceptance": [
+          "make_record(\"Point\", {\"x\": 0, \"y\": 0}) 返回一个类，类名是 Point",
+          "该类是 dataclass，实例带有 x、y 属性且支持 == 比较",
+          "不同字段字典生成的类互不影响",
+          "实例的 repr 稳定，包含字段名与字段值"
+        ],
+        "reference": "from dataclasses import dataclass, field\n\n\n@dataclass\nclass _Record:\n    pass\n\n\ndef make_record(record_name, fields):\n    annotations = {field_name: int for field_name in fields}\n    namespace = {\n        \"__annotations__\": annotations,\n        **{field_name: field(default=value) for field_name, value in fields.items()},\n    }\n    return dataclass(type(record_name, (_Record,), namespace))\n\n\nif __name__ == \"__main__\":\n    Point = make_record(\"Point\", {\"x\": 0, \"y\": 0})\n    assert Point.__name__ == \"Point\"\n    p1 = Point()\n    p2 = Point(x=1, y=2)\n    assert p1.x == 0 and p1.y == 0\n    assert p2.x == 1 and p2.y == 2\n    assert p2 == Point(x=1, y=2)\n    assert p1 != p2\n    assert \"x=0\" in repr(p1) and \"Point(\" in repr(p1)\n    Color = make_record(\"Color\", {\"name\": \"red\"})\n    assert Color().name == \"red\"\n    assert Point().x == 0\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "把 bases 写成 object 而不是 (object,)，忘记元组形式",
+        "命名空间里直接放实例方法却漏掉 self 参数，调用时参数数量不匹配",
+        "把 type(x) 的单参数用法与三参数建类混为一谈",
+        "动态生成的类不可读，滥用动态建类代替普通 class 语句"
+      ]
+    },
+    {
+      "code": "py.meta.init-subclass",
+      "title": "__init_subclass__ 自动注册子类",
+      "minutes": 20,
+      "module": "元类",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "__init_subclass__ 什么时候被调用？它比元类轻量在哪？",
+        "answer": [
+          "父类定义 __init_subclass__ 后，每次创建它的子类都会自动调用一次，收到正在创建的子类作为第一参数",
+          "它是隐式 classmethod，定义时第一个参数是子类 cls（通常写成 cls 或 subclass），不需要也不能被实例调用",
+          "适合做注册表、子类命名/字段校验、给子类补默认属性等集中式约定",
+          "比元类轻量：不引入新的类创建机制，只在子类创建完成后被回调一次，冲突与继承链问题都少",
+          "cls 是子类而不是父类，注册表按子类收集，父类自身不会被注册"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "import json\n\nclass Validator:\n    registry = []\n\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        Validator.registry.append(cls.__name__)\n\nclass IntValidator(Validator):\n    pass\n\nclass StrValidator(Validator):\n    pass\n\nprint(Validator.registry)\nprint(len(Validator.registry))\nprint(json.dumps(Validator.registry, ensure_ascii=False))",
+        "expected": [
+          "['IntValidator', 'StrValidator']",
+          "2",
+          "[\"IntValidator\", \"StrValidator\"]"
+        ],
+        "explain": "每次创建子类都会触发父类的 __init_subclass__，按定义顺序把子类名追加进 registry，所以列表是 ['IntValidator', 'StrValidator']；json.dumps 用默认分隔符与双引号，输出 [\"IntValidator\", \"StrValidator\"]。"
+      },
+      "debug": {
+        "prompt": "下面代码希望父类登记所有子类的 kind，运行却报 AttributeError。找出根因并给出修法",
+        "code": "class Base:\n    kinds = {}\n\n    def __init_subclass__(self, **kwargs):\n        super().__init_subclass__(**kwargs)\n        Base.kinds[self.kind] = self\n\nclass A(Base):\n    kind = \"a\"\n\nprint(Base.kinds)",
+        "rootCause": "__init_subclass__ 是隐式 classmethod，第一个参数拿到的是新建的子类；这里把参数命名为 self 并当作实例用，但传进来的其实是类 A，A 本身没有 kind 实例属性查找问题不大，问题在于把它当实例：一旦子类没定义 kind，或误以为能访问实例状态，就会 AttributeError；写法上 self 也误导后续维护者。",
+        "fix": "把第一个参数改为 cls 并用 cls.kind 取子类属性，注册时记录 cls；子类缺 kind 时在此处显式抛错而不是等运行期才发现。"
+      },
+      "code_task": {
+        "prompt": "写基类 Command：子类定义时自动把“小写类名 -> 子类”登记到 Command.registry；若同一小写类名已被登记，创建子类时立即抛 ValueError；再写 make(name) 按名字取出子类，未登记返回 None。",
+        "acceptance": [
+          "定义子类 Save 后 registry 里有 \"save\" -> Save",
+          "定义两个同小写名子类时后一个抛 ValueError",
+          "make(\"save\") 返回 Save，make(\"missing\") 返回 None",
+          "registry 里不含基类 Command 自身"
+        ],
+        "reference": "class Command:\n    registry = {}\n\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        key = cls.__name__.lower()\n        if key in Command.registry:\n            raise ValueError(f\"重复注册的命令：{key}\")\n        Command.registry[key] = cls\n\n\ndef make(name):\n    return Command.registry.get(name.lower())\n\n\nif __name__ == \"__main__\":\n    class Save(Command):\n        pass\n\n    class Load(Command):\n        pass\n\n    assert Command.registry[\"save\"] is Save\n    assert Command.registry[\"load\"] is Load\n    assert \"command\" not in Command.registry\n    assert make(\"SAVE\") is Save\n    assert make(\"missing\") is None\n    try:\n        class Save(Command):\n            pass\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"重名子类应当被拒绝\")\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "__init_subclass__ 忘记写 super().__init_subclass__(**kwargs)，带类关键字参数的子类直接报错",
+        "把第一个参数当成实例 self，误以为能访问实例状态",
+        "在注册表里累加父类自身，导致基类也出现在子类清单中",
+        "用元类去做只用 __init_subclass__ 就能完成的事，平白引入元类冲突风险"
+      ]
+    },
+    {
+      "code": "py.meta.metaclass",
+      "title": "元类的职责边界",
+      "minutes": 25,
+      "module": "元类",
+      "level": "实用",
+      "week": 2,
+      "taskRefs": [
+        {
+          "taskId": "2505",
+          "relation": "introduces"
+        }
+      ],
+      "concept": {
+        "prompt": "元类是什么？它比 __init_subclass__ 强在哪？什么时候才真的需要元类？什么时候会冲突报错？",
+        "answer": [
+          "元类是类的类：类对象本身也是某个元类的实例，type 是默认元类，class 语句通过元类创建类对象",
+          "元类能在类对象创建的过程中改写命名空间、拦截属性访问、控制实例化时机，__init_subclass__ 只在子类创建后被回调一次",
+          "多数场景用 __init_subclass__、__set_name__、描述符、__init__ 就够，它们更简单也不会牵动继承链",
+          "只有必须改变“类创建本身”的横切逻辑（自动改写命名空间、强制类属性类型检查、实现 ORM/接口约束）才值得上元类",
+          "一个类只能有一个元类：基类的元类互不兼容时，定义子类会抛 TypeError（metaclass conflict）"
+        ]
+      },
+      "predict": {
+        "prompt": "写出下面代码的输出",
+        "code": "class AutoRegister(type):\n    def __new__(mcls, name, bases, namespace):\n        cls = super().__new__(mcls, name, bases, namespace)\n        if \"kind\" not in namespace:\n            cls.kind = name.lower()\n        return cls\n\nclass Base(metaclass=AutoRegister):\n    pass\n\nclass Payment(Base):\n    pass\n\nprint(type(Base).__name__)\nprint(Base.kind)\nprint(Payment.kind)\nprint(Payment.__mro__[1].__name__)",
+        "expected": [
+          "AutoRegister",
+          "base",
+          "payment",
+          "Base"
+        ],
+        "explain": "AutoRegister 在创建每个类时，只要命名空间里没有 kind 就补上 name.lower()：Base 的 kind 是 \"base\"，子类 Payment 的命名空间里也没有 kind，于是得到自己的 \"payment\" 而不是继承父类的 \"base\"；type(Base) 是 AutoRegister；__mro__[1] 是父类 Base。"
+      },
+      "debug": {
+        "prompt": "下面代码想给类自动加一个 author 属性，运行却报 TypeError。找出根因并给出修法",
+        "code": "class MetaA(type):\n    pass\n\nclass MetaB(type):\n    pass\n\nclass A(metaclass=MetaA):\n    pass\n\nclass B(metaclass=MetaB):\n    pass\n\nclass C(A, B):\n    pass\n\nprint(C.author)",
+        "rootCause": "C 同时继承元类为 MetaA 的 A 与元类为 MetaB 的 B，Python 无法决定 C 用哪个元类，定义 C 的那一行就抛 TypeError: metaclass conflict。",
+        "fix": "让其中一个元类继承另一个（例如 class MetaB(MetaA)），或给 C 显式指定兼容的 metaclass；若本来只需要注册/补属性，改用 __init_subclass__ 就不会有元类冲突。"
+      },
+      "code_task": {
+        "prompt": "写元类 CommandMeta：创建类时自动读取类属性 kind，把“kind 值 -> 该类”登记到 CommandMeta.registry；kind 缺失时抛 TypeError，kind 重复时抛 ValueError；再写 get(kind) 按 kind 取出类，未登记返回 None。",
+        "acceptance": [
+          "定义 kind = \"save\" 的子类后 registry 里有 \"save\" 对应它",
+          "kind 缺失的类定义时抛 TypeError，重复 kind 抛 ValueError",
+          "get(\"SAVE\") 大小写不敏感，get(\"nope\") 返回 None",
+          "类的类型（type(cls)）是 CommandMeta"
+        ],
+        "reference": "class CommandMeta(type):\n    registry = {}\n\n    def __new__(mcls, name, bases, namespace):\n        cls = super().__new__(mcls, name, bases, namespace)\n        kind = getattr(cls, \"kind\", None)\n        if bases and kind is None:\n            raise TypeError(f\"{name} 缺少 kind 类属性\")\n        if kind is not None:\n            key = kind.lower()\n            if key in CommandMeta.registry:\n                raise ValueError(f\"kind 重复：{key}\")\n            CommandMeta.registry[key] = cls\n        return cls\n\n\ndef get(kind):\n    return CommandMeta.registry.get(kind.lower())\n\n\nif __name__ == \"__main__\":\n    class Command(metaclass=CommandMeta):\n        pass\n\n    class Save(Command):\n        kind = \"save\"\n\n    class Load(Command):\n        kind = \"load\"\n\n    assert CommandMeta.registry[\"save\"] is Save\n    assert type(Save) is CommandMeta\n    assert get(\"SAVE\") is Save\n    assert get(\"nope\") is None\n    try:\n        class Bad(Command):\n            pass\n    except TypeError:\n        pass\n    else:\n        raise AssertionError(\"缺 kind 应当被拒绝\")\n    try:\n        class Dup(Command):\n            kind = \"save\"\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"重复 kind 应当被拒绝\")\n    print(\"ok\")\n"
+      },
+      "pitfalls": [
+        "把元类当成万能工具，本可以用 __init_subclass__ 或描述符解决",
+        "定义 __new__ 时忘记 super().__new__ 把命名空间真正交给 type 创建类对象",
+        "多个基类元类不兼容，定义子类时报 metaclass conflict 却去查方法签名",
+        "在元类里改命名空间却忘了同步 __annotations__ 等类体信息"
+      ]
+    }
+  ]
+}

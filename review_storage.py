@@ -11,7 +11,8 @@ from typing import Any
 import review_content
 import storage
 
-WEEK1_PATH = Path(__file__).resolve().parent / "content" / "review" / "py-week1.json"
+CONTENT_DIR = Path(__file__).resolve().parent / "content" / "review"
+WEEK1_PATH = CONTENT_DIR / "py-week1.json"
 DEFAULT_ORIGIN = "builtin"
 # 元任务（Task 13 约定的清单/复盘类任务）只做组织工作，不承载可复习的知识点。
 META_TASK_IDS = {"1104", "1504"}
@@ -81,22 +82,40 @@ def import_content(points: list[dict], *, week: int = 1, origin: str = DEFAULT_O
     return {"inserted": inserted, "updated": updated, "unchanged": unchanged}
 
 
+def content_paths() -> list[Path]:
+    """随仓库发布的课程库文件：`content/review/py-week*.json`，按文件名排序。
+
+    扫描根取 `WEEK1_PATH` 所在目录：测试把 `WEEK1_PATH` 指到临时目录即可隔离内容。
+    """
+    return sorted(WEEK1_PATH.parent.glob("py-week*.json"))
+
+
 def ensure_content_imported() -> int:
-    if not WEEK1_PATH.exists():
-        return 0
-    loaded = review_content.load_content_file(WEEK1_PATH)
-    result = import_content(loaded["points"], week=loaded["week"] or 1)
-    return result["inserted"] + result["updated"]
+    """按文件名顺序逐个导入所有周课程库，返回本次 `inserted+updated` 的总和。
+
+    幂等：内容未变的点只计入 `unchanged`，因此重复调用返回 0。
+    单个文件缺失/损坏/校验失败时只打印告警并跳过它，其它周照常导入，绝不抛给启动路径。
+    """
+    total = 0
+    for path in content_paths():
+        try:
+            loaded = review_content.load_content_file(path)
+            result = import_content(loaded["points"], week=loaded["week"] or 1)
+        except Exception as error:  # noqa: BLE001 - 单个坏文件不能拖垮其它周内容
+            print(f"复习知识点导入跳过：{path}：{error}", file=sys.stderr)
+            continue
+        total += result["inserted"] + result["updated"]
+    return total
 
 
 def ensure_review_content_ready() -> int | None:
-    """启动路径调用：按 code 幂等导入随仓库发布的课程库。
+    """启动路径调用：按 code 幂等导入随仓库发布的多周课程库。
 
-    返回本次导入/更新的条数：`0` 表示内容已是最新，`>0` 表示本次写入的条数。
-    内容文件缺失或损坏时打印明确告警并返回 `None`——绝不阻断服务启动（复习库为空也能用），
-    也不会把“内容缺失/损坏”谎报成“已是最新”。
+    返回本次导入/更新的条数：`0` 表示内容已是最新（或所有文件都被跳过），`>0` 表示本次写入的条数。
+    一个课程库文件都没有时打印明确告警并返回 `None`；单个文件损坏只告警跳过，不阻断启动
+    （复习库为空也能用），也不会把“内容缺失/损坏”谎报成“已是最新”。
     """
-    if not WEEK1_PATH.exists():
+    if not content_paths():
         print(f"复习知识点导入失败：内容文件不存在：{WEEK1_PATH}", file=sys.stderr)
         return None
     try:
