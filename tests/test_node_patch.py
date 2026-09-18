@@ -206,6 +206,15 @@ class NodePatchTests(unittest.TestCase):
         self.assertEqual(node["assessment"]["questionConversations"][0][0]["content"], "第二次")
         self.assertFalse(node["assessment"]["passed"])
 
+    def test_assessment_update_without_conversations_key_keeps_them(self) -> None:
+        """patch 走的是单节点 _write_assessment，缺键同样不能删掉已有逐题对话。"""
+        self.patch([{"op": "update", "nodeId": "p1-i1", "fields": {
+            "assessment": {"passed": True, "questionConversations": [[{"role": "user", "content": "第一次"}]]}}}])
+        self.patch([{"op": "update", "nodeId": "p1-i1", "fields": {"assessment": {"passed": True}}}])
+        node = find(storage.read_project("p1")[0]["tree"], "p1-i1")
+        self.assertTrue(node["assessment"]["passed"])
+        self.assertEqual(node["assessment"]["questionConversations"][0][0]["content"], "第一次")
+
     def test_validation_errors(self) -> None:
         with self.assertRaises(ValueError):
             self.patch([])

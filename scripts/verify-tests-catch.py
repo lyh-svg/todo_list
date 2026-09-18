@@ -77,11 +77,17 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "缺少 questionConversations 键时不能删掉验收逐题对话",
         "storage.py",
-        crlf("    if conversations_present:\n        for row in connection.execute("),
-        crlf("    if True:\n        for row in connection.execute("),
+        crlf("    if not conversations_present:\n"
+             "        # 只有 payload 真的带了 questionConversations 键时才做差集删除。\n"
+             '        # 否则（例如客户端只发 {"passed": true}）valid_keys 为空，会把该节点已有的逐题对话全部删掉。\n'
+             "        return\n"),
+        crlf("    if not conversations_present:\n"
+             "        # 只有 payload 真的带了 questionConversations 键时才做差集删除。\n"
+             '        # 否则（例如客户端只发 {"passed": true}）valid_keys 为空，会把该节点已有的逐题对话全部删掉。\n'
+             "        pass\n"),
         [sys.executable, "-m", "unittest",
-         "tests.test_assessment_conversations.AssessmentConversationTests."
-         "test_conversations_survive_assessment_without_that_key"],
+         "tests.test_node_patch.NodePatchTests."
+         "test_assessment_update_without_conversations_key_keeps_them"],
     ),
     (
         "隐藏的恢复临时文件不能被当成备份恢复",
@@ -129,6 +135,28 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
              "                archived: Boolean(project.archived),\n"),
         "",
         ["node", "tests/frontend/verify-r8.js"],
+    ),
+    (
+        "schema 缓存必须按 (inode, 版本) 失效（否则换文件后不再建表）",
+        "storage.py",
+        crlf("    with _schema_ready_lock:\n"
+             "        return _schema_ready.get(str(path)) == (signature, version)\n"),
+        crlf("    with _schema_ready_lock:\n"
+             "        return True\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_open_overhead.BootstrapCacheTests."
+         "test_deleted_and_recreated_file_is_bootstrapped_again"],
+    ),
+    (
+        "内容没变的节点行不能再发 upsert（整项目保存的写放大）",
+        "storage.py",
+        crlf('        if existing_rows.get(node["node_id"]) == fingerprint:\n'
+             "            continue  # 这一行一个字都没变：不再发一条注定空写的 upsert\n"),
+        crlf("        if False:\n"
+             "            continue  # 这一行一个字都没变：不再发一条注定空写的 upsert\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_write_amplification.WriteAmplificationTests."
+         "test_unchanged_rewrite_issues_no_row_writes"],
     ),
 ]
 

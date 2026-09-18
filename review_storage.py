@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import uuid
+from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,16 @@ def _now() -> str:
 
 def _connection():
     return storage.open_state_database()
+
+
+@contextmanager
+def _shared_connection(connection=None):
+    """复用调用方给的连接（一个请求只开一次库）；没给就自己开一个。"""
+    if connection is not None:
+        yield connection
+    else:
+        with _connection() as own:
+            yield own
 
 
 def _json(value: Any) -> str:
@@ -450,7 +461,7 @@ REVIEW_DAILY_LIMIT_RANGE = (5, 15)
 REVIEW_NEW_PER_DAY_RANGE = (0, 5)
 
 
-def _settings() -> dict[str, Any]:
+def _settings(connection=None) -> dict[str, Any]:
     """复习相关的应用设置（内部契约，供 HTTP 层复用）：只有缺失才用默认值，显式 0 表示"关闭每日新知识点"。
 
     仅当键缺失（`None`）时才回落默认值（`reviewDailyLimit`=10、`reviewNewPerDay`=2）；
@@ -459,7 +470,7 @@ def _settings() -> dict[str, Any]:
     Task 9 之前 `read_app_settings()` 还没有 `reviewDailyLimit`/`reviewNewPerDay` 两个键，
     此时两个键都缺失，因此本任务返回 `{"limit": 10, "newPerDay": 2}`。
     """
-    settings = storage.read_app_settings() or {}
+    settings = storage.read_app_settings(connection) or {}
     raw_limit = settings.get("reviewDailyLimit")
     raw_new = settings.get("reviewNewPerDay")
     try:
@@ -474,12 +485,12 @@ def _settings() -> dict[str, Any]:
             "newPerDay": max(REVIEW_NEW_PER_DAY_RANGE[0], min(REVIEW_NEW_PER_DAY_RANGE[1], new_per_day))}
 
 
-def streak_days(today: str) -> int:
+def streak_days(today: str, connection=None) -> int:
     """连续复习天数：从 `today` 往回数连续的 `reviewed_on` 日期，遇到第一个断链停止。
 
     `today` 当天没有作答时返回 0（不把"昨天及以前"当作未断的连续段）。
     """
-    with _connection() as connection:
+    with _shared_connection(connection) as connection:
         rows = connection.execute(
             "SELECT DISTINCT reviewed_on FROM review_attempts ORDER BY reviewed_on DESC LIMIT 400").fetchall()
     days = [str(row["reviewed_on"]) for row in rows]
@@ -496,14 +507,19 @@ def streak_days(today: str) -> int:
 
 def summary(today: str) -> dict[str, Any]:
     """复习页顶部统计：`due` 非空视为已学（learned），按 overdue/dueToday/upcoming 分桶。"""
-    settings = _settings()
+    # 以前这里一条请求开 5 次连接（settings / 主查询 / streak / 两次 recent_attempts），
+    # 每次都重放一遍 DDL；现在整段统计共用同一个连接。
     with _connection() as connection:
+        settings = _settings(connection)
         total = int(connection.execute("SELECT COUNT(*) FROM review_points").fetchone()[0])
         rows = connection.execute(
             "SELECT COALESCE(s.due,'') AS due, COALESCE(s.weak,0) AS weak FROM review_points p "
             "LEFT JOIN review_states s ON s.code=p.code").fetchall()
         answered_today = int(connection.execute(
             "SELECT COUNT(*) FROM review_attempts WHERE reviewed_on=?", (today,)).fetchone()[0])
+        streak = streak_days(today, connection)
+        recent_wrong = recent_attempts("wrong", today, connection=connection)
+        recent_mastered = recent_attempts("mastered", today, connection=connection)
     due_today = overdue = upcoming = weak = learned = 0
     for row in rows:
         due = str(row["due"] or "")
@@ -522,18 +538,17 @@ def summary(today: str) -> dict[str, Any]:
     # 前者能给出"哪一次作答、写了什么、什么题型"，后者只是知识点的最新档位。
     return {"dueToday": due_today, "overdue": overdue, "upcoming": upcoming, "weak": weak,
             "total": total, "learned": learned, "answeredToday": answered_today,
-            "streakDays": streak_days(today),
-            "recentWrong": recent_attempts("wrong", today),
-            "recentMastered": recent_attempts("mastered", today), **settings}
+            "streakDays": streak, "recentWrong": recent_wrong, "recentMastered": recent_mastered,
+            **settings}
 
 
-def recent_attempts(kind: str, today: str, limit: int = 10) -> list[dict[str, Any]]:
+def recent_attempts(kind: str, today: str, limit: int = 10, connection=None) -> list[dict[str, Any]]:
     """最近答错（grade<=2）/ 已掌握（grade>=4）的作答记录，按作答时间倒序。
 
     `kind` 只区分 `wrong` 与其他值（其他值即 `mastered` 语义）；`today` 由调用方传入以便测试固定时钟。
     """
     condition = "grade<=2" if kind == "wrong" else "grade>=4"
-    with _connection() as connection:
+    with _shared_connection(connection) as connection:
         rows = connection.execute(
             f"SELECT a.id,a.code,a.question_type,a.grade,a.answer,a.reviewed_on,p.title,p.module "
             f"FROM review_attempts a LEFT JOIN review_points p ON p.code=a.code "

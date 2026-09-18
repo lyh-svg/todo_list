@@ -42,44 +42,65 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def open_summary_database() -> sqlite3.Connection:
-    SUMMARY_DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+_summary_schema_ready: dict[str, tuple[tuple[int, int], int]] = {}
+_summary_schema_ready_lock = threading.Lock()
+
+
+def _summary_file_signature() -> tuple[int, int]:
+    """库文件身份 = (设备号, inode)；换掉文件就必须重新建表。"""
     try:
-        SUMMARY_DATABASE_FILE.parent.chmod(0o700)
+        stat_result = SUMMARY_DATABASE_FILE.stat()
     except OSError:
-        pass
+        return (-1, -1)
+    return (stat_result.st_dev, stat_result.st_ino)
+
+
+def open_summary_database() -> sqlite3.Connection:
+    """打开摘要库；连接级 PRAGMA 与版本守卫每次都做，幂等 DDL 只在首次见到该文件时重放。"""
+    SUMMARY_DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(SUMMARY_DATABASE_FILE, timeout=10, factory=_ManagedConnection)
     connection.row_factory = sqlite3.Row
-    try:
-        SUMMARY_DATABASE_FILE.chmod(0o600)
-    except OSError:
-        pass
     connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("PRAGMA busy_timeout=10000")
     stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if stored_version > SUMMARY_SCHEMA_VERSION:
         connection.close()
         raise SummarySchemaVersionError(
             f"摘要库 schema 版本为 {stored_version}，高于本程序支持的 {SUMMARY_SCHEMA_VERSION}；请升级程序"
         )
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS summaries (
-            summary_id TEXT PRIMARY KEY,
-            question_key TEXT NOT NULL UNIQUE,
-            question TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            revision INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_summaries_order
-            ON summaries(updated_at DESC, summary_id);
-        """
-    )
-    connection.execute(f"PRAGMA user_version={SUMMARY_SCHEMA_VERSION}")
+    signature = _summary_file_signature()
+    with _summary_schema_ready_lock:
+        ready = _summary_schema_ready.get(str(SUMMARY_DATABASE_FILE)) == (signature, stored_version)
+    if not ready:
+        try:
+            SUMMARY_DATABASE_FILE.parent.chmod(0o700)
+        except OSError:
+            pass
+        try:
+            SUMMARY_DATABASE_FILE.chmod(0o600)
+        except OSError:
+            pass
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                summary_id TEXT PRIMARY KEY,
+                question_key TEXT NOT NULL UNIQUE,
+                question TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_summaries_order
+                ON summaries(updated_at DESC, summary_id);
+            """
+        )
+        connection.execute(f"PRAGMA user_version={SUMMARY_SCHEMA_VERSION}")
+        with _summary_schema_ready_lock:
+            _summary_schema_ready[str(SUMMARY_DATABASE_FILE)] = (
+                signature, int(connection.execute("PRAGMA user_version").fetchone()[0]))
+    connection.execute("PRAGMA synchronous=NORMAL")
+    connection.execute("PRAGMA busy_timeout=10000")
     return connection
 
 

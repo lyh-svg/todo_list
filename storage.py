@@ -266,18 +266,42 @@ def database_user_version() -> int:
         return int(connection.execute("PRAGMA user_version").fetchone()[0])
 
 
+_schema_ready: dict[str, tuple[tuple[int, int], int]] = {}
+_schema_ready_lock = threading.Lock()
+
+
+def _file_signature(path: Path) -> tuple[int, int]:
+    """库文件身份 = (设备号, inode)；恢复/导入都是 os.replace 整体换文件，inode 会变。"""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return (-1, -1)
+    return (stat_result.st_dev, stat_result.st_ino)
+
+
+def _schema_is_ready(path: Path, signature: tuple[int, int], version: int) -> bool:
+    with _schema_ready_lock:
+        return _schema_ready.get(str(path)) == (signature, version)
+
+
+def _remember_schema_ready(path: Path, signature: tuple[int, int], version: int) -> None:
+    with _schema_ready_lock:
+        _schema_ready[str(path)] = (signature, version)
+
+
 def open_state_database() -> sqlite3.Connection:
-    DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        DATABASE_FILE.parent.chmod(0o700)
-    except OSError:
-        pass
-    connection = sqlite3.connect(DATABASE_FILE, timeout=10, factory=_ManagedConnection)
+    """打开主库：连接级 PRAGMA + 版本守卫每次都做，幂等 DDL 只在本进程首次见到该文件时重放。
+
+    实测那一遍 DDL + table_info 约 243 µs，而 GET /api/trash 以前一条请求要开 4 次连接。
+    缓存键是 (路径, inode, 打开时读到的版本)，所以：
+      · 备份恢复 / 备忘录导入 / 迁移回滚换掉文件 → inode 变 → 重新建表；
+      · 删库重建 → inode 或版本(0) 不符 → 重新建表；
+      · 更高版本的库 → 版本守卫照旧先拒绝，缓存短路不了安全检查。
+    """
+    database_file = DATABASE_FILE
+    database_file.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database_file, timeout=10, factory=_ManagedConnection)
     connection.row_factory = sqlite3.Row
-    try:
-        DATABASE_FILE.chmod(0o600)
-    except OSError:
-        pass
     connection.execute("PRAGMA foreign_keys=ON")
     # 版本守卫必须在任何"会写文件"的 PRAGMA 之前：journal_mode=WAL 会改写数据库文件头，
     # 对一个未来版本的库执行它，等于在被拒绝打开的同时动了别人的文件。
@@ -288,10 +312,30 @@ def open_state_database() -> sqlite3.Connection:
             f"数据库 schema 版本为 {stored_version}，高于本程序支持的 {SCHEMA_VERSION}；"
             "请升级程序后再打开（已拒绝打开，避免降级损坏数据）"
         )
-    connection.execute("PRAGMA journal_mode=WAL")
+    signature = _file_signature(database_file)
+    if not _schema_is_ready(database_file, signature, stored_version):
+        _bootstrap_state_database(connection, database_file)
+        after = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        _remember_schema_ready(database_file, signature, after)
+    # 下面这些是连接级设置（不持久化），每条新连接都必须设，否则会静默失去外键级联与忙等。
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=10000")
     connection.execute("PRAGMA wal_autocheckpoint=1000")
+    return connection
+
+
+def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Path) -> None:
+    """本进程第一次打开这个库文件时：收紧权限 → 开 WAL → 重放幂等建表/建索引/补列。"""
+    try:
+        database_file.parent.chmod(0o700)
+    except OSError:
+        pass
+    try:
+        database_file.chmod(0o600)
+    except OSError:
+        pass
+    # WAL 记在文件头里（持久化），所以只在 bootstrap 设一次；换了文件会重新 bootstrap。
+    connection.execute("PRAGMA journal_mode=WAL")
     connection.execute(
         "CREATE TABLE IF NOT EXISTS app_state ("
         "key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL, "
@@ -500,7 +544,6 @@ def open_state_database() -> sqlite3.Connection:
     )
     # 只做幂等补列/建表；版本号由 ensure_schema() 在迁移成功后写入。
     # 这里绝不能无条件写 user_version：那会把更高版本的库"降级"成旧结构继续用。
-    return connection
 
 
 def project_summary(project: dict[str, Any]) -> dict[str, Any]:
@@ -653,12 +696,22 @@ def _upsert_project(connection: sqlite3.Connection, project: dict[str, Any], pos
          review_enabled, int(bool(project.get("archived"))),
          str(project.get("lastOpenedAt") or "")),
     )
-    existing_ids = {row[0] for row in connection.execute(
-        "SELECT node_id FROM nodes WHERE project_id=?", (project_id,)
-    )}
+    existing_rows = _existing_node_rows(connection, project_id)
+    changed_rows = []
     for node in nodes:
-        _insert_node_row(connection, node)
-    _cleanup_removed_nodes(connection, project_id, existing_ids, nodes)
+        fingerprint = tuple(node[column] for column in NODE_ROW_COLUMNS)
+        if existing_rows.get(node["node_id"]) == fingerprint:
+            continue  # 这一行一个字都没变：不再发一条注定空写的 upsert
+        changed_rows.append(fingerprint)
+    if changed_rows:
+        connection.executemany(NODE_UPSERT_SQL, changed_rows)
+    removed_ids = existing_rows.keys() - {node["node_id"] for node in nodes}
+    if removed_ids:
+        connection.executemany(
+            "DELETE FROM nodes WHERE project_id=? AND node_id=?",
+            [(project_id, node_id) for node_id in removed_ids],
+        )
+    _sync_assessments(connection, project_id, nodes, _now())
 
 
 NODE_ROW_COLUMNS = (
@@ -669,110 +722,195 @@ NODE_ROW_COLUMNS = (
 )
 
 
+def _existing_node_rows(connection: sqlite3.Connection, project_id: str) -> dict[str, tuple[Any, ...]]:
+    """一次读出项目里所有节点的完整行，作为"这一行有没有变"的指纹。
+
+    改动前每个节点都无条件发一条 upsert（1000 个节点、内容一个字都没变也要 1000 条 SQL）；
+    多读一次全行换掉整批空写，是这一轮写放大修复的核心。
+    """
+    columns = ",".join(NODE_ROW_COLUMNS)
+    rows: dict[str, tuple[Any, ...]] = {}
+    for row in connection.execute(
+        f"SELECT {columns} FROM nodes WHERE project_id=?", (project_id,)
+    ):
+        rows[str(row["node_id"])] = tuple(row[column] for column in NODE_ROW_COLUMNS)
+    return rows
+
+
+NODE_UPSERT_SQL = """INSERT INTO nodes(
+        project_id,node_id,id_json,parent_id,position,type,text,completed,
+        optional,assessment_required,assessment_history,expanded,created_at,completed_at,
+        review_due,review_learning,review_log,
+        priority,due_date,estimate_minutes,tags,note,links,repeat
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(project_id,node_id) DO UPDATE SET
+        id_json=excluded.id_json,parent_id=excluded.parent_id,position=excluded.position,
+        type=excluded.type,text=excluded.text,completed=excluded.completed,
+        optional=excluded.optional,assessment_required=excluded.assessment_required,
+        assessment_history=excluded.assessment_history,expanded=excluded.expanded,
+        created_at=excluded.created_at,completed_at=excluded.completed_at,
+        review_due=excluded.review_due,review_learning=excluded.review_learning,
+        review_log=excluded.review_log,
+        priority=excluded.priority,due_date=excluded.due_date,
+        estimate_minutes=excluded.estimate_minutes,tags=excluded.tags,
+        note=excluded.note,links=excluded.links,repeat=excluded.repeat
+    WHERE id_json<>excluded.id_json OR parent_id IS NOT excluded.parent_id
+        OR position<>excluded.position OR type<>excluded.type OR text<>excluded.text
+        OR completed<>excluded.completed OR optional<>excluded.optional
+        OR assessment_required<>excluded.assessment_required
+        OR assessment_history<>excluded.assessment_history
+        OR expanded<>excluded.expanded OR created_at<>excluded.created_at
+        OR completed_at<>excluded.completed_at
+        OR review_due<>excluded.review_due OR review_learning<>excluded.review_learning
+        OR review_log<>excluded.review_log
+        OR priority<>excluded.priority OR due_date<>excluded.due_date
+        OR estimate_minutes<>excluded.estimate_minutes OR tags<>excluded.tags
+        OR note<>excluded.note OR links<>excluded.links OR repeat<>excluded.repeat"""
+
+ASSESSMENT_UPSERT_SQL = """INSERT INTO assessments(project_id,node_id,payload,updated_at) VALUES(?,?,?,?)
+    ON CONFLICT(project_id,node_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at
+    WHERE payload<>excluded.payload"""
+
+CONVERSATION_UPSERT_SQL = """INSERT INTO conversations(
+        project_id,node_id,question_index,message_index,role,content
+    ) VALUES(?,?,?,?,?,?)
+    ON CONFLICT(project_id,node_id,question_index,message_index) DO UPDATE SET
+        role=excluded.role,content=excluded.content
+    WHERE role<>excluded.role OR content<>excluded.content"""
+
+CONVERSATION_DELETE_SQL = (
+    "DELETE FROM conversations WHERE project_id=? AND node_id=?"
+    " AND question_index=? AND message_index=?"
+)
+
+
 def _insert_node_row(connection: sqlite3.Connection, node: dict[str, Any]) -> None:
     """插入/更新一行节点（列清单与整项目写入共用，避免两处漂移）。"""
-    connection.execute(
-        """INSERT INTO nodes(
-                project_id,node_id,id_json,parent_id,position,type,text,completed,
-                optional,assessment_required,assessment_history,expanded,created_at,completed_at,
-                review_due,review_learning,review_log,
-                priority,due_date,estimate_minutes,tags,note,links,repeat
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(project_id,node_id) DO UPDATE SET
-                id_json=excluded.id_json,parent_id=excluded.parent_id,position=excluded.position,
-                type=excluded.type,text=excluded.text,completed=excluded.completed,
-                optional=excluded.optional,assessment_required=excluded.assessment_required,
-                assessment_history=excluded.assessment_history,expanded=excluded.expanded,
-                created_at=excluded.created_at,completed_at=excluded.completed_at,
-                review_due=excluded.review_due,review_learning=excluded.review_learning,
-                review_log=excluded.review_log,
-                priority=excluded.priority,due_date=excluded.due_date,
-                estimate_minutes=excluded.estimate_minutes,tags=excluded.tags,
-                note=excluded.note,links=excluded.links,repeat=excluded.repeat
-            WHERE id_json<>excluded.id_json OR parent_id IS NOT excluded.parent_id
-                OR position<>excluded.position OR type<>excluded.type OR text<>excluded.text
-                OR completed<>excluded.completed OR optional<>excluded.optional
-                OR assessment_required<>excluded.assessment_required
-                OR assessment_history<>excluded.assessment_history
-                OR expanded<>excluded.expanded OR created_at<>excluded.created_at
-                OR completed_at<>excluded.completed_at
-                OR review_due<>excluded.review_due OR review_learning<>excluded.review_learning
-                OR review_log<>excluded.review_log
-                OR priority<>excluded.priority OR due_date<>excluded.due_date
-                OR estimate_minutes<>excluded.estimate_minutes OR tags<>excluded.tags
-                OR note<>excluded.note OR links<>excluded.links OR repeat<>excluded.repeat""",
-        tuple(node[key] for key in NODE_ROW_COLUMNS),
-    )
+    connection.execute(NODE_UPSERT_SQL, tuple(node[key] for key in NODE_ROW_COLUMNS))
 
 
-def _cleanup_removed_nodes(connection: sqlite3.Connection, project_id: str,
-                           existing_ids: set[str], nodes: list[dict[str, Any]]) -> None:
-    """整项目写入后：删掉树里已经消失的节点，并写入/清理每个节点的验收记录。"""
-    updated_at = _now()
-    node_ids: list[str] = []
-    for node in nodes:
-        node_ids.append(node["node_id"])
-        _write_assessment(connection, node, updated_at)
-    removed_ids = existing_ids - set(node_ids)
-    if removed_ids:
-        connection.executemany(
-            "DELETE FROM nodes WHERE project_id=? AND node_id=?",
-            [(project_id, node_id) for node_id in removed_ids],
+def _assessment_payload(assessment: dict[str, Any]) -> tuple[str, bool, list[Any]]:
+    """验收对象 → (落库 payload, payload 是否带 questionConversations 键, 逐题消息)。
+
+    payload 里把 questionConversations 换成等长空数组占位（消息正文单独存表），
+    但"这个键在不在"本身是语义：缺键表示客户端只改了别的字段，绝不能删已有对话。
+    """
+    stored = dict(assessment)
+    conversations_present = "questionConversations" in stored
+    conversations = stored.pop("questionConversations", [])
+    if conversations_present and isinstance(conversations, list):
+        stored["questionConversations"] = [[] for _ in conversations]
+    return _json(stored), conversations_present, (conversations if isinstance(conversations, list) else [])
+
+
+def _conversation_rows(project_id: str, node_id: str,
+                       conversations: list[Any]) -> tuple[set[tuple[int, int]], list[tuple[Any, ...]]]:
+    """逐题消息 → (有效键集合, 待写入行)；结构非法或角色不对的条目按原口径跳过。"""
+    valid_keys: set[tuple[int, int]] = set()
+    rows: list[tuple[Any, ...]] = []
+    for question_index, messages in enumerate(conversations):
+        if not isinstance(messages, list):
+            continue
+        for message_index, message in enumerate(messages):
+            if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+                continue
+            valid_keys.add((question_index, message_index))
+            rows.append((project_id, node_id, question_index, message_index,
+                         message["role"], str(message.get("content", ""))))
+    return valid_keys, rows
+
+
+def _sync_assessments(connection: sqlite3.Connection, project_id: str,
+                      nodes: list[dict[str, Any]], updated_at: str) -> None:
+    """整项目写入时批量同步验收记录与逐题对话：一次读存量 → 差集 → executemany。
+
+    语义与单节点的 _write_assessment 完全一致（两者共用 _assessment_payload /
+    _conversation_rows 与同一批 SQL 常量），只是把"N 个节点各发若干条 SQL"收敛成
+    "读一次 + 只为真正的变化写"：没有验收的节点不再发空 DELETE，没变的消息不再重写。
+    """
+    existing_payloads: dict[str, str] = {
+        str(row["node_id"]): str(row["payload"])
+        for row in connection.execute(
+            "SELECT node_id,payload FROM assessments WHERE project_id=?", (project_id,)
         )
+    }
+    needs_conversation_diff = any(
+        isinstance(node.get("assessment"), dict) and "questionConversations" in node["assessment"]
+        for node in nodes
+    )
+    existing_messages: dict[str, dict[tuple[int, int], tuple[str, str]]] = {}
+    if needs_conversation_diff:
+        for row in connection.execute(
+            """SELECT node_id,question_index,message_index,role,content FROM conversations
+            WHERE project_id=?""",
+            (project_id,),
+        ):
+            existing_messages.setdefault(str(row["node_id"]), {})[
+                (int(row["question_index"]), int(row["message_index"]))
+            ] = (str(row["role"]), str(row["content"]))
+
+    assessment_upserts: list[tuple[Any, ...]] = []
+    assessment_deletes: list[tuple[Any, ...]] = []
+    message_upserts: list[tuple[Any, ...]] = []
+    message_deletes: list[tuple[Any, ...]] = []
+    for node in nodes:
+        node_id = node["node_id"]
+        assessment = node["assessment"]
+        if assessment is None:
+            # 只删确实存在的行；以前对每个没有验收的节点也要发一条注定删不到东西的 DELETE
+            if node_id in existing_payloads:
+                assessment_deletes.append((project_id, node_id))
+            continue
+        payload, conversations_present, conversations = _assessment_payload(assessment)
+        if existing_payloads.get(node_id) != payload:
+            assessment_upserts.append((project_id, node_id, payload, updated_at))
+        if not conversations_present:
+            # 缺键 = 客户端没提交对话，一个字都不能动（老代码在这里删光过用户数据）
+            continue
+        valid_keys, rows = _conversation_rows(project_id, node_id, conversations)
+        stored_messages = existing_messages.get(node_id, {})
+        for row in rows:
+            if stored_messages.get((row[2], row[3])) != (row[4], row[5]):
+                message_upserts.append(row)
+        for key in stored_messages:
+            if key not in valid_keys:
+                message_deletes.append((project_id, node_id, *key))
+
+    if assessment_deletes:
+        connection.executemany(
+            "DELETE FROM assessments WHERE project_id=? AND node_id=?", assessment_deletes
+        )
+    if assessment_upserts:
+        connection.executemany(ASSESSMENT_UPSERT_SQL, assessment_upserts)
+    if message_upserts:
+        connection.executemany(CONVERSATION_UPSERT_SQL, message_upserts)
+    if message_deletes:
+        connection.executemany(CONVERSATION_DELETE_SQL, message_deletes)
 
 
 def _write_assessment(connection: sqlite3.Connection, node: dict[str, Any], updated_at: str) -> None:
+    """单节点验收写入（节点级 patch 走这里）；与整项目写入的 _sync_assessments 共用口径。"""
     project_id, node_id = node["project_id"], node["node_id"]
     assessment = node["assessment"]
     if assessment is None:
         connection.execute("DELETE FROM assessments WHERE project_id=? AND node_id=?", (project_id, node_id))
         return
-    stored = dict(assessment)
-    conversations_present = "questionConversations" in stored
-    conversations = stored.pop("questionConversations", [])
-    if conversations_present and isinstance(conversations, list):
-        # Preserve empty question slots while message bodies live in their own table.
-        stored["questionConversations"] = [[] for _ in conversations]
-    payload = _json(stored)
-    connection.execute(
-        """INSERT INTO assessments(project_id,node_id,payload,updated_at) VALUES(?,?,?,?)
-        ON CONFLICT(project_id,node_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at
-        WHERE payload<>excluded.payload""",
-        (project_id, node_id, payload, updated_at),
-    )
-    valid_keys: set[tuple[int, int]] = set()
-    if conversations_present and isinstance(conversations, list):
-        for question_index, messages in enumerate(conversations):
-            if not isinstance(messages, list):
-                continue
-            for message_index, message in enumerate(messages):
-                if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
-                    continue
-                key = (question_index, message_index)
-                valid_keys.add(key)
-                connection.execute(
-                    """INSERT INTO conversations(
-                        project_id,node_id,question_index,message_index,role,content
-                    ) VALUES(?,?,?,?,?,?)
-                    ON CONFLICT(project_id,node_id,question_index,message_index) DO UPDATE SET
-                        role=excluded.role,content=excluded.content
-                    WHERE role<>excluded.role OR content<>excluded.content""",
-                    (project_id, node_id, question_index, message_index,
-                     message["role"], str(message.get("content", ""))),
-                )
-    # 只有 payload 真的带了 questionConversations 键时才做差集删除。
-    # 否则（例如客户端只发 {"passed": true}）valid_keys 为空，会把该节点已有的逐题对话全部删掉。
-    if conversations_present:
-        for row in connection.execute(
-            "SELECT question_index,message_index FROM conversations WHERE project_id=? AND node_id=?",
-            (project_id, node_id),
-        ):
-            key = (int(row[0]), int(row[1]))
-            if key not in valid_keys:
-                connection.execute(
-                    "DELETE FROM conversations WHERE project_id=? AND node_id=? AND question_index=? AND message_index=?",
-                    (project_id, node_id, *key),
-                )
+    payload, conversations_present, conversations = _assessment_payload(assessment)
+    connection.execute(ASSESSMENT_UPSERT_SQL, (project_id, node_id, payload, updated_at))
+    if not conversations_present:
+        # 只有 payload 真的带了 questionConversations 键时才做差集删除。
+        # 否则（例如客户端只发 {"passed": true}）valid_keys 为空，会把该节点已有的逐题对话全部删掉。
+        return
+    valid_keys, rows = _conversation_rows(project_id, node_id, conversations)
+    if rows:
+        connection.executemany(CONVERSATION_UPSERT_SQL, rows)
+    for row in connection.execute(
+        "SELECT question_index,message_index FROM conversations WHERE project_id=? AND node_id=?",
+        (project_id, node_id),
+    ):
+        key = (int(row[0]), int(row[1]))
+        if key not in valid_keys:
+            connection.execute(CONVERSATION_DELETE_SQL, (project_id, node_id, *key))
 
 
 def _read_project_from_connection(connection: sqlite3.Connection, project_id: str) -> tuple[dict[str, Any], int] | None:
@@ -1217,16 +1355,18 @@ def store_trash_item(
     }
 
 
+def _purge_trash_items(connection: sqlite3.Connection, days: int) -> int:
+    """真正干活的版本：复用调用方已经打开的连接（回收站接口一次请求只开一次库）。"""
+    cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
+    return connection.execute("DELETE FROM trash_items WHERE deleted_at < ?", (cutoff,)).rowcount
+
+
 def purge_trash_items(days: int | None = None) -> int:
     """删除早于保留天数的回收站条目（默认取应用设置里的 trashRetentionDays）。"""
-    if days is None:
-        days = int(read_app_settings()["trashRetentionDays"])
-    cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
     with _database_lock, open_state_database() as connection:
-        cursor = connection.execute(
-            "DELETE FROM trash_items WHERE deleted_at < ?", (cutoff,)
-        )
-    return cursor.rowcount
+        if days is None:
+            days = int(read_app_settings(connection)["trashRetentionDays"])
+        return _purge_trash_items(connection, days)
 
 
 def _ensure_orphan_box(project: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
@@ -1250,11 +1390,12 @@ def _ensure_orphan_box(project: dict[str, Any]) -> tuple[list[dict[str, Any]], s
 
 
 def list_trash_items() -> list[dict[str, Any]]:
-    purge_trash_items()
-    settings = read_app_settings()
-    retention = int(settings["trashRetentionDays"])
-
+    # 以前这里要开 4 次连接（purge → settings → purge 自身 → settings + 自身），
+    # 每开一次就重放一遍 DDL；现在清理、读设置、读列表共用同一个连接。
     with _database_lock, open_state_database() as connection:
+        settings = read_app_settings(connection)
+        retention = int(settings["trashRetentionDays"])
+        _purge_trash_items(connection, retention)
         rows = connection.execute(
             "SELECT trash_id,kind,project_id,parent_id,position,title,context,deleted_at,revision "
             "FROM trash_items ORDER BY deleted_at DESC,trash_id"
@@ -2285,15 +2426,15 @@ def import_projects(projects: Any, mode: str = "replace", *, keep_ai_history: bo
 
 def auto_archive_projects(days: int | None = None) -> dict[str, Any]:
     """把"所有任务都完成、且很久没动过"的项目自动归档（可在设置里关掉）。"""
-    settings = read_app_settings()
-    if days is None:
-        if not settings["autoArchiveEnabled"]:
-            return {"archived": [], "skipped": "autoArchiveEnabled=false"}
-        days = int(settings["autoArchiveDays"])
-    cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
     archived: list[dict[str, str]] = []
     with _database_lock:
         with open_state_database() as connection:
+            settings = read_app_settings(connection)
+            if days is None:
+                if not settings["autoArchiveEnabled"]:
+                    return {"archived": [], "skipped": "autoArchiveEnabled=false"}
+                days = int(settings["autoArchiveDays"])
+            cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 "SELECT project_id,position,revision,updated_at FROM projects "

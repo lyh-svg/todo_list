@@ -53,44 +53,68 @@ def _safe_text(value: Any, fallback: str = "") -> str:
     return str(value if value is not None else fallback).strip()
 
 
-def open_memo_database() -> sqlite3.Connection:
-    MEMO_DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+_memo_schema_ready: dict[str, tuple[tuple[int, int], int]] = {}
+_memo_schema_ready_lock = threading.Lock()
+
+
+def _memo_file_signature() -> tuple[int, int]:
+    """库文件身份 = (设备号, inode)；整库导入是 os.replace 换文件，inode 会变。"""
     try:
-        MEMO_DATABASE_FILE.parent.chmod(0o700)
+        stat_result = MEMO_DATABASE_FILE.stat()
     except OSError:
-        pass
+        return (-1, -1)
+    return (stat_result.st_dev, stat_result.st_ino)
+
+
+def open_memo_database() -> sqlite3.Connection:
+    """打开备忘录库；连接级 PRAGMA 与版本守卫每次都做，幂等 DDL 只在首次见到该文件时重放。
+
+    缓存键是 (inode, 打开时读到的版本)：整库导入换掉文件、删库重建、版本变化都会重新建表。
+    """
+    MEMO_DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(MEMO_DATABASE_FILE, timeout=10, factory=_ManagedConnection)
     connection.row_factory = sqlite3.Row
-    try:
-        MEMO_DATABASE_FILE.chmod(0o600)
-    except OSError:
-        pass
     connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("PRAGMA busy_timeout=10000")
     stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if stored_version > MEMO_SCHEMA_VERSION:
         connection.close()
         raise MemoSchemaVersionError(
             f"备忘录库 schema 版本为 {stored_version}，高于本程序支持的 {MEMO_SCHEMA_VERSION}；请升级程序"
         )
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS memos (
-            memo_id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            pinned INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            revision INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_memos_order
-            ON memos(pinned DESC, updated_at DESC, memo_id);
-        """
-    )
-    connection.execute(f"PRAGMA user_version={MEMO_SCHEMA_VERSION}")
+    signature = _memo_file_signature()
+    with _memo_schema_ready_lock:
+        ready = _memo_schema_ready.get(str(MEMO_DATABASE_FILE)) == (signature, stored_version)
+    if not ready:
+        try:
+            MEMO_DATABASE_FILE.parent.chmod(0o700)
+        except OSError:
+            pass
+        try:
+            MEMO_DATABASE_FILE.chmod(0o600)
+        except OSError:
+            pass
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memos (
+                memo_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_memos_order
+                ON memos(pinned DESC, updated_at DESC, memo_id);
+            """
+        )
+        connection.execute(f"PRAGMA user_version={MEMO_SCHEMA_VERSION}")
+        with _memo_schema_ready_lock:
+            _memo_schema_ready[str(MEMO_DATABASE_FILE)] = (
+                signature, int(connection.execute("PRAGMA user_version").fetchone()[0]))
+    connection.execute("PRAGMA synchronous=NORMAL")
+    connection.execute("PRAGMA busy_timeout=10000")
     return connection
 
 
