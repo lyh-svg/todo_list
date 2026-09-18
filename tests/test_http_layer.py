@@ -143,6 +143,36 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual([entry["nodeId"] for entry in payload["future"]], ["p1-i"])
         self.assertEqual(payload["due"], [])
 
+    def test_workbench_since_short_circuits_unchanged_data(self) -> None:
+        """提醒轮询靠 since 跳过"数据没变"的整次重算（P3）。"""
+        status, board = self.json_call("GET", f"/api/workbench?today={TODAY}")
+        self.assertEqual(status, 200)
+        self.assertTrue(board["version"])
+        self.assertNotIn("unchanged", board)
+
+        status, same = self.json_call("GET", f"/api/workbench?today={TODAY}&since={board['version']}")
+        self.assertEqual(status, 200)
+        self.assertTrue(same.get("unchanged"))
+        self.assertEqual(same["version"], board["version"])
+        self.assertEqual(same["totals"], {key: 0 for key in board["totals"]})
+        self.assertEqual(same["groups"], {key: [] for key in board["groups"]})
+
+        # 数据真的变了：加一个今天到期的任务 → 必须回到完整结果，并给出新的 version
+        project = make_project()
+        project["tree"][0]["children"][0]["children"][0]["dueDate"] = TODAY
+        storage.replace_projects([project], pre_backup=False)
+        status, changed = self.json_call("GET", f"/api/workbench?today={TODAY}&since={board['version']}")
+        self.assertEqual(status, 200)
+        self.assertNotIn("unchanged", changed)
+        self.assertNotEqual(changed["version"], board["version"])
+        self.assertEqual([item["text"] for item in changed["groups"]["today"]], ["任务1"])
+
+        # 乱传/超长 since 一律当没传：绝不能因此返回一个空工作台
+        status, bogus = self.json_call("GET", f"/api/workbench?today={TODAY}&since={'x' * 500}")
+        self.assertEqual(status, 200)
+        self.assertNotIn("unchanged", bogus)
+        self.assertEqual(len(bogus["groups"]["today"]), 1)
+
     def test_reviews_endpoint_limit_and_bad_params(self) -> None:
         self.with_review_item()
         status, payload = self.json_call("GET", f"/api/reviews?today={TODAY}&limit=1")

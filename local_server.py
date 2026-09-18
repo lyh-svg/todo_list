@@ -34,6 +34,8 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("TODO_AI_PORT", "8765"))
 IDLE_SHUTDOWN_SECONDS = max(1, int(os.environ.get("TODO_IDLE_SHUTDOWN_SECONDS", "300")))
 # Supports several small source files plus a short per-question conversation.
+# workbench 的变更指纹最长就这么长；更长的 since 一律当没传（反正也不可能相等）。
+MAX_SINCE_CHARS = 120
 MAX_AI_REQUEST_BYTES = 5 * 1024 * 1024
 MAX_STATE_REQUEST_BYTES = 110 * 1024 * 1024
 # 备忘录正文本身允许到 50 MB（memo_storage.MAX_MEMO_CONTENT_BYTES），HTTP 上限必须不低于它，
@@ -536,8 +538,12 @@ class TodoHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/workbench":
             try:
-                today = optional_iso_date(query_params(self).get("today", [""])[0])
-                self.send_json(200, workbench(today or None))
+                params = query_params(self)
+                today = optional_iso_date(params.get("today", [""])[0])
+                # since：客户端上一次拿到的 version。只做等值比较，超过长度上限的直接当没传
+                # （提醒功能靠它跳过"数据没变"的整次重算，页面正常打开时不传）。
+                since = str(params.get("since", [""])[0] or "").strip()[:MAX_SINCE_CHARS]
+                self.send_json(200, workbench(today or None, since or None))
             except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
                 self.send_json(500, {"error": f"读取今日工作台失败：{error}"})
             return

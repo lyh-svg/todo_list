@@ -8099,7 +8099,8 @@ let knowledgePoints = [];
 
     const REMINDER_STORAGE_KEY = 'todo_list_reminders';
 
-    const reminderState = { enabled: false, timer: null, fired: new Set(), permission: 'default' };
+    // version：上一次工作台响应的数据指纹；提醒轮询带上它，服务端就能对"数据没变"直接短路。
+    const reminderState = { enabled: false, timer: null, fired: new Set(), permission: 'default', version: '' };
 
     function loadReminderSettings() {
         try {
@@ -8139,15 +8140,19 @@ let knowledgePoints = [];
     }
 
     async function checkReminders() {
-        if (!reminderState.enabled) return;
+        if (!reminderState.enabled || document.hidden) return;
         let board = null;
         try {
-            const response = await apiFetch(`/api/workbench?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' });
+            const since = reminderState.version ? `&since=${encodeURIComponent(reminderState.version)}` : '';
+            const response = await apiFetch(
+                `/api/workbench?today=${encodeURIComponent(todayStr())}${since}`, { cache: 'no-store' });
             board = await response.json().catch(() => null);
             if (!response.ok || !board) return;
         } catch (error) {
             return; // 下一次检查再试
         }
+        if (board.version) reminderState.version = board.version;
+        if (board.unchanged) return; // 数据没变：服务端已经跳过重算，这里也不用看分组
         const groups = board.groups || {};
         const pending = [];
         [['overdue', '逾期'], ['today', '今天到期'], ['reviewToday', '待复习']].forEach(([key, label]) => {
@@ -8176,9 +8181,15 @@ let knowledgePoints = [];
         }
     }
 
-    function startReminders() {
+    function startReminders(immediate = false) {
+        // 后台标签页不轮询：每分钟一次的全量检查没必要在看不见的时候烧 CPU。
+        if (document.hidden) return;
         if (reminderState.timer) return;
         reminderState.timer = window.setInterval(() => { checkReminders(); }, 60 * 1000);
+        if (immediate) {
+            checkReminders();
+            return;
+        }
         window.setTimeout(() => { checkReminders(); }, 3000);
     }
 
@@ -9724,9 +9735,14 @@ let knowledgePoints = [];
             if (event.key === 'Escape' && !utilityModal.hidden) closeUtilityModal();
         });
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) return;
-            persistAssessmentDraft();
-            if (saveTimer) flushProjectsSave();
+            if (document.hidden) {
+                persistAssessmentDraft();
+                if (saveTimer) flushProjectsSave();
+                stopReminders(); // 切到后台：暂停每分钟的提醒轮询
+                return;
+            }
+            // 回到前台：立刻补一次检查，并恢复轮询
+            if (reminderState.enabled) startReminders(true);
         });
         window.addEventListener('pagehide', () => {
             persistAssessmentDraft();

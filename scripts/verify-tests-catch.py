@@ -148,6 +148,32 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
          "test_deleted_and_recreated_file_is_bootstrapped_again"],
     ),
     (
+        "只为结果集算路径时，path/ancestorIds 口径不能变",
+        "storage.py",
+        crlf("            if parent_entry[1]:\n"
+             "                labels.append(parent_entry[1])\n"),
+        crlf("            if False:\n"
+             "                labels.append(parent_entry[1])\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_workbench_paths.NodeLocationTests."
+         "test_matches_reference_implementation"],
+    ),
+    (
+        "工作台变更指纹必须真的短路（否则提醒等于没优化）",
+        "storage.py",
+        crlf("        if since and str(since) == version:\n"),
+        crlf("        if False:\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_workbench_paths.WorkbenchVersionTests.test_unchanged_since_short_circuits"],
+    ),
+    (
+        "提醒在后台标签页必须暂停轮询",
+        "js/app.js",
+        crlf("        if (document.hidden) return;\n"),
+        crlf("        if (false) return;\n"),
+        ["node", "tests/frontend/verify-reminders.js"],
+    ),
+    (
         "内容没变的节点行不能再发 upsert（整项目保存的写放大）",
         "storage.py",
         crlf('        if existing_rows.get(node["node_id"]) == fingerprint:\n'

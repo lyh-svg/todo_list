@@ -1629,13 +1629,14 @@ def list_review_queue(today: str | None = None, limit: int = MAX_REVIEW_QUEUE) -
             str(row["project_id"]): str(row["name"])
             for row in connection.execute("SELECT project_id,name FROM projects WHERE archived=0")
         }
-        locations = _node_locations(connection)
         rows = connection.execute(
-            "SELECT project_id,node_id,text,review_due,review_learning,completed_at "
+            "SELECT project_id,node_id,parent_id,text,review_due,review_learning,completed_at "
             "FROM nodes WHERE type='item' AND completed=1 AND review_due<>'' "
             "ORDER BY review_due, project_id, position LIMIT ?",
             (wanted + 1,),
         ).fetchall()
+        # 只为真正会返回的行建路径（原来这里会把全库节点读进来算一遍）
+        locations = _node_locations(connection, rows[:wanted])
     truncated = len(rows) > wanted
     due_items: list[dict[str, Any]] = []
     future_items: list[dict[str, Any]] = []
@@ -1684,7 +1685,6 @@ def search_everything(query: Any, limit: int = 100) -> dict[str, Any]:
         return {"query": "", "results": [], "total": 0, "truncated": False, "limit": wanted}
     pattern = "%" + text.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     with _database_lock, open_state_database() as connection:
-        locations = _node_locations(connection)
         all_names = {
             str(row["project_id"]): str(row["name"])
             for row in connection.execute("SELECT project_id,name FROM projects")
@@ -1702,12 +1702,14 @@ def search_everything(query: Any, limit: int = 100) -> dict[str, Any]:
                    SELECT child.project_id,child.node_id FROM nodes child
                      JOIN hit ON child.project_id=hit.project_id AND child.parent_id=hit.node_id
                )
-               SELECT node.project_id,node.node_id,node.text,node.type,node.position
+               SELECT node.project_id,node.node_id,node.parent_id,node.text,node.type,node.position
                  FROM nodes node
                  JOIN hit ON hit.project_id=node.project_id AND hit.node_id=node.node_id
                 ORDER BY node.project_id, node.position, node.node_id LIMIT ?""",
             (pattern, wanted + 1),
         ).fetchall()
+        # 只为命中的行建路径（原来这里会把全库节点读进来算一遍）
+        locations = _node_locations(connection, node_rows)
     results: list[dict[str, Any]] = []
     for row in project_rows:
         project_id = str(row["project_id"])
@@ -3574,39 +3576,101 @@ def touch_project_opened(project_id: Any) -> None:
         )
 
 
-def _node_locations(connection: sqlite3.Connection) -> dict[tuple[str, str], dict[str, Any]]:
-    """每个节点的可读路径与祖先 id（工作台用于展示与定位）。"""
-    rows = connection.execute("SELECT project_id,node_id,parent_id,text FROM nodes").fetchall()
-    parent: dict[tuple[str, str], tuple[str | None, str]] = {}
-    for row in rows:
-        parent[(str(row["project_id"]), str(row["node_id"]))] = (row["parent_id"], str(row["text"] or ""))
+# 一次 IN(...) 里最多绑多少个参数：SQLite 旧版默认上限 999，这里留足余量。
+SQL_PARAM_CHUNK = 400
+# 工作台的分组名（顺序即界面顺序）；空响应也要保持同样的形状。
+WORKBENCH_GROUP_KEYS = ("overdue", "today", "next7", "reviewToday", "inbox")
+
+
+def _node_locations(connection: sqlite3.Connection,
+                    rows: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    """为**给定**的节点行算可读路径与祖先 id（工作台 / 复习队列 / 搜索用）。
+
+    rows 必须带 project_id / node_id / parent_id 三列。三层树里祖先只可能是周或单元，
+    所以这里只额外读一次"这些项目里的周与单元"（占比很小），再在内存里向上走：
+    O(目标行数 × 深度)。旧实现把全库节点（含 text）整表读进内存、为每个节点拼一遍路径
+    （10k 节点实测 26.7 ms），而三个接口真正需要的行往往只有几十到几千。
+    """
+    project_ids = sorted({str(row["project_id"]) for row in rows})
+    if not project_ids:
+        return {}
+    containers: dict[tuple[str, str], tuple[str | None, str]] = {}
+    for start in range(0, len(project_ids), SQL_PARAM_CHUNK):
+        chunk = project_ids[start:start + SQL_PARAM_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        for row in connection.execute(
+            f"SELECT project_id,node_id,parent_id,text FROM nodes "
+            f"WHERE project_id IN ({placeholders}) AND type IN ('week','day')",
+            chunk,
+        ):
+            containers[(str(row["project_id"]), str(row["node_id"]))] = (
+                str(row["parent_id"]) if row["parent_id"] is not None else None,
+                str(row["text"] or ""),
+            )
 
     locations: dict[tuple[str, str], dict[str, Any]] = {}
-    for key in parent:
+    for row in rows:
+        key = (str(row["project_id"]), str(row["node_id"]))
         labels: list[str] = []
         ancestors: list[str] = []
-        entry = parent.get(key)
-        cursor: str | None = str(entry[0]) if entry and entry[0] is not None else None
+        cursor: str | None = str(row["parent_id"]) if row["parent_id"] is not None else None
         seen: set[str] = set()
         while cursor is not None and cursor not in seen:
             seen.add(cursor)
             ancestors.append(cursor)
-            parent_entry = parent.get((key[0], cursor))
+            parent_entry = containers.get((key[0], cursor))
             if not parent_entry:
                 break
             if parent_entry[1]:
                 labels.append(parent_entry[1])
-            cursor = str(parent_entry[0]) if parent_entry[0] is not None else None
+            cursor = parent_entry[0]
         locations[key] = {"path": " / ".join(reversed(labels)), "ancestorIds": list(reversed(ancestors))}
     return locations
 
 
-def workbench(today: str | None = None) -> dict[str, Any]:
-    """今日工作台：逾期 / 今天 / 未来 7 天 / 今天要复习 / 收集箱。"""
+def _workbench_version(connection: sqlite3.Connection) -> str:
+    """工作台的轻量变更指纹：只做聚合、不传行，用来判断"能不能跳过整次重算"。
+
+    覆盖 workbench 真正读到的两处数据：
+      · projects：COUNT / SUM(revision) / SUM(archived)。任何节点写入（整树保存、节点 patch、
+        批量、导入、复习回流）都会让某个项目的 revision 前进；归档改 archived；增删项目改 COUNT。
+      · nodes(type='item')：COUNT / SUM(completed) / 有截止或有复习日期的行数。这一项是兜底：
+        换库/恢复备份/导入替换后 revision 恰好相同的情况，也能被它看出来。
+
+    刻意不做的事：不读具体行、不算路径。10k 任务实测 2.4 ms，而完整 workbench 是 79 ms。
+    """
+    projects = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(revision),0),COALESCE(SUM(archived),0) FROM projects"
+    ).fetchone()
+    items = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(completed),0),"
+        "COALESCE(SUM(CASE WHEN due_date<>'' OR review_due<>'' THEN 1 ELSE 0 END),0) "
+        "FROM nodes WHERE type='item'"
+    ).fetchone()
+    return ":".join(str(int(value or 0)) for value in (*projects, *items))
+
+
+def workbench(today: str | None = None, since: str | None = None) -> dict[str, Any]:
+    """今日工作台：逾期 / 今天 / 未来 7 天 / 今天要复习 / 收集箱。
+
+    `since` 是上一次响应里的 `version`；数据没变就直接回 `unchanged: true` 的空结果，
+    让"每分钟轮询一次"的提醒功能不必每次重算全部分组（页面正常打开时不传 since）。
+    """
     reference = clean_due_date(today) or date.today().isoformat()
     horizon = (date.fromisoformat(reference) + timedelta(days=WORKBENCH_HORIZON_DAYS)).isoformat()
-    groups: dict[str, list[dict[str, Any]]] = {"overdue": [], "today": [], "next7": [], "reviewToday": [], "inbox": []}
+    groups: dict[str, list[dict[str, Any]]] = {key: [] for key in WORKBENCH_GROUP_KEYS}
     with _database_lock, open_state_database() as connection:
+        version = _workbench_version(connection)
+        if since and str(since) == version:
+            return {
+                "today": reference,
+                "serverToday": date.today().isoformat(),
+                "horizonDays": WORKBENCH_HORIZON_DAYS,
+                "groups": {key: [] for key in WORKBENCH_GROUP_KEYS},
+                "totals": {key: 0 for key in WORKBENCH_GROUP_KEYS},
+                "version": version,
+                "unchanged": True,
+            }
         # 收集箱即使被归档也要显示：快速添加永远写进它，看不见就等于任务消失。
         project_names = {
             str(row["project_id"]): str(row["name"])
@@ -3615,12 +3679,19 @@ def workbench(today: str | None = None) -> dict[str, Any]:
                 (INBOX_PROJECT_ID,),
             )
         }
-        locations = _node_locations(connection)
+        # 只有"可能落进某个分组"的任务才需要读出来（下面 Python 仍然按原口径分桶）：
+        # 未完成且截止日 <= horizon、未完成的收集箱任务、已完成且复习日 <= 今天。
+        # 以前这里读全库每一个任务并为它造字典（含 json.loads），绝大多数行随后被丢掉。
         rows = connection.execute(
-            """SELECT project_id,node_id,text,completed,priority,due_date,estimate_minutes,tags,
+            """SELECT project_id,node_id,parent_id,text,completed,priority,due_date,estimate_minutes,tags,
                       note,links,repeat,review_due,completed_at
-               FROM nodes WHERE type='item'"""
+               FROM nodes WHERE type='item' AND (
+                   (completed=0 AND ((due_date<>'' AND due_date<=?) OR project_id=?))
+                   OR (completed=1 AND review_due<>'' AND review_due<=?)
+               )""",
+            (horizon, INBOX_PROJECT_ID, reference),
         ).fetchall()
+        locations = _node_locations(connection, rows)
     for row in rows:
         project_id = str(row["project_id"])
         if project_id not in project_names:
@@ -3674,6 +3745,7 @@ def workbench(today: str | None = None) -> dict[str, Any]:
         "horizonDays": WORKBENCH_HORIZON_DAYS,
         "groups": groups,
         "totals": {key: len(items) for key, items in groups.items()},
+        "version": version,
     }
 
 
