@@ -9,7 +9,6 @@
       "minutes": 20,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4101",
@@ -73,7 +72,6 @@
       "minutes": 20,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4101",
@@ -136,7 +134,6 @@
       "minutes": 20,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4101",
@@ -199,7 +196,6 @@
       "minutes": 20,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4101",
@@ -263,7 +259,6 @@
       "minutes": 25,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4103",
@@ -324,7 +319,6 @@
       "minutes": 25,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4103",
@@ -392,7 +386,6 @@
       "minutes": 20,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4104",
@@ -469,7 +462,6 @@
       "minutes": 15,
       "module": "迭代器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4104",
@@ -531,7 +523,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4201",
@@ -604,7 +595,6 @@
       "minutes": 20,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4203",
@@ -669,7 +659,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4202",
@@ -729,7 +718,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4204",
@@ -795,7 +783,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4301",
@@ -856,7 +843,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4301",
@@ -917,7 +903,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4302",
@@ -977,7 +962,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4302",
@@ -1044,7 +1028,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4301",
@@ -1101,7 +1084,6 @@
       "minutes": 25,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4304",
@@ -1164,7 +1146,6 @@
       "minutes": 20,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4303",
@@ -1225,7 +1206,6 @@
       "minutes": 20,
       "module": "itertools",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4401",
@@ -1284,7 +1264,6 @@
       "minutes": 20,
       "module": "itertools",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4401",
@@ -1348,7 +1327,6 @@
       "minutes": 20,
       "module": "itertools",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4401",
@@ -1406,7 +1384,6 @@
       "minutes": 25,
       "module": "itertools",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4401",
@@ -1468,7 +1445,6 @@
       "minutes": 20,
       "module": "itertools",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4401",
@@ -1531,7 +1507,6 @@
       "minutes": 20,
       "module": "itertools",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4401",
@@ -1595,7 +1570,6 @@
       "minutes": 25,
       "module": "itertools",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4403",
@@ -1658,7 +1632,6 @@
       "minutes": 20,
       "module": "惰性求值",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4404",
@@ -1718,7 +1691,6 @@
       "minutes": 20,
       "module": "惰性求值",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4404",
@@ -1782,7 +1754,6 @@
       "minutes": 25,
       "module": "惰性求值",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4501",
@@ -1840,7 +1811,6 @@
       "minutes": 25,
       "module": "惰性求值",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4502",
@@ -1900,7 +1870,6 @@
       "minutes": 25,
       "module": "惰性求值",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4502",
@@ -1962,7 +1931,6 @@
       "minutes": 25,
       "module": "惰性求值",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4503",
@@ -2021,7 +1989,6 @@
       "minutes": 20,
       "module": "生成器",
       "level": "实用",
-      "week": 4,
       "taskRefs": [
         {
           "taskId": "4505",

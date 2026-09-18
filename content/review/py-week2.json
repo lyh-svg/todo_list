@@ -9,7 +9,6 @@
       "minutes": 20,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2101",
@@ -71,7 +70,6 @@
       "minutes": 20,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2102",
@@ -131,7 +129,6 @@
       "minutes": 25,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2101",
@@ -188,7 +185,6 @@
       "minutes": 20,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2101",
@@ -256,7 +252,6 @@
       "minutes": 15,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2102",
@@ -321,7 +316,6 @@
       "minutes": 25,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2102",
@@ -385,7 +379,6 @@
       "minutes": 20,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2103",
@@ -442,7 +435,6 @@
       "minutes": 25,
       "module": "属性与描述符",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2201",
@@ -506,7 +498,6 @@
       "minutes": 20,
       "module": "描述符",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2202",
@@ -564,7 +555,6 @@
       "minutes": 25,
       "module": "描述符",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2202",
@@ -625,7 +615,6 @@
       "minutes": 15,
       "module": "描述符",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2202",
@@ -684,7 +673,6 @@
       "minutes": 20,
       "module": "描述符",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2203",
@@ -743,7 +731,6 @@
       "minutes": 20,
       "module": "描述符",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2203",
@@ -804,7 +791,6 @@
       "minutes": 20,
       "module": "属性与描述符",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2204",
@@ -863,7 +849,6 @@
       "minutes": 15,
       "module": "数据模型",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2301",
@@ -922,7 +907,6 @@
       "minutes": 25,
       "module": "数据模型",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2301",
@@ -988,7 +972,6 @@
       "minutes": 15,
       "module": "数据模型",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2301",
@@ -1045,7 +1028,6 @@
       "minutes": 25,
       "module": "数据模型",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2303",
@@ -1111,7 +1093,6 @@
       "minutes": 15,
       "module": "数据模型",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2301",
@@ -1172,7 +1153,6 @@
       "minutes": 25,
       "module": "数据模型",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2302",
@@ -1235,7 +1215,6 @@
       "minutes": 20,
       "module": "上下文管理",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2401",
@@ -1302,7 +1281,6 @@
       "minutes": 20,
       "module": "上下文管理",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2401",
@@ -1362,7 +1340,6 @@
       "minutes": 25,
       "module": "上下文管理",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2402",
@@ -1428,7 +1405,6 @@
       "minutes": 25,
       "module": "dataclass",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2403",
@@ -1486,7 +1462,6 @@
       "minutes": 20,
       "module": "dataclass",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2403",
@@ -1544,7 +1519,6 @@
       "minutes": 20,
       "module": "dataclass",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2403",
@@ -1601,7 +1575,6 @@
       "minutes": 20,
       "module": "类型系统",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2404",
@@ -1663,7 +1636,6 @@
       "minutes": 15,
       "module": "类型系统",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2404",
@@ -1723,7 +1695,6 @@
       "minutes": 20,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2104",
@@ -1783,7 +1754,6 @@
       "minutes": 20,
       "module": "类与对象",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2403",
@@ -1839,7 +1809,6 @@
       "minutes": 15,
       "module": "数据模型",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2505",
@@ -1895,7 +1864,6 @@
       "minutes": 25,
       "module": "类型系统",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2501",
@@ -1955,7 +1923,6 @@
       "minutes": 20,
       "module": "类型系统",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2501",
@@ -2015,7 +1982,6 @@
       "minutes": 20,
       "module": "元类",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2505",
@@ -2072,7 +2038,6 @@
       "minutes": 20,
       "module": "元类",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2505",
@@ -2128,7 +2093,6 @@
       "minutes": 25,
       "module": "元类",
       "level": "实用",
-      "week": 2,
       "taskRefs": [
         {
           "taskId": "2505",

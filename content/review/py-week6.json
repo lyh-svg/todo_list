@@ -5,7 +5,7 @@
   "points": [
     {
       "code": "py.concurrency.definitions",
-      "title": "并发、并行与 I/O 密集/CPU 密集判定",
+      "title": "并发、并行、I/O 密集判定",
       "minutes": 25,
       "module": "并发",
       "level": "进阶",
@@ -124,7 +124,7 @@
     },
     {
       "code": "py.gil.cpu-vs-io-throughput",
-      "title": "GIL 对吞吐的影响与释放时机",
+      "title": "GIL 对吞吐的影响、释放时机",
       "minutes": 25,
       "module": "GIL",
       "level": "进阶",
@@ -187,7 +187,7 @@
     },
     {
       "code": "py.gil.switch-interval",
-      "title": "切换间隔、原子性与字节码边界",
+      "title": "切换间隔、原子性、字节码边界",
       "minutes": 20,
       "module": "GIL",
       "level": "进阶",
@@ -247,7 +247,7 @@
     },
     {
       "code": "py.thread.lifecycle",
-      "title": "Thread 生命周期与带超时的 join",
+      "title": "Thread 生命周期、带超时的 join",
       "minutes": 25,
       "module": "线程",
       "level": "进阶",
@@ -313,7 +313,7 @@
     },
     {
       "code": "py.thread.daemon-exit",
-      "title": "daemon 线程与解释器退出规则",
+      "title": "daemon 线程、解释器退出规则",
       "minutes": 20,
       "module": "线程",
       "level": "进阶",
@@ -375,7 +375,7 @@
     },
     {
       "code": "py.thread.pool-executor",
-      "title": "线程池 ThreadPoolExecutor 的复用与结果映射",
+      "title": "线程池 ThreadPoolExecutor 的复用、结果映射",
       "minutes": 30,
       "module": "线程",
       "level": "进阶",
@@ -439,7 +439,7 @@
     },
     {
       "code": "py.future.result-states",
-      "title": "Future 状态机与 result/exception 语义",
+      "title": "Future 状态机、result/exception 语义",
       "minutes": 25,
       "module": "并发",
       "level": "进阶",
@@ -507,7 +507,7 @@
     },
     {
       "code": "py.future.as-completed",
-      "title": "as_completed 与无序结果收集",
+      "title": "as_completed、无序结果收集",
       "minutes": 25,
       "module": "并发",
       "level": "进阶",
@@ -568,7 +568,7 @@
     },
     {
       "code": "py.future.eager-cached-result",
-      "title": "Future 三态与预完成结果",
+      "title": "Future 三态、预完成结果",
       "minutes": 20,
       "module": "并发",
       "level": "进阶",
@@ -626,7 +626,7 @@
     },
     {
       "code": "py.queue.bounded-producer-consumer",
-      "title": "queue.Queue 与有界生产者消费者",
+      "title": "queue.Queue、有界生产者消费者",
       "minutes": 30,
       "module": "队列",
       "level": "进阶",
@@ -688,7 +688,7 @@
     },
     {
       "code": "py.queue.sentinel-shutdown",
-      "title": "哨兵停止信号与队列排空",
+      "title": "哨兵停止信号、队列排空",
       "minutes": 25,
       "module": "队列",
       "level": "进阶",
@@ -747,7 +747,7 @@
     },
     {
       "code": "py.queue.full-and-worker-failure",
-      "title": "队列满与 worker 失败的边界处理",
+      "title": "队列满、worker 失败的边界处理",
       "minutes": 25,
       "module": "队列",
       "level": "进阶",
@@ -860,7 +860,7 @@
     },
     {
       "code": "py.sync.rlock",
-      "title": "RLock 可重入与递归加锁",
+      "title": "RLock 可重入、递归加锁",
       "minutes": 20,
       "module": "同步",
       "level": "进阶",
@@ -918,7 +918,7 @@
     },
     {
       "code": "py.sync.event",
-      "title": "Event 一次性信号与启动门闩",
+      "title": "Event 一次性信号、启动门闩",
       "minutes": 20,
       "module": "同步",
       "level": "进阶",
@@ -978,7 +978,7 @@
     },
     {
       "code": "py.sync.condition",
-      "title": "Condition 与谓词等待",
+      "title": "Condition 谓词等待",
       "minutes": 30,
       "module": "同步",
       "level": "进阶",
@@ -1097,7 +1097,7 @@
     },
     {
       "code": "py.sync.barrier",
-      "title": "Barrier 集合点与破损状态",
+      "title": "Barrier 集合点、破损状态",
       "minutes": 20,
       "module": "同步",
       "level": "进阶",
@@ -1151,7 +1151,7 @@
     },
     {
       "code": "py.sync.deadlock",
-      "title": "死锁四个条件与带超时的排查",
+      "title": "死锁四个条件、带超时的排查",
       "minutes": 30,
       "module": "同步",
       "level": "进阶",
@@ -1205,7 +1205,7 @@
     },
     {
       "code": "py.process.pool",
-      "title": "ProcessPoolExecutor 与真并行前提",
+      "title": "ProcessPoolExecutor 真并行前提",
       "minutes": 30,
       "module": "进程",
       "level": "进阶",
@@ -1269,7 +1269,7 @@
     },
     {
       "code": "py.process.main-guard-spawn",
-      "title": "__main__ 保护与 fork/spawn 启动方式",
+      "title": "__main__ 保护、fork/spawn 启动方式",
       "minutes": 25,
       "module": "进程",
       "level": "进阶",
@@ -1327,7 +1327,7 @@
     },
     {
       "code": "py.process.payload-boundary",
-      "title": "跨进程载荷边界与深度限制",
+      "title": "跨进程载荷边界、深度限制",
       "minutes": 25,
       "module": "进程",
       "level": "进阶",
@@ -1386,7 +1386,7 @@
     },
     {
       "code": "py.process.startup-cost",
-      "title": "进程启动成本与常驻选型",
+      "title": "进程启动成本、常驻选型",
       "minutes": 20,
       "module": "进程",
       "level": "进阶",
@@ -1451,7 +1451,7 @@
     },
     {
       "code": "py.process.error-memory-boundary",
-      "title": "跨进程异常与内存边界",
+      "title": "跨进程异常、内存边界",
       "minutes": 25,
       "module": "进程",
       "level": "进阶",
@@ -1508,7 +1508,7 @@
     },
     {
       "code": "py.exec.runner-interface",
-      "title": "同步与线程池统一 Runner 接口",
+      "title": "同步/线程池统一 Runner 接口",
       "minutes": 30,
       "module": "并发",
       "level": "进阶",
@@ -1565,7 +1565,7 @@
     },
     {
       "code": "py.exec.concurrency-limit",
-      "title": "并发上限与失败结果收集",
+      "title": "并发上限、失败结果收集",
       "minutes": 30,
       "module": "并发",
       "level": "进阶",
@@ -1628,7 +1628,7 @@
     },
     {
       "code": "py.exec.ordering-semantics",
-      "title": "有序与无序输出的语义一致",
+      "title": "有序/无序输出的语义一致",
       "minutes": 25,
       "module": "并发",
       "level": "进阶",
@@ -1692,7 +1692,7 @@
     },
     {
       "code": "py.exec.shutdown-timeout",
-      "title": "Executor 关闭、超时与异常传播",
+      "title": "Executor 关闭、超时、异常传播",
       "minutes": 30,
       "module": "并发",
       "level": "进阶",
@@ -1753,7 +1753,7 @@
     },
     {
       "code": "py.asyncio.thread-relation",
-      "title": "asyncio 与线程的边界对照",
+      "title": "asyncio/线程边界对照",
       "minutes": 25,
       "module": "并发",
       "level": "进阶",
@@ -1808,7 +1808,7 @@
     },
     {
       "code": "py.exec.guardrails",
-      "title": "并发退出、单调性与锁纪律",
+      "title": "并发退出、单调性、锁纪律",
       "minutes": 25,
       "module": "性能",
       "level": "进阶",
@@ -1872,7 +1872,7 @@
     },
     {
       "code": "py.thread.local-state",
-      "title": "threading.local 与线程私有状态",
+      "title": "threading.local 线程私有状态",
       "minutes": 20,
       "module": "线程",
       "level": "进阶",
@@ -1927,7 +1927,7 @@
     },
     {
       "code": "py.exec.map-chunksize",
-      "title": "executor.map 的惰性与 chunksize",
+      "title": "executor.map 的惰性、chunksize",
       "minutes": 25,
       "module": "进程",
       "level": "进阶",
@@ -1984,7 +1984,7 @@
     },
     {
       "code": "py.process.timeout-recovery",
-      "title": "进程池超时与池重建",
+      "title": "进程池超时、池重建",
       "minutes": 25,
       "module": "进程",
       "level": "进阶",

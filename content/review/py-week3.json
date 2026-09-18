@@ -9,7 +9,6 @@
       "minutes": 20,
       "module": "函数",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3101",
@@ -69,7 +68,6 @@
       "minutes": 20,
       "module": "函数",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3101",
@@ -129,7 +127,6 @@
       "minutes": 25,
       "module": "参数",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3102",
@@ -191,7 +188,6 @@
       "minutes": 20,
       "module": "参数",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3102",
@@ -248,7 +244,6 @@
       "minutes": 20,
       "module": "类型标注",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3103",
@@ -309,7 +304,6 @@
       "minutes": 25,
       "module": "函数",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3104",
@@ -367,7 +361,6 @@
       "minutes": 25,
       "module": "闭包",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3201",
@@ -431,7 +424,6 @@
       "minutes": 20,
       "module": "闭包",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3201",
@@ -488,7 +480,6 @@
       "minutes": 20,
       "module": "闭包",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3201",
@@ -549,7 +540,6 @@
       "minutes": 20,
       "module": "闭包",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3202",
@@ -612,7 +602,6 @@
       "minutes": 20,
       "module": "闭包",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3202",
@@ -673,7 +662,6 @@
       "minutes": 25,
       "module": "闭包",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3203",
@@ -733,7 +721,6 @@
       "minutes": 20,
       "module": "functools",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3204",
@@ -792,7 +779,6 @@
       "minutes": 25,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3301",
@@ -854,7 +840,6 @@
       "minutes": 25,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3302",
@@ -914,7 +899,6 @@
       "minutes": 20,
       "module": "functools",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3302",
@@ -974,7 +958,6 @@
       "minutes": 25,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3303",
@@ -1032,7 +1015,6 @@
       "minutes": 25,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3303",
@@ -1100,7 +1082,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3304",
@@ -1157,7 +1138,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3304",
@@ -1216,7 +1196,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3304",
@@ -1273,7 +1252,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3401",
@@ -1334,7 +1312,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3401",
@@ -1392,7 +1369,6 @@
       "minutes": 25,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3401",
@@ -1459,7 +1435,6 @@
       "minutes": 25,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3402",
@@ -1522,7 +1497,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3403",
@@ -1582,7 +1556,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3404",
@@ -1640,7 +1613,6 @@
       "minutes": 25,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3501",
@@ -1699,7 +1671,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3502",
@@ -1759,7 +1730,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3502",
@@ -1821,7 +1791,6 @@
       "minutes": 25,
       "module": "functools",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3505",
@@ -1883,7 +1852,6 @@
       "minutes": 20,
       "module": "装饰器",
       "level": "实用",
-      "week": 3,
       "taskRefs": [
         {
           "taskId": "3505",

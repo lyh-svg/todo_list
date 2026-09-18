@@ -9,7 +9,6 @@
       "minutes": 20,
       "module": "模块",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5101",
@@ -79,7 +78,6 @@
       "minutes": 20,
       "module": "模块",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5101",
@@ -153,7 +151,6 @@
       "minutes": 25,
       "module": "工程化",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5102",
@@ -213,7 +210,6 @@
       "minutes": 25,
       "module": "工程化",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5103",
@@ -278,7 +274,6 @@
       "minutes": 25,
       "module": "模块",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5104",
@@ -340,7 +335,6 @@
       "minutes": 20,
       "module": "typing",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5201",
@@ -403,7 +397,6 @@
       "minutes": 20,
       "module": "typing",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5201",
@@ -471,7 +464,6 @@
       "minutes": 20,
       "module": "typing",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5201",
@@ -536,7 +528,6 @@
       "minutes": 20,
       "module": "typing",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5201",
@@ -599,7 +590,6 @@
       "minutes": 25,
       "module": "typing",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5202",
@@ -661,7 +651,6 @@
       "minutes": 25,
       "module": "typing",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5202",
@@ -729,7 +718,6 @@
       "minutes": 20,
       "module": "类型注解",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5203",
@@ -792,7 +780,6 @@
       "minutes": 20,
       "module": "类型注解",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5203",
@@ -852,7 +839,6 @@
       "minutes": 25,
       "module": "mypy",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5203",
@@ -917,7 +903,6 @@
       "minutes": 20,
       "module": "类型注解",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5203",
@@ -983,7 +968,6 @@
       "minutes": 30,
       "module": "pytest",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5301",
@@ -1029,7 +1013,7 @@
           "indirect=True 时 fixture 从 request.param 读取参数，两个参数各生成一条用例且都通过",
           "autouse fixture 不写在测试参数里也会执行 setup，并在用例结束后留下 teardown 记录"
         ],
-        "reference": "import pytest\n\nevents = []\naudit = []\n\n\n@pytest.fixture\ndef resource():\n    events.append(\"resource:setup\")\n    yield \"conn\"\n    events.append(\"resource:teardown\")\n\n\n@pytest.fixture\ndef service(resource):\n    events.append(\"service:setup\")\n    yield \"svc:\" + resource\n    events.append(\"service:teardown\")\n\n\n@pytest.fixture(autouse=True)\ndef audit_log():\n    audit.append(\"setup\")\n    yield\n    audit.append(\"teardown\")\n\n\n@pytest.fixture\ndef db(request):\n    return \"db-\" + request.param\n\n\ndef test_injection_and_setup_order(service):\n    assert service == \"svc:conn\"\n    assert events == [\"resource:setup\", \"service:setup\"]\n    events.clear()\n\n\ndef test_teardown_runs_in_reverse_dependency_order():\n    # 上一个测试结束后，service 的 teardown 先于它依赖的 resource\n    assert events == [\"service:teardown\", \"resource:teardown\"]\n    events.clear()\n\n\n@pytest.mark.parametrize(\"db\", [\"a\", \"b\"], indirect=True)\ndef test_indirect_param(db, request):\n    assert request.node.callspec.params[\"db\"] == db[-1]\n    assert db == \"db-\" + db[-1]\n\n\ndef test_autouse_runs_without_a_parameter():\n    # audit_log 没有出现在参数列表里，但仍然执行了 setup\n    assert audit[-1] == \"setup\"\n\n\ndef test_autouse_teardown_ran_for_previous_tests():\n    assert \"teardown\" in audit\n"
+        "reference": "import pytest\n\nevents = []\naudit = []\n\n\n@pytest.fixture\ndef resource():\n    events.append(\"resource:setup\")\n    yield \"conn\"\n    events.append(\"resource:teardown\")\n\n\n@pytest.fixture\ndef service(resource):\n    events.append(\"service:setup\")\n    yield \"svc:\" + resource\n    events.append(\"service:teardown\")\n\n\n@pytest.fixture(autouse=True)\ndef audit_log():\n    audit.append(\"setup\")\n    yield\n    audit.append(\"teardown\")\n\n\n@pytest.fixture\ndef db(request):\n    return \"db-\" + request.param\n\n\ndef test_injection_and_setup_order(service):\n    assert service == \"svc:conn\"\n    assert events == [\"resource:setup\", \"service:setup\"]\n    events.clear()\n\n\ndef test_teardown_runs_in_reverse_dependency_order():\n    # 上一个测试结束后，service 的 teardown 先于它依赖的 resource\n    assert events == [\"service:teardown\", \"resource:teardown\"]\n    events.clear()\n\n\n@pytest.mark.parametrize(\"db\", [\"a\", \"b\"], indirect=True)\ndef test_indirect_param(db, request):\n    assert request.node.callspec.params[\"db\"] == db[-1]\n    assert db == \"db-\" + db[-1]\n\n\ndef test_autouse_runs_without_a_parameter():\n    # audit_log 没有出现在参数列表里，但仍然执行了 setup\n    assert audit[-1] == \"setup\"\n\n\ndef test_autouse_teardown_ran_for_previous_tests():\n    assert \"teardown\" in audit\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "用 return 提供 fixture 值却指望收尾：return 的 fixture 没有 teardown，写在 return 之后的清理是死代码",
@@ -1045,7 +1029,6 @@
       "minutes": 20,
       "module": "pytest",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5301",
@@ -1093,7 +1076,7 @@
           "parametrize 与 fixture 组合时 base 由 fixture 注入、delta 来自参数化，测试同时用到两者",
           "pytest.param 带 id 的用例 id 是 even/odd，带 skip 标记的那条被跳过而不是失败"
         ],
-        "reference": "import pytest\n\n\n@pytest.fixture\ndef base():\n    return 10\n\n\n@pytest.mark.parametrize(\"x,expected\", [(1, 1), (2, 4), (3, 9)])\ndef test_square(x, expected):\n    # 每个元组是一条独立用例\n    assert x * x == expected\n\n\n@pytest.mark.parametrize(\"x,expected\", [(1, 1), (2, 4)], ids=[\"one\", \"two\"])\ndef test_square_with_ids(x, expected, request):\n    assert request.node.callspec.id in (\"one\", \"two\")\n    assert x * x == expected\n\n\n@pytest.mark.parametrize(\"x\", [1, 2])\n@pytest.mark.parametrize(\"y\", [10, 20])\ndef test_stacked_is_cartesian(x, y, request):\n    # 两层叠加是笛卡尔积，4 条用例\n    assert request.node.callspec.id in (\"10-1\", \"10-2\", \"20-1\", \"20-2\")\n    assert (x, y) in [(1, 10), (1, 20), (2, 10), (2, 20)]\n\n\n@pytest.mark.parametrize(\"delta\", [1, 2])\ndef test_parametrize_with_fixture(base, delta):\n    # 参数化与 fixture 组合：base 由 fixture 注入，delta 来自参数化\n    assert base + delta in (11, 12)\n\n\n@pytest.mark.parametrize(\"value\", [\n    pytest.param(2, id=\"even\"),\n    pytest.param(3, id=\"odd\"),\n    pytest.param(4, marks=pytest.mark.skip(reason=\"not implemented yet\")),\n])\ndef test_param_with_marks(value, request):\n    assert request.node.callspec.id in (\"even\", \"odd\")\n    assert value in (2, 3)\n"
+        "reference": "import pytest\n\n\n@pytest.fixture\ndef base():\n    return 10\n\n\n@pytest.mark.parametrize(\"x,expected\", [(1, 1), (2, 4), (3, 9)])\ndef test_square(x, expected):\n    # 每个元组是一条独立用例\n    assert x * x == expected\n\n\n@pytest.mark.parametrize(\"x,expected\", [(1, 1), (2, 4)], ids=[\"one\", \"two\"])\ndef test_square_with_ids(x, expected, request):\n    assert request.node.callspec.id in (\"one\", \"two\")\n    assert x * x == expected\n\n\n@pytest.mark.parametrize(\"x\", [1, 2])\n@pytest.mark.parametrize(\"y\", [10, 20])\ndef test_stacked_is_cartesian(x, y, request):\n    # 两层叠加是笛卡尔积，4 条用例\n    assert request.node.callspec.id in (\"10-1\", \"10-2\", \"20-1\", \"20-2\")\n    assert (x, y) in [(1, 10), (1, 20), (2, 10), (2, 20)]\n\n\n@pytest.mark.parametrize(\"delta\", [1, 2])\ndef test_parametrize_with_fixture(base, delta):\n    # 参数化与 fixture 组合：base 由 fixture 注入，delta 来自参数化\n    assert base + delta in (11, 12)\n\n\n@pytest.mark.parametrize(\"value\", [\n    pytest.param(2, id=\"even\"),\n    pytest.param(3, id=\"odd\"),\n    pytest.param(4, marks=pytest.mark.skip(reason=\"not implemented yet\")),\n])\ndef test_param_with_marks(value, request):\n    assert request.node.callspec.id in (\"even\", \"odd\")\n    assert value in (2, 3)\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "把叠加 parametrize 当成 zip 配对，实际是笛卡尔积，多跑用例还失败",
@@ -1109,7 +1092,6 @@
       "minutes": 20,
       "module": "pytest",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5301",
@@ -1157,7 +1139,7 @@
           "with pytest.raises(ValueError): pass 抛出的异常类型名是 Failed、消息正好是 DID NOT RAISE ValueError",
           "外层 pytest.raises(KeyError) 能接到内层 ValueError 断言块里抛出的 KeyError，说明其它异常会继续传播"
         ],
-        "reference": "import re\n\nimport pytest\n\n\ndef split_pair(text):\n    left, right = text.split(\":\")\n    return left, right\n\n\ndef test_raises_exposes_value_type_and_traceback():\n    with pytest.raises(ValueError) as excinfo:\n        split_pair(\"only\")\n    assert excinfo.type is ValueError\n    assert \"not enough values to unpack\" in str(excinfo.value)\n    assert excinfo.traceback is not None\n\n\ndef test_match_uses_search_not_fullmatch():\n    # \"too many\" 只是异常消息的子串，re.search 命中即可\n    with pytest.raises(ValueError, match=\"too many\"):\n        raise ValueError(\"too many values to unpack (expected 2)\")\n\n\ndef test_match_is_a_regex_so_special_characters_need_escaping():\n    with pytest.raises(ValueError, match=re.escape(\"unpack (expected 2)\")):\n        raise ValueError(\"too many values to unpack (expected 2)\")\n\n\ndef test_multiple_exception_types_can_be_listed():\n    with pytest.raises((ValueError, KeyError)) as excinfo:\n        raise KeyError(\"k\")\n    assert excinfo.type is KeyError\n    assert str(excinfo.value) == \"'k'\"\n\n\ndef test_did_not_raise_is_reported():\n    try:\n        with pytest.raises(ValueError):\n            pass\n    except BaseException as exc:\n        assert type(exc).__name__ == \"Failed\"\n        assert str(exc) == \"DID NOT RAISE ValueError\"\n    else:\n        raise AssertionError(\"pytest.raises 应该在没有异常时报错\")\n\n\ndef test_other_exception_propagates():\n    with pytest.raises(KeyError):\n        with pytest.raises(ValueError):\n            raise KeyError(\"other\")\n"
+        "reference": "import re\n\nimport pytest\n\n\ndef split_pair(text):\n    left, right = text.split(\":\")\n    return left, right\n\n\ndef test_raises_exposes_value_type_and_traceback():\n    with pytest.raises(ValueError) as excinfo:\n        split_pair(\"only\")\n    assert excinfo.type is ValueError\n    assert \"not enough values to unpack\" in str(excinfo.value)\n    assert excinfo.traceback is not None\n\n\ndef test_match_uses_search_not_fullmatch():\n    # \"too many\" 只是异常消息的子串，re.search 命中即可\n    with pytest.raises(ValueError, match=\"too many\"):\n        raise ValueError(\"too many values to unpack (expected 2)\")\n\n\ndef test_match_is_a_regex_so_special_characters_need_escaping():\n    with pytest.raises(ValueError, match=re.escape(\"unpack (expected 2)\")):\n        raise ValueError(\"too many values to unpack (expected 2)\")\n\n\ndef test_multiple_exception_types_can_be_listed():\n    with pytest.raises((ValueError, KeyError)) as excinfo:\n        raise KeyError(\"k\")\n    assert excinfo.type is KeyError\n    assert str(excinfo.value) == \"'k'\"\n\n\ndef test_did_not_raise_is_reported():\n    try:\n        with pytest.raises(ValueError):\n            pass\n    except BaseException as exc:\n        assert type(exc).__name__ == \"Failed\"\n        assert str(exc) == \"DID NOT RAISE ValueError\"\n    else:\n        raise AssertionError(\"pytest.raises 应该在没有异常时报错\")\n\n\ndef test_other_exception_propagates():\n    with pytest.raises(KeyError):\n        with pytest.raises(ValueError):\n            raise KeyError(\"other\")\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "用 match= 时把异常消息当字面量，括号、加号等正则特殊字符没转义，匹配失败报 Regex pattern did not match.",
@@ -1173,7 +1155,6 @@
       "minutes": 20,
       "module": "pytest",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5301",
@@ -1220,7 +1201,7 @@
           "tmp_path_factory.mktemp(\"data\") 两次得到两个不同目录，父目录都等于 tmp_path_factory.getbasetemp()",
           "monkeypatch.chdir(tmp_path) 后 Path.cwd() 等于 tmp_path，相对路径 rel.txt 落在 tmp_path 里并能读回"
         ],
-        "reference": "import pathlib\n\nseen = []\n\n\ndef test_tmp_path_is_a_real_directory(tmp_path):\n    assert isinstance(tmp_path, pathlib.Path)\n    assert tmp_path.is_dir()\n\n\ndef test_write_then_read_back_in_tmp_path(tmp_path):\n    seen.append(tmp_path)\n    target = tmp_path / \"data.txt\"\n    target.write_text(\"alpha\", encoding=\"utf-8\")\n    assert target.read_text(encoding=\"utf-8\") == \"alpha\"\n\n\ndef test_tmp_path_is_not_shared_between_tests(tmp_path):\n    seen.append(tmp_path)\n    # 上一个测试写的 data.txt 不会出现在这里\n    assert not (tmp_path / \"data.txt\").exists()\n    assert seen[0] != seen[1]\n    assert seen[0].parent == seen[1].parent\n\n\ndef test_tmp_path_factory_creates_session_directories(tmp_path_factory):\n    first = tmp_path_factory.mktemp(\"data\")\n    second = tmp_path_factory.mktemp(\"data\")\n    assert first.is_dir() and second.is_dir()\n    assert first != second\n    assert first.parent == second.parent == tmp_path_factory.getbasetemp()\n\n\ndef test_monkeypatch_chdir_into_tmp_path(tmp_path, monkeypatch):\n    monkeypatch.chdir(tmp_path)\n    pathlib.Path(\"rel.txt\").write_text(\"x\", encoding=\"utf-8\")\n    assert pathlib.Path.cwd() == tmp_path\n    assert (tmp_path / \"rel.txt\").read_text(encoding=\"utf-8\") == \"x\"\n"
+        "reference": "import pathlib\n\nseen = []\n\n\ndef test_tmp_path_is_a_real_directory(tmp_path):\n    assert isinstance(tmp_path, pathlib.Path)\n    assert tmp_path.is_dir()\n\n\ndef test_write_then_read_back_in_tmp_path(tmp_path):\n    seen.append(tmp_path)\n    target = tmp_path / \"data.txt\"\n    target.write_text(\"alpha\", encoding=\"utf-8\")\n    assert target.read_text(encoding=\"utf-8\") == \"alpha\"\n\n\ndef test_tmp_path_is_not_shared_between_tests(tmp_path):\n    seen.append(tmp_path)\n    # 上一个测试写的 data.txt 不会出现在这里\n    assert not (tmp_path / \"data.txt\").exists()\n    assert seen[0] != seen[1]\n    assert seen[0].parent == seen[1].parent\n\n\ndef test_tmp_path_factory_creates_session_directories(tmp_path_factory):\n    first = tmp_path_factory.mktemp(\"data\")\n    second = tmp_path_factory.mktemp(\"data\")\n    assert first.is_dir() and second.is_dir()\n    assert first != second\n    assert first.parent == second.parent == tmp_path_factory.getbasetemp()\n\n\ndef test_monkeypatch_chdir_into_tmp_path(tmp_path, monkeypatch):\n    monkeypatch.chdir(tmp_path)\n    pathlib.Path(\"rel.txt\").write_text(\"x\", encoding=\"utf-8\")\n    assert pathlib.Path.cwd() == tmp_path\n    assert (tmp_path / \"rel.txt\").read_text(encoding=\"utf-8\") == \"x\"\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "让一个测试写、另一个测试读同一个 tmp_path，第二个必然 FileNotFoundError",
@@ -1236,7 +1217,6 @@
       "minutes": 25,
       "module": "测试",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5302",
@@ -1278,7 +1258,7 @@
           "端到端层用 subprocess 真跑 CLI 脚本，断言 returncode == 0 且 stdout.strip() == \"6\"",
           "端到端层同时断言 stderr 为空字符串"
         ],
-        "reference": "import json\nimport pathlib\nimport subprocess\nimport sys\n\nCLI_SOURCE = (\n    \"import json\\n\"\n    \"import pathlib\\n\"\n    \"import sys\\n\"\n    \"records = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))\\n\"\n    \"print(sum(record['price'] * record['qty'] for record in records))\\n\"\n)\n\n\ndef total_price(records):\n    return sum(record[\"price\"] * record[\"qty\"] for record in records)\n\n\ndef test_unit_total_price_is_pure():\n    # 单元层：只测一个函数，不碰文件系统和进程\n    assert total_price([]) == 0\n    assert total_price([{\"price\": 3, \"qty\": 2}]) == 6\n\n\ndef test_integration_reads_records_from_a_real_file(tmp_path):\n    # 集成层：多走一段真实的文件读写边界\n    orders = tmp_path / \"orders.json\"\n    orders.write_text(json.dumps([{\"price\": 3, \"qty\": 2}]), encoding=\"utf-8\")\n    records = json.loads(orders.read_text(encoding=\"utf-8\"))\n    assert total_price(records) == 6\n\n\ndef test_e2e_cli_runs_as_a_real_process(tmp_path):\n    # 端到端：真实子进程 + 真实文件，覆盖“从命令行到输出”的全流程\n    orders = tmp_path / \"orders.json\"\n    orders.write_text(json.dumps([{\"price\": 3, \"qty\": 2}]), encoding=\"utf-8\")\n    cli = tmp_path / \"cli.py\"\n    cli.write_text(CLI_SOURCE, encoding=\"utf-8\")\n    result = subprocess.run(\n        [sys.executable, str(cli), str(orders)], capture_output=True, text=True\n    )\n    assert result.returncode == 0\n    assert result.stdout.strip() == \"6\"\n    assert result.stderr == \"\"\n"
+        "reference": "import json\nimport pathlib\nimport subprocess\nimport sys\n\nCLI_SOURCE = (\n    \"import json\\n\"\n    \"import pathlib\\n\"\n    \"import sys\\n\"\n    \"records = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))\\n\"\n    \"print(sum(record['price'] * record['qty'] for record in records))\\n\"\n)\n\n\ndef total_price(records):\n    return sum(record[\"price\"] * record[\"qty\"] for record in records)\n\n\ndef test_unit_total_price_is_pure():\n    # 单元层：只测一个函数，不碰文件系统和进程\n    assert total_price([]) == 0\n    assert total_price([{\"price\": 3, \"qty\": 2}]) == 6\n\n\ndef test_integration_reads_records_from_a_real_file(tmp_path):\n    # 集成层：多走一段真实的文件读写边界\n    orders = tmp_path / \"orders.json\"\n    orders.write_text(json.dumps([{\"price\": 3, \"qty\": 2}]), encoding=\"utf-8\")\n    records = json.loads(orders.read_text(encoding=\"utf-8\"))\n    assert total_price(records) == 6\n\n\ndef test_e2e_cli_runs_as_a_real_process(tmp_path):\n    # 端到端：真实子进程 + 真实文件，覆盖“从命令行到输出”的全流程\n    orders = tmp_path / \"orders.json\"\n    orders.write_text(json.dumps([{\"price\": 3, \"qty\": 2}]), encoding=\"utf-8\")\n    cli = tmp_path / \"cli.py\"\n    cli.write_text(CLI_SOURCE, encoding=\"utf-8\")\n    result = subprocess.run(\n        [sys.executable, str(cli), str(orders)], capture_output=True, text=True\n    )\n    assert result.returncode == 0\n    assert result.stdout.strip() == \"6\"\n    assert result.stderr == \"\"\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "只有单元测试且把边界全 mock 掉，接口与类型缺陷留到线上才暴露",
@@ -1294,7 +1274,6 @@
       "minutes": 20,
       "module": "测试",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5302",
@@ -1338,7 +1317,7 @@
           "parse(\"oops\") 走异常路径后，已执行行集合等于可执行行集合",
           "全程只使用 dis、inspect、trace 等标准库，不出现 import coverage"
         ],
-        "reference": "import dis\nimport inspect\nimport trace\nfrom pathlib import Path\n\n\ndef wrong_format(cents):\n    text = f\"${cents // 100}.{cents % 100}\"\n    return text\n\n\ndef strict_format(cents):\n    dollars, remainder = divmod(cents, 100)\n    return f\"${dollars}.{remainder:02d}\"\n\n\ndef parse(text):\n    try:\n        return int(text)\n    except ValueError:\n        return -1\n\n\ndef executable_lines(func):\n    # 去掉只有 RESUME 的 def 行，得到真正会产生行事件的语句行\n    return {instr.positions.lineno for instr in dis.get_instructions(func)\n            if instr.positions.lineno is not None and instr.opname != \"RESUME\"}\n\n\ndef lines_touched(func, *args):\n    tracer = trace.Trace(count=True, trace=False)\n    tracer.runfunc(func, *args)\n    counts = tracer.results().counts\n    filename = func.__code__.co_filename\n    executed = {line for (fname, line) in counts if fname == filename}\n    return executed & executable_lines(func), executable_lines(func)\n\n\ndef line_of(func, needle):\n    source, start = inspect.getsourcelines(func)\n    for offset, text in enumerate(source):\n        if needle in text:\n            return start + offset\n    raise AssertionError(f\"not found: {needle}\")\n\n\ndef test_unasserted_call_reaches_every_executable_line():\n    wrong_format(105)  # 只调用，不断言\n    executed, executable = lines_touched(wrong_format, 105)\n    assert executed == executable\n    assert len(executable) == 2\n\n\ndef test_full_line_coverage_cannot_tell_wrong_from_right():\n    executed_wrong, executable_wrong = lines_touched(wrong_format, 105)\n    executed_right, executable_right = lines_touched(strict_format, 105)\n    # 两个函数都拿到了 100% 行覆盖……\n    assert executed_wrong == executable_wrong\n    assert executed_right == executable_right\n    # ……但覆盖率对结果对错一无所知\n    assert wrong_format(105) == \"$1.5\"\n    assert strict_format(105) == \"$1.05\"\n\n\ndef test_uncovered_except_branch_is_reported():\n    executed, executable = lines_touched(parse, \"42\")\n    except_line = line_of(parse, \"except ValueError\")\n    assert except_line in executable\n    assert except_line not in executed\n\n\ndef test_covering_the_error_path_closes_the_gap():\n    executed, executable = lines_touched(parse, \"oops\")\n    assert executed == executable\n\n\ndef test_reference_uses_only_stdlib_instrumentation():\n    source = Path(__file__).read_text(encoding=\"utf-8\")\n    forbidden = (\"import \" + \"coverage\", \"from \" + \"coverage\")\n    assert not any(item in source for item in forbidden)\n"
+        "reference": "import dis\nimport inspect\nimport trace\nfrom pathlib import Path\n\n\ndef wrong_format(cents):\n    text = f\"${cents // 100}.{cents % 100}\"\n    return text\n\n\ndef strict_format(cents):\n    dollars, remainder = divmod(cents, 100)\n    return f\"${dollars}.{remainder:02d}\"\n\n\ndef parse(text):\n    try:\n        return int(text)\n    except ValueError:\n        return -1\n\n\ndef executable_lines(func):\n    # 去掉只有 RESUME 的 def 行，得到真正会产生行事件的语句行\n    return {instr.positions.lineno for instr in dis.get_instructions(func)\n            if instr.positions.lineno is not None and instr.opname != \"RESUME\"}\n\n\ndef lines_touched(func, *args):\n    tracer = trace.Trace(count=True, trace=False)\n    tracer.runfunc(func, *args)\n    counts = tracer.results().counts\n    filename = func.__code__.co_filename\n    executed = {line for (fname, line) in counts if fname == filename}\n    return executed & executable_lines(func), executable_lines(func)\n\n\ndef line_of(func, needle):\n    source, start = inspect.getsourcelines(func)\n    for offset, text in enumerate(source):\n        if needle in text:\n            return start + offset\n    raise AssertionError(f\"not found: {needle}\")\n\n\ndef test_unasserted_call_reaches_every_executable_line():\n    wrong_format(105)  # 只调用，不断言\n    executed, executable = lines_touched(wrong_format, 105)\n    assert executed == executable\n    assert len(executable) == 2\n\n\ndef test_full_line_coverage_cannot_tell_wrong_from_right():\n    executed_wrong, executable_wrong = lines_touched(wrong_format, 105)\n    executed_right, executable_right = lines_touched(strict_format, 105)\n    # 两个函数都拿到了 100% 行覆盖……\n    assert executed_wrong == executable_wrong\n    assert executed_right == executable_right\n    # ……但覆盖率对结果对错一无所知\n    assert wrong_format(105) == \"$1.5\"\n    assert strict_format(105) == \"$1.05\"\n\n\ndef test_uncovered_except_branch_is_reported():\n    executed, executable = lines_touched(parse, \"42\")\n    except_line = line_of(parse, \"except ValueError\")\n    assert except_line in executable\n    assert except_line not in executed\n\n\ndef test_covering_the_error_path_closes_the_gap():\n    executed, executable = lines_touched(parse, \"oops\")\n    assert executed == executable\n\n\ndef test_reference_uses_only_stdlib_instrumentation():\n    source = Path(__file__).read_text(encoding=\"utf-8\")\n    forbidden = (\"import \" + \"coverage\", \"from \" + \"coverage\")\n    assert not any(item in source for item in forbidden)\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "把覆盖率当质量指标追数字，不管断言强弱",
@@ -1354,7 +1333,6 @@
       "minutes": 25,
       "module": "测试",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5303",
@@ -1401,7 +1379,7 @@
           "autospec=True 的 mock 在 assert_called_once_with(mock.ANY, \"k\") 通过后，多传参数抛 TypeError 且消息匹配 too many positional arguments",
           "spec_set 的 mock 调用未知属性抛 AttributeError 且消息含 has no attribute 'missing'，给未知属性赋值同样抛 AttributeError"
         ],
-        "reference": "import time\nimport types\nfrom unittest import mock\n\nimport pytest\n\napp = types.SimpleNamespace(time=time.time)\napp.now = lambda: app.time()\n\n\nclass Repo:\n    def get(self, key):\n        return {\"k\": 1}[key]\n\n\ndef test_patch_target_is_the_use_site():\n    # app 里已经绑定了 time 这个名字，必须 patch 使用处的 app.time\n    with mock.patch.object(app, \"time\", return_value=1000.0):\n        assert app.now() == 1000.0\n\n\ndef test_patching_the_source_module_does_not_replace_a_bound_name():\n    with mock.patch(\"time.time\", return_value=1000.0):\n        assert time.time() == 1000.0   # 源模块自己的属性确实被换了\n        assert app.now() != 1000.0     # 但 app 里绑定的旧引用没变\n\n\ndef test_autospec_validates_the_signature():\n    with mock.patch.object(Repo, \"get\", autospec=True) as fake:\n        Repo().get(\"k\")\n        fake.assert_called_once_with(mock.ANY, \"k\")\n        with pytest.raises(TypeError, match=\"too many positional arguments\"):\n            Repo().get(\"k\", \"extra\")\n\n\ndef test_spec_set_blocks_unknown_attributes():\n    fake = mock.Mock(spec_set=Repo)\n    assert fake.get(\"k\") is not None\n    with pytest.raises(AttributeError, match=\"has no attribute 'missing'\"):\n        fake.missing()\n    with pytest.raises(AttributeError, match=\"has no attribute 'extra'\"):\n        fake.extra = 1\n"
+        "reference": "import time\nimport types\nfrom unittest import mock\n\nimport pytest\n\napp = types.SimpleNamespace(time=time.time)\napp.now = lambda: app.time()\n\n\nclass Repo:\n    def get(self, key):\n        return {\"k\": 1}[key]\n\n\ndef test_patch_target_is_the_use_site():\n    # app 里已经绑定了 time 这个名字，必须 patch 使用处的 app.time\n    with mock.patch.object(app, \"time\", return_value=1000.0):\n        assert app.now() == 1000.0\n\n\ndef test_patching_the_source_module_does_not_replace_a_bound_name():\n    with mock.patch(\"time.time\", return_value=1000.0):\n        assert time.time() == 1000.0   # 源模块自己的属性确实被换了\n        assert app.now() != 1000.0     # 但 app 里绑定的旧引用没变\n\n\ndef test_autospec_validates_the_signature():\n    with mock.patch.object(Repo, \"get\", autospec=True) as fake:\n        Repo().get(\"k\")\n        fake.assert_called_once_with(mock.ANY, \"k\")\n        with pytest.raises(TypeError, match=\"too many positional arguments\"):\n            Repo().get(\"k\", \"extra\")\n\n\ndef test_spec_set_blocks_unknown_attributes():\n    fake = mock.Mock(spec_set=Repo)\n    assert fake.get(\"k\") is not None\n    with pytest.raises(AttributeError, match=\"has no attribute 'missing'\"):\n        fake.missing()\n    with pytest.raises(AttributeError, match=\"has no attribute 'extra'\"):\n        fake.extra = 1\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "patch 写在定义处（patch(\"time.time\")）而不是使用处，patch 静默无效",
@@ -1417,7 +1395,6 @@
       "minutes": 25,
       "module": "异常",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5401",
@@ -1476,7 +1453,6 @@
       "minutes": 25,
       "module": "日志",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5402",
@@ -1540,7 +1516,6 @@
       "minutes": 20,
       "module": "日志",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5402",
@@ -1601,7 +1576,6 @@
       "minutes": 25,
       "module": "日志",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5402",
@@ -1661,7 +1635,6 @@
       "minutes": 20,
       "module": "调试",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5403",
@@ -1719,7 +1692,6 @@
       "minutes": 25,
       "module": "调试",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5403",
@@ -1782,7 +1754,6 @@
       "minutes": 15,
       "module": "调试",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5403",
@@ -1844,7 +1815,6 @@
       "minutes": 20,
       "module": "调试",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5404",
@@ -1906,7 +1876,6 @@
       "minutes": 25,
       "module": "CLI",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5501",
@@ -1967,7 +1936,6 @@
       "minutes": 15,
       "module": "CLI",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5501",
@@ -2025,7 +1993,6 @@
       "minutes": 25,
       "module": "序列化",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5502",
@@ -2088,7 +2055,6 @@
       "minutes": 20,
       "module": "ruff",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5503",
@@ -2107,7 +2073,7 @@
       },
       "predict": {
         "prompt": "写出下面代码的输出，并说明第二次调用后文件里剩下什么",
-        "code": "import json\nimport subprocess\nimport sys\nimport tempfile\nfrom pathlib import Path\n\nSOURCE = \"\"\"import json\nimport sys\n\n\ndef total():\n    return missing_name + sys.maxsize\n\"\"\"\n\nwith tempfile.TemporaryDirectory() as tmp:\n    script = Path(tmp) / \"sample.py\"\n    script.write_text(SOURCE, encoding=\"utf-8\")\n\n    first = subprocess.run(\n        [sys.executable, \"-m\", \"ruff\", \"check\", \"--isolated\", \"--select\", \"F401,F821\",\n         \"--output-format\", \"json\", str(script)],\n        capture_output=True,\n        text=True,\n    )\n    print(first.returncode, sorted({item[\"code\"] for item in json.loads(first.stdout)}))\n\n    fixed = subprocess.run(\n        [sys.executable, \"-m\", \"ruff\", \"check\", \"--isolated\", \"--select\", \"F401,F821\",\n         \"--fix\", \"--output-format\", \"json\", str(script)],\n        capture_output=True,\n        text=True,\n    )\n    print(fixed.returncode, [item[\"code\"] for item in json.loads(fixed.stdout)])\n\n    again = subprocess.run(\n        [sys.executable, \"-m\", \"ruff\", \"check\", \"--isolated\", \"--select\", \"F401,F821\",\n         \"--output-format\", \"json\", str(script)],\n        capture_output=True,\n        text=True,\n    )\n    print(again.returncode, len(json.loads(again.stdout)))",
+        "code": "import json\nimport subprocess\nimport sys\nimport tempfile\nfrom pathlib import Path\n\nSOURCE = \"\"\"import json\nimport sys\n\n\ndef total():\n    return missing_name + sys.maxsize\n\"\"\"\n\nwith tempfile.TemporaryDirectory() as tmp:\n    script = Path(tmp) / \"sample.py\"\n    script.write_text(SOURCE, encoding=\"utf-8\")\n\n    first = subprocess.run(\n        [sys.executable, \"-m\", \"ruff\", \"check\", \"--no-cache\", \"--isolated\", \"--select\", \"F401,F821\",\n         \"--output-format\", \"json\", str(script)],\n        capture_output=True,\n        text=True,\n    )\n    print(first.returncode, sorted({item[\"code\"] for item in json.loads(first.stdout)}))\n\n    fixed = subprocess.run(\n        [sys.executable, \"-m\", \"ruff\", \"check\", \"--no-cache\", \"--isolated\", \"--select\", \"F401,F821\",\n         \"--fix\", \"--output-format\", \"json\", str(script)],\n        capture_output=True,\n        text=True,\n    )\n    print(fixed.returncode, [item[\"code\"] for item in json.loads(fixed.stdout)])\n\n    again = subprocess.run(\n        [sys.executable, \"-m\", \"ruff\", \"check\", \"--no-cache\", \"--isolated\", \"--select\", \"F401,F821\",\n         \"--output-format\", \"json\", str(script)],\n        capture_output=True,\n        text=True,\n    )\n    print(again.returncode, len(json.loads(again.stdout)))",
         "expected": [
           "1 ['F401', 'F821']",
           "1 ['F821']",
@@ -2130,7 +2096,7 @@
           "--statistics 输出含 F401 的计数行，且 F821 标记为不可修复（[ ]）",
           "--select 里写不存在的规则码时 ruff 退出码为 2（工具用法错误，与“有违规”区分开）"
         ],
-        "reference": "import json\nimport subprocess\nimport sys\nimport tempfile\nimport unittest\nfrom pathlib import Path\n\nRULE_ARGS = [\"--isolated\", \"--select\", \"F401,F821\"]\nSOURCE = \"\"\"import json\nimport sys\n\n\ndef total():\n    return missing_name + sys.maxsize\n\"\"\"\n\n\ndef run(args, cwd=None):\n    proc = subprocess.run([sys.executable, \"-m\", \"ruff\", *args], capture_output=True, text=True, cwd=cwd)\n    return proc.returncode, proc.stdout, proc.stderr\n\n\nclass RuffTest(unittest.TestCase):\n    def setUp(self):\n        self.tmp = tempfile.TemporaryDirectory()\n        self.script = Path(self.tmp.name) / \"sample.py\"\n        self.script.write_text(SOURCE, encoding=\"utf-8\")\n\n    def tearDown(self):\n        self.tmp.cleanup()\n\n    def check_json(self, *extra):\n        code, out, _ = run([\"check\", *RULE_ARGS, *extra, \"--output-format\", \"json\", str(self.script)])\n        return code, json.loads(out)\n\n    def test_first_run_reports_f401_and_f821(self):\n        code, report = self.check_json()\n        self.assertEqual(code, 1)\n        self.assertEqual(sorted({item[\"code\"] for item in report}), [\"F401\", \"F821\"])\n        self.assertTrue(all(item[\"fix\"] is not None for item in report if item[\"code\"] == \"F401\"))\n        self.assertIsNone(next(item[\"fix\"] for item in report if item[\"code\"] == \"F821\"))\n\n    def test_fix_removes_unused_import_only(self):\n        code, report = self.check_json(\"--fix\")\n        self.assertEqual(code, 1)\n        self.assertEqual([item[\"code\"] for item in report], [\"F821\"])\n        text = self.script.read_text(encoding=\"utf-8\")\n        self.assertNotIn(\"import json\", text)\n        self.assertIn(\"import sys\", text)\n\n    def test_second_run_has_one_violation(self):\n        run([\"check\", *RULE_ARGS, \"--fix\", str(self.script)])\n        code, report = self.check_json()\n        self.assertEqual(code, 1)\n        self.assertEqual(len(report), 1)\n        self.assertEqual(report[0][\"code\"], \"F821\")\n\n    def test_statistics_marks_f821_as_unfixable(self):\n        code, out, _ = run([\"check\", *RULE_ARGS, \"--statistics\", str(self.script)])\n        self.assertEqual(code, 1)\n        self.assertIn(\"F401\", out)\n        self.assertIn(\"F821\", out)\n        lines = {line.split()[-1]: line for line in out.splitlines() if line.strip() and not line.startswith(\"Found\")}\n        self.assertIn(\"[*]\", lines[\"unused-import\"])\n        self.assertIn(\"[ ]\", lines[\"undefined-name\"])\n\n    def test_unknown_selector_is_a_tool_usage_error(self):\n        code, _, _ = run([\"check\", \"--isolated\", \"--select\", \"NOT_A_RULE\", str(self.script)])\n        self.assertEqual(code, 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
+        "reference": "import json\nimport subprocess\nimport sys\nimport tempfile\nimport unittest\nfrom pathlib import Path\n\nRULE_ARGS = [\"--isolated\", \"--select\", \"F401,F821\", \"--no-cache\"]\nSOURCE = \"\"\"import json\nimport sys\n\n\ndef total():\n    return missing_name + sys.maxsize\n\"\"\"\n\n\ndef run(args, cwd=None):\n    proc = subprocess.run([sys.executable, \"-m\", \"ruff\", *args], capture_output=True, text=True, cwd=cwd)\n    return proc.returncode, proc.stdout, proc.stderr\n\n\nclass RuffTest(unittest.TestCase):\n    def setUp(self):\n        self.tmp = tempfile.TemporaryDirectory()\n        self.script = Path(self.tmp.name) / \"sample.py\"\n        self.script.write_text(SOURCE, encoding=\"utf-8\")\n\n    def tearDown(self):\n        self.tmp.cleanup()\n\n    def check_json(self, *extra):\n        code, out, _ = run([\"check\", *RULE_ARGS, *extra, \"--output-format\", \"json\", str(self.script)])\n        return code, json.loads(out)\n\n    def test_first_run_reports_f401_and_f821(self):\n        code, report = self.check_json()\n        self.assertEqual(code, 1)\n        self.assertEqual(sorted({item[\"code\"] for item in report}), [\"F401\", \"F821\"])\n        self.assertTrue(all(item[\"fix\"] is not None for item in report if item[\"code\"] == \"F401\"))\n        self.assertIsNone(next(item[\"fix\"] for item in report if item[\"code\"] == \"F821\"))\n\n    def test_fix_removes_unused_import_only(self):\n        code, report = self.check_json(\"--fix\")\n        self.assertEqual(code, 1)\n        self.assertEqual([item[\"code\"] for item in report], [\"F821\"])\n        text = self.script.read_text(encoding=\"utf-8\")\n        self.assertNotIn(\"import json\", text)\n        self.assertIn(\"import sys\", text)\n\n    def test_second_run_has_one_violation(self):\n        run([\"check\", *RULE_ARGS, \"--fix\", str(self.script)])\n        code, report = self.check_json()\n        self.assertEqual(code, 1)\n        self.assertEqual(len(report), 1)\n        self.assertEqual(report[0][\"code\"], \"F821\")\n\n    def test_statistics_marks_f821_as_unfixable(self):\n        code, out, _ = run([\"check\", *RULE_ARGS, \"--statistics\", str(self.script)])\n        self.assertEqual(code, 1)\n        self.assertIn(\"F401\", out)\n        self.assertIn(\"F821\", out)\n        lines = {line.split()[-1]: line for line in out.splitlines() if line.strip() and not line.startswith(\"Found\")}\n        self.assertIn(\"[*]\", lines[\"unused-import\"])\n        self.assertIn(\"[ ]\", lines[\"undefined-name\"])\n\n    def test_unknown_selector_is_a_tool_usage_error(self):\n        code, _, _ = run([\"check\", \"--no-cache\", \"--isolated\", \"--select\", \"NOT_A_RULE\", str(self.script)])\n        self.assertEqual(code, 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()"
       },
       "pitfalls": [
         "为了“让 CI 变绿”把 F821/F401 加进 ignore，把真 bug 一起关掉",
@@ -2146,7 +2112,6 @@
       "minutes": 25,
       "module": "CI",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5102",
@@ -2211,7 +2176,6 @@
       "minutes": 20,
       "module": "自省",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5505",
@@ -2275,7 +2239,6 @@
       "minutes": 25,
       "module": "自省",
       "level": "实用",
-      "week": 5,
       "taskRefs": [
         {
           "taskId": "5505",

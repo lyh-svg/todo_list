@@ -5,7 +5,7 @@
   "points": [
     {
       "code": "py.vars.binding",
-      "title": "变量绑定、动态类型与 isinstance",
+      "title": "变量绑定、动态类型判定",
       "minutes": 15,
       "module": "变量与类型",
       "level": "基础",
@@ -63,7 +63,7 @@
     },
     {
       "code": "py.vars.truthiness",
-      "title": "真值判断、比较与短路求值",
+      "title": "真值判断、比较、短路求值",
       "minutes": 15,
       "module": "变量与类型",
       "level": "基础",
@@ -116,7 +116,7 @@
     },
     {
       "code": "py.vars.str-bytes",
-      "title": "str 与 bytes、编码与解码",
+      "title": "str/bytes 编码解码",
       "minutes": 10,
       "module": "变量与类型",
       "level": "基础",
@@ -165,7 +165,7 @@
     },
     {
       "code": "py.vars.operators",
-      "title": "运算符、增强赋值与解包赋值",
+      "title": "运算符、增强赋值、解包赋值",
       "minutes": 15,
       "module": "变量与类型",
       "level": "基础",
@@ -221,7 +221,7 @@
     },
     {
       "code": "py.list.basics",
-      "title": "列表与元组：索引、切片、可变性、增删改",
+      "title": "list/tuple 索引、切片、可变性",
       "minutes": 20,
       "module": "容器",
       "level": "基础",
@@ -276,7 +276,7 @@
     },
     {
       "code": "py.list.sort-key",
-      "title": "sorted/sort 与 key、稳定性",
+      "title": "sorted/sort 的 key、稳定性",
       "minutes": 15,
       "module": "容器",
       "level": "基础",
@@ -330,7 +330,7 @@
     },
     {
       "code": "py.dict.basics",
-      "title": "dict 键值语义、迭代顺序与哈希约束",
+      "title": "dict 键值语义、迭代顺序、哈希约束",
       "minutes": 20,
       "module": "容器",
       "level": "基础",
@@ -389,7 +389,7 @@
     },
     {
       "code": "py.dict.aggregate",
-      "title": "分组聚合与词频统计",
+      "title": "分组聚合、词频统计",
       "minutes": 20,
       "module": "容器",
       "level": "基础",
@@ -446,7 +446,7 @@
     },
     {
       "code": "py.set.dedupe",
-      "title": "set 运算与去重（含保序去重）",
+      "title": "set 运算、去重（含保序去重）",
       "minutes": 20,
       "module": "容器",
       "level": "基础",
@@ -504,7 +504,7 @@
     },
     {
       "code": "py.container.selection",
-      "title": "容器选型与复杂度（list/tuple/dict/set/deque）",
+      "title": "容器选型、复杂度（list/tuple/dict/set/deque）",
       "minutes": 30,
       "module": "容器",
       "level": "基础",
@@ -559,7 +559,7 @@
     },
     {
       "code": "py.nested.structures",
-      "title": "嵌套结构转换与浅拷贝陷阱",
+      "title": "嵌套结构转换、浅拷贝陷阱",
       "minutes": 25,
       "module": "容器",
       "level": "基础",
@@ -617,7 +617,7 @@
     },
     {
       "code": "py.mutability.alias",
-      "title": "可变/不可变与别名",
+      "title": "可变/不可变、别名",
       "minutes": 20,
       "module": "对象语义",
       "level": "基础",
@@ -675,7 +675,7 @@
     },
     {
       "code": "py.mutability.copy-deep",
-      "title": "浅拷贝与深拷贝",
+      "title": "浅拷贝、深拷贝",
       "minutes": 20,
       "module": "对象语义",
       "level": "基础",
@@ -786,7 +786,7 @@
     },
     {
       "code": "py.mutability.default-arg",
-      "title": "可变默认参数与求值时机",
+      "title": "可变默认参数、求值时机",
       "minutes": 20,
       "module": "函数",
       "level": "基础",
@@ -845,7 +845,7 @@
     },
     {
       "code": "py.identity.eq-vs-is",
-      "title": "== 与 is、驻留、None 判断",
+      "title": "==/is 判定、驻留、None 判断",
       "minutes": 20,
       "module": "对象语义",
       "level": "基础",
@@ -899,7 +899,7 @@
     },
     {
       "code": "py.identity.eq-hash",
-      "title": "__eq__ 与 __hash__ 的关系",
+      "title": "__eq__/__hash__ 的关系",
       "minutes": 15,
       "module": "对象语义",
       "level": "基础",
@@ -953,7 +953,7 @@
     },
     {
       "code": "py.scope.legb",
-      "title": "LEGB、global/nonlocal 与变量遮蔽",
+      "title": "LEGB、global/nonlocal、变量遮蔽",
       "minutes": 25,
       "module": "作用域",
       "level": "基础",
@@ -1011,7 +1011,7 @@
     },
     {
       "code": "py.scope.closure",
-      "title": "闭包与循环变量晚绑定",
+      "title": "闭包、循环变量晚绑定",
       "minutes": 20,
       "module": "作用域",
       "level": "基础",
@@ -1120,7 +1120,7 @@
     },
     {
       "code": "py.flow.while-break-else",
-      "title": "while、break/continue 与循环 else",
+      "title": "while、break/continue、循环 else",
       "minutes": 15,
       "module": "流程控制",
       "level": "基础",
@@ -1174,7 +1174,7 @@
     },
     {
       "code": "py.comprehension.basics",
-      "title": "推导式与生成器表达式（含独立作用域）",
+      "title": "推导式、生成器表达式（含独立作用域）",
       "minutes": 25,
       "module": "流程控制",
       "level": "基础",
@@ -1229,7 +1229,7 @@
     },
     {
       "code": "py.flow.match-case",
-      "title": "match/case 模式匹配与守卫",
+      "title": "match/case 模式匹配、守卫",
       "minutes": 20,
       "module": "流程控制",
       "level": "基础",
@@ -1284,7 +1284,7 @@
     },
     {
       "code": "py.func.basics",
-      "title": "定义、调用与返回值语义",
+      "title": "定义、调用、返回值语义",
       "minutes": 10,
       "module": "函数",
       "level": "基础",
@@ -1399,7 +1399,7 @@
     },
     {
       "code": "py.func.functional",
-      "title": "一等函数、lambda 与 map/filter/sorted-key",
+      "title": "一等函数、lambda、map/filter/sorted-key",
       "minutes": 25,
       "module": "函数",
       "level": "基础",
@@ -1449,7 +1449,7 @@
     },
     {
       "code": "py.func.recursion",
-      "title": "递归、基准情形与递归深度",
+      "title": "递归、基准情形、递归深度",
       "minutes": 20,
       "module": "函数",
       "level": "基础",
@@ -1497,7 +1497,7 @@
     },
     {
       "code": "py.func.pure-refactor",
-      "title": "纯函数、副作用与重构边界",
+      "title": "纯函数、副作用、重构边界",
       "minutes": 20,
       "module": "函数",
       "level": "基础",
@@ -1550,7 +1550,7 @@
     },
     {
       "code": "py.exc.flow",
-      "title": "try/except/else/finally、异常链与 traceback",
+      "title": "try/except/else/finally、异常链、traceback",
       "minutes": 25,
       "module": "异常",
       "level": "基础",
@@ -1609,7 +1609,7 @@
     },
     {
       "code": "py.exc.types",
-      "title": "异常层次、自定义异常与 raise",
+      "title": "异常层次、自定义异常、raise",
       "minutes": 25,
       "module": "异常",
       "level": "基础",
@@ -1662,7 +1662,7 @@
     },
     {
       "code": "py.exc.over-catch",
-      "title": "捕获范围过大与异常吞噬",
+      "title": "捕获范围过大、异常吞噬",
       "minutes": 15,
       "module": "异常",
       "level": "基础",
@@ -1770,7 +1770,7 @@
     },
     {
       "code": "py.io.files",
-      "title": "文件读写：模式、文本/二进制与 with",
+      "title": "文件读写：模式、文本/二进制、with",
       "minutes": 25,
       "module": "文件与IO",
       "level": "基础",
@@ -1824,7 +1824,7 @@
     },
     {
       "code": "py.json.basics",
-      "title": "JSON 序列化与类型映射",
+      "title": "JSON 序列化、类型映射",
       "minutes": 20,
       "module": "文件与IO",
       "level": "基础",
@@ -1874,7 +1874,7 @@
     },
     {
       "code": "py.path.pathlib",
-      "title": "pathlib、目录遍历与文件元数据",
+      "title": "pathlib、目录遍历、文件元数据",
       "minutes": 30,
       "module": "文件与IO",
       "level": "基础",
@@ -1929,7 +1929,7 @@
     },
     {
       "code": "py.import.basics",
-      "title": "import 机制、from-import 与 __main__",
+      "title": "import 机制、from-import、__main__",
       "minutes": 25,
       "module": "模块与导入",
       "level": "基础",
@@ -1987,7 +1987,7 @@
     },
     {
       "code": "py.import.packages",
-      "title": "包、相对导入与循环导入",
+      "title": "包、相对导入、循环导入",
       "minutes": 25,
       "module": "模块与导入",
       "level": "基础",
@@ -2041,7 +2041,7 @@
     },
     {
       "code": "py.env.setup",
-      "title": "venv、依赖记录与 pyproject/src 布局",
+      "title": "venv、依赖记录、pyproject/src 布局",
       "minutes": 30,
       "module": "工程化",
       "level": "基础",
@@ -2100,7 +2100,7 @@
     },
     {
       "code": "py.test.pytest",
-      "title": "pytest 基础与边界用例",
+      "title": "pytest 基础、边界用例",
       "minutes": 20,
       "module": "工程化",
       "level": "基础",
@@ -2146,7 +2146,7 @@
           "异常路径：空串抛 ValueError，并用 pytest.raises 或 try/except 断言",
           "变体：测试之间不共享可变状态（重复运行结果一致）"
         ],
-        "reference": "def parse_int(text):\n    return int(text.strip())\n\n\ndef test_parse_int_normal():\n    assert parse_int(\" 42 \") == 42\n\n\ndef test_parse_int_rejects_empty():\n    try:\n        parse_int(\"\")\n    except ValueError:\n        return\n    raise AssertionError(\"空串应该抛 ValueError\")"
+        "reference": "def parse_int(text):\n    return int(text.strip())\n\n\ndef test_parse_int_normal():\n    assert parse_int(\" 42 \") == 42\n\n\ndef test_parse_int_rejects_empty():\n    try:\n        parse_int(\"\")\n    except ValueError:\n        return\n    raise AssertionError(\"空串应该抛 ValueError\")\n\n\nif __name__ == \"__main__\":\n    import pytest\n\n    raise SystemExit(pytest.main([__file__, \"-q\"]))\n"
       },
       "pitfalls": [
         "测试里只 print 不 assert",
