@@ -83,6 +83,9 @@ class AiQuestionStorageTests(unittest.TestCase):
         stored = review_storage.read_ai_question(saved["id"])
         self.assertEqual(stored["prompt"], "现场出的题：写出 f() 两次调用的输出")
         self.assertEqual(stored["reference"]["expected"], ["[1]", "[1, 2]"])
+        self.assertEqual(stored["pointCode"], POINT["code"])
+        self.assertEqual(stored["code"], "def f(items=[]):\n    items.append(1)\n    return items",
+                         "题面代码与知识点 code 不能互相覆盖")
         self.assertIsNone(review_storage.read_ai_question("no-such-id"))
         result = review_storage.delete_ai_question(saved["id"])
         self.assertEqual(result["code"], POINT["code"])

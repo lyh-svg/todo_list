@@ -104,6 +104,32 @@ class RotationWithAiQuestionTests(unittest.TestCase):
         self.assertEqual(picked["questionType"], "predict")
         self.assertEqual(picked["questionRef"], "")
 
+    def test_reveal_ai_question_returns_its_own_reference(self) -> None:
+        ai_id = self._collect("AI 现场概念题")
+        revealed = review_storage.reveal(POINT["code"], "concept", ai_id)
+        self.assertEqual(revealed["source"], "ai")
+        self.assertEqual(revealed["questionRef"], ai_id)
+        self.assertEqual(revealed["reference"], "def f(items=None):\n    return items")
+        self.assertIn("AI 要点", revealed["answer"])
+        self.assertEqual(revealed["pointCode"], POINT["code"])
+        self.assertEqual(revealed["type"], "concept")
+
+    def test_reveal_falls_back_when_ai_question_is_gone(self) -> None:
+        ai_id = self._collect("会被删掉的 AI 题")
+        review_storage.delete_ai_question(ai_id)
+        revealed = review_storage.reveal(POINT["code"], "concept", ai_id)
+        self.assertTrue(revealed.get("questionRefFallback"), "已删题必须回退固定题并标记")
+        self.assertEqual(revealed.get("answer"), ["固定答案"], "回退后给的是固定题参考答案")
+
+    def test_apply_grade_records_question_ref(self) -> None:
+        ai_id = self._collect("AI 现场概念题")
+        review_storage.apply_grade(POINT["code"], "concept", 5, today="2026-09-20",
+                                   answer="这次会了", question_ref=ai_id)
+        with storage.open_state_database() as connection:
+            row = connection.execute(
+                "SELECT question_ref FROM review_attempts WHERE answer='这次会了'").fetchone()
+        self.assertEqual(row["question_ref"], ai_id)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

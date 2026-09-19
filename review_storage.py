@@ -649,19 +649,36 @@ def history(code: str, limit: int = 20) -> dict[str, Any]:
     return _history_detail(code, limit)[1]
 
 
-def reveal(code: str, question_type: str) -> dict[str, Any]:
+def reveal(code: str, question_type: str, question_ref: str = "") -> dict[str, Any]:
     """揭示答案：这是唯一会返回参考答案/历史答案的入口。
 
     题型自带字段（含 predict/debug 要预测或排查的 `code` 题面片段）原样保留；
     知识点 code 改用 `pointCode` 单独暴露，避免覆盖题面片段。
+    `question_ref` 非空时给的是收藏的 AI 题自己的参考解；题已删/不匹配则回退固定题并标记。
     """
     if question_type not in review_content.QUESTION_TYPES:
         raise ValueError("题型不正确")
+    ref = str(question_ref or "")
+    if ref:
+        stored = read_ai_question(ref)
+        if stored and stored["pointCode"] == str(code) and stored["questionType"] == question_type:
+            content, detail = _history_detail(str(code), 20)
+            block = dict(stored.get("reference") or {})
+            block.update({"code": str(stored.get("code") or ""), "pointCode": str(code),
+                          "type": question_type, "title": detail["title"],
+                          "pitfalls": detail["pitfalls"], "history": detail["attempts"],
+                          "state": detail["state"], "questionRef": ref, "source": "ai",
+                          "prompt": str(stored.get("prompt") or ""),
+                          "focus": str(stored.get("focus") or "")})
+            return block
+        fallback = reveal(str(code), question_type)
+        fallback["questionRefFallback"] = True
+        return fallback
     content, detail = _history_detail(str(code), 20)
     block = dict(content.get(question_type) or {})
     block.update({"pointCode": str(code), "type": question_type, "title": detail["title"],
                   "pitfalls": detail["pitfalls"], "history": detail["attempts"],
-                  "state": detail["state"]})
+                  "state": detail["state"], "questionRef": ""})
     return block
 
 
@@ -757,7 +774,11 @@ def list_ai_questions(code: str | None = None) -> list[dict[str, Any]]:
 
 
 def read_ai_question(question_id: Any) -> dict[str, Any] | None:
-    """读一道收藏题的完整内容（含 reference）；不存在返回 None。"""
+    """读一道收藏题的完整内容（含 reference）；不存在返回 None。
+
+    列里的 `code` 是**知识点** code，content 里的 `code` 是**题面代码**：两者不能同名，
+    所以知识点改用 `pointCode` 返回，否则题面片段会被覆盖掉。
+    """
     with _connection() as connection:
         row = connection.execute(
             "SELECT question_id,code,question_type,content_json,created_at "
@@ -765,7 +786,7 @@ def read_ai_question(question_id: Any) -> dict[str, Any] | None:
     if row is None:
         return None
     content = json.loads(row["content_json"])
-    return {"id": str(row["question_id"]), "code": str(row["code"]),
+    return {"id": str(row["question_id"]), "pointCode": str(row["code"]),
             "questionType": str(row["question_type"]), "createdAt": str(row["created_at"]),
             **content}
 
