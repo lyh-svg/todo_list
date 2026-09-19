@@ -24,12 +24,10 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-open-overhead-test-")
 os.environ.setdefault("TODO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "todo.sqlite3"))
 os.environ.setdefault("TODO_SQLITE_BACKUP_DIR", str(Path(_TEMP_DIR.name) / "backups"))
 os.environ.setdefault("TODO_MEMO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "memo.sqlite3"))
-os.environ.setdefault("TODO_SUMMARY_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "summary.sqlite3"))
 
 import memo_storage  # noqa: E402
 import review_storage  # noqa: E402
 import storage  # noqa: E402
-import summary_storage  # noqa: E402
 
 TODAY = "2026-09-16"
 
@@ -227,7 +225,6 @@ class ConnectionReuseTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_storage_database()
         storage.store_trash_item("node", "p1", "被删的任务", {"id": "gone", "type": "item", "text": "x"})
-        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 30})
 
     def test_list_trash_items_opens_one_connection(self) -> None:
         """回收站接口以前一条请求开 4 次连接（每开一次都重放一遍 DDL）。"""
@@ -236,18 +233,13 @@ class ConnectionReuseTests(unittest.TestCase):
         self.assertEqual(opens[0], 1, f"list_trash_items 开了 {opens[0]} 次连接")
         self.assertEqual(len(items), 1)
 
-    def test_auto_archive_opens_one_connection(self) -> None:
-        with counted_opens() as opens:
-            storage.auto_archive_projects()
-        self.assertEqual(opens[0], 1, f"auto_archive_projects 开了 {opens[0]} 次连接")
-
     def test_review_summary_opens_one_connection(self) -> None:
         with counted_opens() as opens:
             review_storage.summary(TODAY)
         self.assertEqual(opens[0], 1, f"review_storage.summary 开了 {opens[0]} 次连接")
 
 
-class MemoSummaryBootstrapTests(unittest.TestCase):
+class MemoBootstrapTests(unittest.TestCase):
     def test_memo_repeated_opens_do_not_replay_ddl(self) -> None:
         memo_storage.initialize()
         with counted_statements(memo_storage) as statements:
@@ -255,14 +247,6 @@ class MemoSummaryBootstrapTests(unittest.TestCase):
                 memo_storage.open_memo_database().close()
         replay = [s for s in statements if ddl_count([s])]
         self.assertEqual(replay, [], f"memo 库重放了 DDL：{replay[:5]}")
-
-    def test_summary_repeated_opens_do_not_replay_ddl(self) -> None:
-        summary_storage.initialize()
-        with counted_statements(summary_storage) as statements:
-            for _ in range(5):
-                summary_storage.open_summary_database().close()
-        replay = [s for s in statements if ddl_count([s])]
-        self.assertEqual(replay, [], f"summary 库重放了 DDL：{replay[:5]}")
 
     def test_memo_recreated_file_is_bootstrapped_again(self) -> None:
         memo_storage.initialize()

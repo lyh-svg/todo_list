@@ -10,14 +10,16 @@ function check(name, ok, detail = '') {
     console.log(`${ok ? '   ✔' : '   ✘'} ${name}${ok ? '' : `  [${detail}]`}`);
 }
 // R4 备份 UI
-check('R4 ⑧ 页面有"查看内容"按钮', html.includes('id="inspectDatabaseBackupBtn"'));
+// 备份 UI 按冗余审计瘦身：只留 列表 / 下载 / 删除 / 恢复；"创建、重命名、查看内容"取消
+check('R4 ⑧ 备份操作只剩 列表/下载/删除/恢复',
+    html.includes('id="downloadDatabaseBackupBtn"') && html.includes('id="restoreDatabaseBackupBtn"')
+    && !html.includes('id="createDatabaseBackupBtn"') && !html.includes('id="renameDatabaseBackupBtn"')
+    && !html.includes('id="inspectDatabaseBackupBtn"') && !src.includes('/api/backup/inspect')
+    && !src.includes("action: 'create'") && !src.includes("action: 'rename'"));
 check('R4 ⑧ 备份列表区分完整备份与旧格式', src.includes("backup.kind === 'legacy' ? ' · 旧格式' : ''"));
-check('R4 ⑧ 恢复预览显示统计与校验结果',
-    src.includes('内容：项目 ${counts.projects') && src.includes("file.ok ? '校验通过' : '校验失败'"));
-check('R4 ⑧ 校验和不过时禁用恢复', src.includes('restore.disabled = !preview.checksumOk;'));
-check('R4 ⑧ 恢复确认说明覆盖范围', src.includes('覆盖${scope}？'));
-check('R4 ⑧ 重命名兼容 .zip', src.includes("name.replace(/\\.(sqlite3|zip)$/, '')"));
-check('R4 ⑧ 创建的是完整备份', src.includes('create_full_backup') === false && src.includes("action: 'create'"));
+check('R4 ⑧ 恢复前有确认（说明会先自动备份并重载页面）',
+    /function restoreDatabaseBackupFromUi[\s\S]{0,400}确认恢复数据库备份/.test(src));
+check('R4 ⑧ 备份仍可删除（下拉里的 ×）', /deleteDatabaseBackupByName/.test(src));
 check('R4 ⑧ 导出仍然是 JSON（与备份分开）', src.includes("await apiFetch(`/api/export?format="));
 check('R4 ⑧ 导出/备份下载不再把 token 放进 URL（改走请求头 + Blob）',
     !src.includes('?token=') && src.includes('function saveBlobAs(blob, fileName)')

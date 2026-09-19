@@ -16,7 +16,6 @@ import http.client
 import json
 import os
 import socket
-import sqlite3
 import sys
 import tempfile
 import threading
@@ -33,12 +32,10 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-http-test-")
 os.environ.setdefault("TODO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "todo.sqlite3"))
 os.environ.setdefault("TODO_SQLITE_BACKUP_DIR", str(Path(_TEMP_DIR.name) / "backups"))
 os.environ.setdefault("TODO_MEMO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "memo.sqlite3"))
-os.environ.setdefault("TODO_SUMMARY_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "summary.sqlite3"))
 
 import local_server  # noqa: E402
 import memo_storage  # noqa: E402
 import storage  # noqa: E402
-import summary_storage  # noqa: E402
 
 TODAY = "2026-09-15"
 
@@ -75,7 +72,6 @@ class HttpLayerTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         storage.ensure_schema()
         memo_storage.initialize()
-        summary_storage.initialize()
         cls.server = ThreadingHTTPServer(
             ("127.0.0.1", 0), partial(_QuietHandler, directory=str(APP_DIR))
         )
@@ -277,7 +273,7 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual(status, 401, "查询串 token 不能再被接受")
 
         created = self.json_call("POST", "/api/backup",
-                                 json.dumps({"action": "create"}).encode("utf-8"),
+                                 json.dumps({"action": "snapshot", "reason": "http-test"}).encode("utf-8"),
                                  {"Content-Type": "application/json"})
         self.assertEqual(created[0], 200)
         name = created[1]["name"]
@@ -293,19 +289,6 @@ class HttpLayerTests(unittest.TestCase):
         status, body = self.call("GET", f"/api/backup/download?name={name}")
         self.assertEqual(status, 200)
         self.assertTrue(body.startswith(b"PK"), "带请求头必须能正常下载 zip")
-
-    def test_memo_database_download_reports_failure_as_json_500(self) -> None:
-        original = None
-        with sqlite3.connect(memo_storage.MEMO_DATABASE_FILE) as connection:
-            original = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            connection.execute("PRAGMA user_version=99")
-        try:
-            status, payload = self.json_call("GET", "/api/memos/database-download")
-            self.assertEqual(status, 500, "未来 schema 版本的备忘录库必须给出 JSON 500，而不是空回复")
-            self.assertIn("error", payload)
-        finally:
-            with sqlite3.connect(memo_storage.MEMO_DATABASE_FILE) as connection:
-                connection.execute(f"PRAGMA user_version={original}")
 
     # ---------- 来源校验 / 状态码 ----------
 
@@ -323,24 +306,23 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual(status, 403, "来源不允许应该是 403，而不是 401")
         self.assertIn("来源", payload["error"])
 
-    def test_missing_backup_is_404(self) -> None:
-        status, payload = self.json_call("GET", "/api/backup/inspect?name=nope.zip")
-        self.assertEqual(status, 404)
-        self.assertIn("不存在", payload["error"])
-
-    def test_illegal_backup_name_is_400(self) -> None:
-        status, _ = self.json_call("GET", "/api/backup/inspect?name=..%2Fetc%2Fpasswd.zip")
-        self.assertEqual(status, 400)
+    def test_illegal_or_missing_backup_name_is_400(self) -> None:
+        """备份名校验现在只走恢复动作：路径穿越与"不存在"都必须给 JSON 400，不能是空回复。"""
+        for name in ("..%2Fetc%2Fpasswd.zip", "nope.zip"):
+            with self.subTest(name=name):
+                status, payload = self.post_json("/api/backup", {"action": "restore", "name": name})
+                self.assertEqual(status, 400)
+                self.assertIn("error", payload)
 
     # ---------- 请求体 ----------
 
-    def test_truncated_background_upload_is_rejected(self) -> None:
-        """声明 1 MB 只发 10 字节就半关闭：不能把半截数据当完整图片存起来。"""
+    def test_truncated_body_is_rejected(self) -> None:
+        """声明 1 MB 只发 10 字节就半关闭：半截请求体不能被当成完整 JSON 处理。"""
         request = (
-            b"POST /api/background?name=x.png&type=image/png HTTP/1.1\r\n"
+            b"POST /api/project HTTP/1.1\r\n"
             b"Host: 127.0.0.1\r\n"
             + f"X-Todo-Session: {local_server.SESSION_TOKEN}\r\n".encode("utf-8")
-            + b"Content-Length: 1048576\r\n\r\n" + b"0123456789"
+            + b"Content-Length: 1048576\r\n\r\n" + b'{"project":'
         )
         with socket.create_connection(("127.0.0.1", self.port), timeout=15) as sock:
             sock.sendall(request)
@@ -357,7 +339,7 @@ class HttpLayerTests(unittest.TestCase):
                 pass
         raw = b"".join(chunks)
         self.assertIn(b"400", raw.split(b"\r\n", 1)[0] if raw else b"", "必须明确回 400")
-        self.assertIsNone(storage.read_asset("background"), "半截请求体不能入库")
+        self.assertIsNotNone(storage.read_project("p1"), "半截请求体不能改动数据")
 
     def test_large_memo_is_accepted(self) -> None:
         """6 MB 的备忘录必须能存进去（旧上限 5 MB 会 413/断连）。"""
@@ -378,34 +360,6 @@ class HttpLayerTests(unittest.TestCase):
         status, bad = self.json_call("GET", "/api/memos?limit=abc")
         self.assertEqual(status, 400)
         self.assertIn("error", bad)
-
-    def test_summary_list_paging_preview_and_detail(self) -> None:
-        long_text = "很长的摘要" * 1000
-        summary_storage = __import__("summary_storage")
-        summary_storage.clear_summaries()   # 同一进程里别的用例可能留下摘要
-        with summary_storage.open_summary_database() as connection:
-            connection.execute(
-                "INSERT INTO summaries(summary_id,question_key,question,content,created_at,updated_at,revision) "
-                "VALUES(?,?,?,?,?,?,0)",
-                ("s1", "k1", "题目一", long_text, "2026-09-16T00:00:00", "2026-09-16T00:00:00"))
-            connection.execute(
-                "INSERT INTO summaries(summary_id,question_key,question,content,created_at,updated_at,revision) "
-                "VALUES(?,?,?,?,?,?,0)",
-                ("s2", "k2", "题目二", "短摘要", "2026-09-16T00:00:00", "2026-09-16T00:00:00"))
-        status, payload = self.json_call("GET", "/api/summaries?limit=1")
-        self.assertEqual(status, 200)
-        self.assertEqual(len(payload["summaries"]), 1)
-        self.assertEqual(payload["total"], 2)
-        item = payload["summaries"][0]
-        self.assertLessEqual(len(item["content"]), 2000, "列表里的正文要截断")
-        self.assertEqual(item["contentLength"], len(long_text))
-        # 详情接口给完整正文
-        status, detail = self.json_call("GET", f"/api/summary?id={item['id']}")
-        self.assertEqual(status, 200)
-        self.assertEqual(len(detail["summary"]["content"]), len(long_text))
-        status, missing = self.json_call("GET", "/api/summary?id=nope")
-        self.assertEqual(status, 404)
-        self.assertIn("error", missing)
 
     def test_oversized_post_gets_json_413(self) -> None:
         """声明超过上限的请求也必须拿到 JSON 413（而不是连接重置）。"""

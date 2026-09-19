@@ -8,7 +8,6 @@ WORK=$(mktemp -d /tmp/todo-e2e-XXXXXX)
 export TODO_SQLITE_FILE="$WORK/todo.sqlite3"
 export TODO_SQLITE_BACKUP_DIR="$WORK/backups"
 export TODO_MEMO_SQLITE_FILE="$WORK/memo.sqlite3"
-export TODO_SUMMARY_SQLITE_FILE="$WORK/summary.sqlite3"
 export TODO_SESSION_TOKEN_FILE="$WORK/session.token"
 export TODO_SESSION_TOKEN="e2e-token-$$"
 export TODO_AI_MOCK=1
@@ -174,9 +173,9 @@ check("② p1 往返完全一致（项目+节点+完成态+复习+验收）",
 check("② p2 往返完全一致", json.loads(after_p2) == before_p2)
 
 # --- ③ 数据库备份仍可用（证明删别名没伤到手动备份）---
-status, _, body = call("/api/backup", method="POST", body={"action": "create"})
+status, _, body = call("/api/backup", method="POST", body={"action": "snapshot", "reason": "e2e"})
 payload = json.loads(body)
-check("③ 创建数据库备份 → 200 + 完整备份 zip", status == 200 and payload.get("name", "").endswith(".zip"), body[:200])
+check("③ 改动前快照 → 200 + 完整备份 zip", status == 200 and payload.get("name", "").endswith(".zip"), body[:200])
 backup_name = payload.get("name", "")
 status, _, blob = call(f"/api/backup/download?name={backup_name}")
 check("③ 下载选中的备份 → 200 且是 zip（统一备份）",
@@ -268,13 +267,6 @@ def check_json_error(name, status, ctype, data, expect_status):
             detail += f" JSON 解析失败: {error}"
     check(name, ok, detail)
 
-status, ctype, data = raw("POST", "/api/background?type=text/plain&name=x.txt", body=b"not-an-image")
-check_json_error("R1 ② 非法 MIME 背景 → 400 JSON（不再空回复）", status, ctype, data, 400)
-
-status, ctype, data = raw("POST", "/api/background?type=image/png&name=x.png", body=b"\x89PNG\r\n\x1a\n")
-check("R1 ② 合法图片仍可上传", status == 200 and json.loads(data)["ok"] is True, f"{status} {data[:80]}")
-call("/api/background", method="DELETE")
-
 # /api/memo 的请求上限必须 ≥ 备忘录本身的 50 MB 上限；声明一个远超上限的长度测 413
 status, ctype, data = raw("POST", "/api/memo", declare_length=200 * 1024 * 1024)
 check_json_error("R1 ② 超过该接口上限 → 413 JSON", status, ctype, data, 413)
@@ -292,11 +284,12 @@ check_json_error("R1 ⑤ GET 陌生 Origin → 403 JSON", status, ctype, data, 4
 status, ctype, data = raw("DELETE", "/api/project?id=nope&revision=0", headers={"Origin": "http://evil.example"})
 check_json_error("R1 ⑤ DELETE 陌生 Origin → 403 JSON（不是 401）", status, ctype, data, 403)
 
-# 备份不存在是 404，文件名非法才是 400
-status, ctype, data = raw("GET", "/api/backup/inspect?name=nope.zip")
-check_json_error("R1 ⑧ 备份不存在 → 404 JSON", status, ctype, data, 404)
-status, ctype, data = raw("GET", "/api/backup/inspect?name=..%2Fetc%2Fpasswd.zip")
-check_json_error("R1 ⑧ 备份文件名非法 → 400 JSON", status, ctype, data, 400)
+# 备份名校验只走恢复动作：不存在与路径穿越都必须回 JSON 400（不能再是空回复）
+for bad_name in ("nope.zip", "..%2Fetc%2Fpasswd.zip"):
+    status, ctype, data = raw("POST", "/api/backup",
+                              body=json.dumps({"action": "restore", "name": bad_name}).encode("utf-8"),
+                              headers={"Content-Type": "application/json"})
+    check_json_error(f"R1 ⑧ 恢复非法/不存在的备份（{bad_name}）→ 400 JSON", status, ctype, data, 400)
 
 status, ctype, data = raw("DELETE", "/api/memo?id=x")
 check_json_error("R1 ③ DELETE memo 缺 revision → 400 JSON", status, ctype, data, 400)
@@ -314,10 +307,6 @@ status, ctype, data = raw("DELETE", "/api/project")
 check_json_error("R1 ③ DELETE project 缺 id → 400 JSON", status, ctype, data, 400)
 status, ctype, data = raw("DELETE", "/api/project?id=nope&revision=0")
 check_json_error("R1 ③ DELETE project 不存在 → 404 JSON", status, ctype, data, 404)
-status, ctype, data = raw("DELETE", "/api/summary")
-check_json_error("R1 ③ DELETE summary 缺 id → 400 JSON", status, ctype, data, 400)
-status, ctype, data = raw("DELETE", "/api/summary?id=nope")
-check_json_error("R1 ③ DELETE summary 不存在 → 404 JSON", status, ctype, data, 404)
 status, headers, data = call("/api/trash", method="POST", body={"action": "restore", "id": "nope"})
 check_json_error("R1 ③ 回收站恢复不存在条目 → 404 JSON", status, headers.get("Content-Type", ""), data, 404)
 status, headers, data = call("/api/project", method="POST", body={"project": "not-a-dict"})
@@ -354,11 +343,11 @@ payload = json.loads(body)
 check("R3 ⑦ 非法 today 回落到服务端日期（不报错）",
       payload["usedToday"] == payload["serverToday"], body[:120])
 
-# --- R4 统一备份：创建 / 列表 / 恢复预览 / 下载 ---
-status, headers, data = call("/api/backup", method="POST", body={"action": "create"})
+# --- R4 统一备份：快照 / 列表 / 下载（创建、重命名、查看内容已取消）---
+status, headers, data = call("/api/backup", method="POST", body={"action": "snapshot", "reason": "e2e-r4"})
 payload = json.loads(data)
 R4_BACKUP = payload.get("name", "")
-check("R4 ⑧ 创建完整备份 → .zip", status == 200 and R4_BACKUP.endswith(".zip"), data[:160])
+check("R4 ⑧ 改动前快照 → .zip", status == 200 and R4_BACKUP.endswith(".zip"), data[:160])
 
 status, headers, data = call("/api/backups")
 entries = json.loads(data)["backups"]
@@ -366,18 +355,8 @@ entry = next((item for item in entries if item["name"] == R4_BACKUP), None)
 check("R4 ⑧ 列表可见且标记 kind=full", entry is not None and entry["kind"] == "full", str(entries)[:200])
 check("R4 ⑨ 启动时已生成每日快照", any(item["name"].startswith("daily-") for item in entries), str([i["name"] for i in entries])[:200])
 
-status, headers, data = call("/api/backup/inspect?name=" + R4_BACKUP)
-preview = json.loads(data)["backup"]
-check("R4 ⑧ 恢复预览：校验和通过 + 三个库统计正确",
-      preview["checksumOk"] and preview["counts"]["projects"] == 2 and preview["counts"]["memos"] >= 1
-      and len(preview["files"]) == 3, json.dumps(preview)[:220])
-check("R4 ⑧ 预览含 schema 版本与生成时间", bool(preview["createdAt"]) and preview["appSchemaVersion"] is not None, json.dumps(preview)[:160])
-
 status, ctype, data = raw("GET", "/api/backup/download?name=%s" % R4_BACKUP)
 check("R4 ⑧ 下载完整备份是 zip", status == 200 and data[:2] == b"PK", f"{status} {data[:8]!r}")
-
-status, headers, data = call("/api/backup/inspect?name=" + urllib.parse.quote("不存在的备份.zip"))
-check_json_error("R4 ⑧ 预览不存在的备份 → 404 JSON（文件名非法才是 400）", status, headers.get("Content-Type", ""), data, 404)
 
 # --- R2 导入校验（放最后：会替换全部项目）---
 import copy
@@ -415,11 +394,11 @@ check("R2 ④ 生成的 ID 是 uuid 且树完整",
       json.dumps(stored)[:160])
 
 
-# --- R4 恢复：把数据还原回备份时的状态（放在最后，会覆盖三个库）---
+# --- R4 恢复：把数据还原回备份时的状态（放在最后，会覆盖两个库）---
 status, headers, data = call("/api/backup", method="POST", body={"action": "restore", "name": R4_BACKUP})
 restored = json.loads(data).get("restored") if status == 200 else None
-check("R4 ⑧ 恢复完整备份 → 三个库都被替换",
-      status == 200 and sorted(restored or []) == ["memo.sqlite3", "summary.sqlite3", "todo.sqlite3"], data[:200])
+check("R4 ⑧ 恢复完整备份 → 两个库都被替换",
+      status == 200 and sorted(restored or []) == ["memo.sqlite3", "todo.sqlite3"], data[:200])
 _, _, body = call("/api/projects")
 check("R4 ⑧ 恢复后项目数回到备份时的 2", len(json.loads(body)["projects"]) == 2, body[:120])
 _, _, body = call("/api/memos")
@@ -517,11 +496,6 @@ check("批次1 链接错误说明要求 http", "http" in message, message[:120])
 
 
 # --- 批次 2：收集箱 / 今日工作台 / 最近入口 ---
-status, headers, data = call("/api/inbox")
-payload = json.loads(data)
-check("批次2 收集箱按需创建（id=inbox）",
-      status == 200 and payload["project"]["id"] == "inbox" and payload["project"]["name"] == "收集箱", data[:160])
-
 status, headers, data = call("/api/inbox/add", method="POST",
                              body={"node": {"text": "工作台测试任务", "priority": "high",
                                             "dueDate": TODAY_STR, "tags": ["批次2"], "estimateMinutes": 20}})
@@ -597,22 +571,7 @@ check("批次2 最近打开记录了刚读过的项目",
       any(entry["id"] in {"b2-target", "inbox"} for entry in recent["opened"]), json.dumps(recent["opened"], ensure_ascii=False)[:160])
 
 
-# --- 批次 3：筛选视图 / 批量修改 / 归档 ---
-status, headers, data = call("/api/views")
-check("批次3 视图列表初始为空", status == 200 and json.loads(data)["views"] == [], data[:120])
-status, headers, data = call("/api/views", method="POST",
-                             body={"name": "高优先级未完成", "payload": {"nodeFilters": {"priority": "high", "status": "active"}}})
-created_view = json.loads(data)["view"]
-check("批次3 保存视图", status == 200 and created_view["name"] == "高优先级未完成"
-      and created_view["payload"]["nodeFilters"]["priority"] == "high", data[:200])
-status, headers, data = call("/api/views", method="POST",
-                             body={"name": "高优先级未完成", "payload": {"nodeFilters": {"priority": "mid"}}})
-check("批次3 同名视图覆盖而不是新增",
-      status == 200 and json.loads(data)["view"]["id"] == created_view["id"], data[:160])
-_, _, body = call("/api/views")
-check("批次3 仍然只有一个视图", len(json.loads(body)["views"]) == 1, body[:120])
-status, headers, data = call("/api/views", method="POST", body={"name": "  ", "payload": {}})
-check_json_error("批次3 视图名为空 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
+# --- 批次 3：批量修改 / 归档（筛选视图已按冗余审计取消）---
 
 # 批量修改：建一个带元数据的项目
 batch_project = {
@@ -680,11 +639,6 @@ _, _, body = call("/api/workbench?today=" + TODAY_STR)
 texts = [entry["text"] for group in json.loads(body)["groups"].values() for entry in group]
 check("批次3 归档项目不再出现在工作台", "普通任务A" not in texts, str(texts)[:160])
 
-status, headers, data = call("/api/views", method="DELETE")
-check_json_error("批次3 删除视图缺 id → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
-status, headers, data = call("/api/views?id=" + created_view["id"], method="DELETE")
-check("批次3 删除视图", status == 200 and json.loads(data)["views"] == [], data[:120])
-
 
 # --- 批次 4：周期任务（服务端生成 + 校验）与快速添加指定项目 ---
 add_project = {
@@ -730,6 +684,46 @@ check("批次4 下一次的日期正确且保留周期与标签",
 _, _, body = call("/api/workbench?today=" + TODAY_STR)
 next7 = json.loads(body)["groups"]["next7"]
 check("批次4 下一次出现在工作台的未来 7 天分组", any(entry["nodeId"] == spawned["id"] for entry in next7), str(next7)[:200])
+
+# Q13：单条完成（节点 patch）也由服务端生成下一次，并在响应里回传副本
+status, headers, data = call("/api/node/patch", method="POST", body={
+    "projectId": "b4-target", "expectedRevision": 3,
+    "ops": [{"op": "update", "nodeId": spawned["id"],
+             "fields": {"completed": True, "completedAt": TODAY_STR + "T09:00:00"}}]})
+patched = json.loads(data)
+check("批次4 单条完成（patch）由服务端生成下一次并回传副本",
+      status == 200 and len(patched.get("spawned") or []) == 1
+      and patched["spawned"][0]["parentId"] == "b4-d", data[:220])
+check("批次4 回传的副本字段正确（日期顺延 / 未完成 / 保留周期）",
+      patched["spawned"][0]["node"]["dueDate"] == (date.fromisoformat(expected_next) + timedelta(days=1)).isoformat()
+      and patched["spawned"][0]["node"]["completed"] is False
+      and patched["spawned"][0]["node"]["repeat"] == {"freq": "daily", "interval": 1},
+      json.dumps(patched.get("spawned"), ensure_ascii=False)[:220])
+_, _, body = call("/api/project?id=b4-target")
+check("批次4 patch 后库里真的多出那一条",
+      len(json.loads(body)["project"]["tree"][0]["children"][0]["children"]) == 3, body[:160])
+
+# Q13：整树保存路径（非 patch）同样按"完成翻转"生成，且不重复生成
+status, headers, data = call("/api/project?id=b4-target")
+project_now = json.loads(data)["project"]
+project_now["_revision"] = json.loads(data)["revision"]
+for item in project_now["tree"][0]["children"][0]["children"]:
+    if not item["completed"]:
+        item["completed"] = True
+        item["completedAt"] = TODAY_STR + "T10:00:00"
+        break
+status, headers, data = call("/api/project", method="POST", body={
+    "project": project_now, "expectedRevision": project_now["_revision"]})
+saved = json.loads(data)
+check("批次4 整树保存也按完成翻转生成下一次",
+      status == 200 and len(saved.get("spawned") or []) == 1, data[:220])
+
+status, headers, data = call("/api/project?id=b4-target")
+same = json.loads(data)
+status, headers, data = call("/api/project", method="POST", body={
+    "project": same["project"], "expectedRevision": same["revision"]})
+check("批次4 再存一次（没有新的翻转）不会重复生成",
+      status == 200 and (json.loads(data).get("spawned") or []) == [], data[:220])
 
 # --- 第五批：中等难度任务管理（拖拽排序 / 复制 / 删除影响面 / 回收站 / 模板 / 导入 / 导出 / 活动 / 设置）---
 _, _, body = call("/api/project", method="POST", body={
@@ -804,10 +798,6 @@ check("批次5 内置项目模板可用", status == 200 and len(templates) >= 2,
 status, headers, data = call("/api/project/from-template", method="POST",
                              body={"templateId": "builtin-debug-drill", "name": "排错训练"})
 check("批次5 用模板创建项目", status == 200 and json.loads(data)["project"]["name"] == "排错训练", data[:160])
-status, headers, data = call("/api/templates", method="POST",
-                             body={"projectId": "b5", "name": "批次5模板", "description": "说明"})
-check("批次5 把项目存成模板", status == 200 and json.loads(data)["template"]["name"] == "批次5模板", data[:160])
-
 # 导出三种格式
 status, headers, data = call("/api/export?format=md")
 text = data.decode("utf-8") if status == 200 else ""
@@ -914,23 +904,14 @@ box = next((node for node in json.loads(body)["project"]["tree"] if node["text"]
 check("批次5 项目里出现孤立任务箱并放进了任务",
       box is not None and [node["text"] for node in box["children"]] == ["孤儿任务"], str(box)[:200])
 
-# 活动历史与设置
-status, headers, data = call("/api/activity?limit=50")
-entries = json.loads(data)["entries"] if status == 200 else []
-kinds = {entry["kind"] for entry in entries}
-check("批次5 活动历史覆盖排序/复制/删除/导入",
-      status == 200 and {"reorder", "duplicate", "import", "delete-project", "restore"} <= kinds,
-      str(sorted(kinds))[:200])
+# 设置（活动历史面板与自动归档已取消：写入仍在，面板与接口不再提供）
 status, headers, data = call("/api/settings")
-check("批次5 读取设置（回收站保留天数/自动归档）",
+check("批次5 读取设置（回收站保留天数）",
       status == 200 and json.loads(data)["settings"]["trashRetentionDays"] == 7, data[:160])
 status, headers, data = call("/api/settings", method="POST", body={"settings": {"trashRetentionDays": 30}})
 check("批次5 修改设置", status == 200 and json.loads(data)["settings"]["trashRetentionDays"] == 30, data[:160])
 status, headers, data = call("/api/settings", method="POST", body={"settings": {"trashRetentionDays": 0}})
 check_json_error("批次5 非法设置 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
-status, headers, data = call("/api/archive/auto", method="POST", body={"days": 0})
-check_json_error("批次5 自动归档天数非法 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
-
 print(f"\n   通过 {len(passed)} 项，失败 {len(failed)} 项")
 if failed:
     print("   失败项: " + ", ".join(failed))

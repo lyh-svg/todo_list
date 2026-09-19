@@ -1,10 +1,12 @@
-// B2 验证：setNodeCompleted 的判空必须在任何解引用之前。
+// B2 + Q13 验证：setNodeCompleted 的判空必须在任何解引用之前；周期任务的"下一次"
+// 由**服务端**生成，前端只负责把响应里的副本拼回本地树。
 //
-// 旧代码先读 node.completed、写 node.completed / node.completedAt，最后才 `if (!node || ...)`：
-// 判空永远来不及（node 为 null 时上面已经 TypeError），是误导维护者的死代码。
-//
-// 同时钉住一件容易被"顺手改坏"的事：容器节点（周/单元）**仍然**要在函数里被写上完成标记 ——
-// 分组复选框靠它，空单元也靠它显示已完成。所以只把判空提前，不能把整条 type 检查一起提前。
+// 历史：旧代码先读 node.completed、写 node.completed / node.completedAt，最后才
+// `if (!node || ...)`（判空永远来不及，是误导维护者的死代码）；同时前端还自己克隆一份
+// "下一次"（spawnNextOccurrence），与服务端批量完成里的那份规则各写一遍，容易走偏。
+// 现在统一到服务端（Q13），这里同时钉住两件事：
+//   1. 判空仍在第一句，容器节点仍然要写完成标记（分组复选框依赖它）；
+//   2. 前端不再克隆，而是把保存响应里的 spawned 拼进本地树。
 const fs = require('fs');
 const path = require('path');
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -28,28 +30,40 @@ function check(name, ok, detail = '') {
     console.log(`${ok ? '   ✔' : '   ✘'} ${name}${ok ? '' : `  [${detail}]`}`);
 }
 
-function buildWorld() {
-    const calls = { spawned: [], toasts: [], dirty: [] };
+function buildWorld(projectTree) {
+    const calls = { toasts: [], dirty: [], rendered: 0 };
+    const project = { id: 'p1', assessmentEnabled: false, reviewEnabled: false,
+                      tree: projectTree || [] };
     const deps = {
         calls,
-        owningProjectOfNode: () => ({ id: 'p1', assessmentEnabled: false, reviewEnabled: false }),
-        spawnNextOccurrence: (project, node) => {
-            calls.spawned.push(node.id);
-            return { dueDate: '2026-10-01' };
-        },
+        project,
+        owningProjectOfNode: () => project,
         showToast: message => calls.toasts.push(String(message)),
-        projectAutoReview: project => Boolean(project && project.reviewEnabled),
-        addDaysToIso: (base, days) => base,
+        projectAutoReview: value => Boolean(value && value.reviewEnabled),
+        addDaysToIso: (base, days) => base + '+' + days,
         todayStr: () => '2026-09-19',
-        markProjectDirty: project => calls.dirty.push(project && project.id),
+        markProjectDirty: value => calls.dirty.push(value && value.id),
+        currentProjectId: 'p1',
+        renderDetail: () => { calls.rendered += 1; },
+        document: { querySelector: () => null },
+        findParentList: (nodes, targetId) => {
+            for (const node of nodes || []) {
+                if (String(node.id) === String(targetId)) return node.children || [];
+                const found = deps.findParentList(node.children || [], targetId);
+                if (found) return found;
+            }
+            return null;
+        },
     };
     const factory = new Function('deps', `
-        const { calls, owningProjectOfNode, spawnNextOccurrence, showToast, projectAutoReview,
-                addDaysToIso, todayStr, markProjectDirty } = deps;
+        const { owningProjectOfNode, showToast, projectAutoReview, addDaysToIso, todayStr,
+                markProjectDirty, currentProjectId, findParentList, renderDetail, document } = deps;
+        const currentProjectIdValue = currentProjectId;
         ${extract('setNodeCompleted')}
-        return { setNodeCompleted };
+        ${extract('applySpawnedOccurrences')}
+        return { setNodeCompleted, applySpawnedOccurrences, project: deps.project };
     `);
-    return { api: factory(deps), calls };
+    return { api: factory(deps), calls, project };
 }
 
 const fnSource = extract('setNodeCompleted');
@@ -57,7 +71,6 @@ const fnSource = extract('setNodeCompleted');
 // ---------- 静态：判空必须是第一句，且早于任何 node.X ----------
 check('静态：函数体第一句就是判空（允许前面只有注释）',
     /function setNodeCompleted\(node, completed\) \{\s*\r?\n(?:\s*\/\/[^\n]*\r?\n)*\s*if \(!node\)/.test(src));
-// 分析前先去掉行注释：注释里提到 "node.X" 不算解引用
 const bodyAfterSignature = fnSource.slice(fnSource.indexOf('{') + 1).replace(/\/\/[^\n]*/g, '');
 const firstNodeUse = bodyAfterSignature.indexOf('node.');
 const guardIndex = bodyAfterSignature.indexOf('if (!node)');
@@ -65,7 +78,17 @@ check('静态：判空出现在第一次解引用 node 之前',
     guardIndex >= 0 && firstNodeUse > guardIndex,
     `guard@${guardIndex} firstUse@${firstNodeUse}`);
 check('静态：仍然单独保留容器节点的早退（不能把类型检查一起提前）',
-    /if \(node\.type !== 'item'\) return \{ spawned: null, project: null \};/.test(fnSource));
+    /if \(node\.type !== 'item'\) return \{ project: null \};/.test(fnSource));
+check('静态：前端不再自己克隆"下一次"',
+    !src.includes('function spawnNextOccurrence(') && !fnSrcContains('spawnNextOccurrence')
+    && !src.includes("op: 'append'"));
+function fnSrcContains(needle) {
+    return fnSource.includes(needle);
+}
+check('静态：两条保存路径都会把响应里的 spawned 拼回本地树',
+    (src.match(/applySpawnedOccurrences\(/g) || []).length >= 3
+    && /applySpawnedOccurrences\(project, payload\.spawned\)[\s\S]{0,200}rememberProjectBaseline/.test(src)
+    && /applySpawnedOccurrences\(project, payload\.spawned\)[\s\S]{0,300}rememberSavedProjectState/.test(src));
 
 // ---------- 行为：空值不再抛 ----------
 {
@@ -79,7 +102,7 @@ check('静态：仍然单独保留容器节点的早退（不能把类型检查�
     }
     check('行为：setNodeCompleted(null) 不抛异常', threw === null, threw && threw.message);
     check('行为：setNodeCompleted(null) 返回空结果',
-        result && result.spawned === null && result.project === null, JSON.stringify(result));
+        result && result.project === null, JSON.stringify(result));
 
     const world2 = buildWorld();
     let threw2 = null;
@@ -98,23 +121,34 @@ check('静态：仍然单独保留容器节点的早退（不能把类型检查�
     const result = world.api.setNodeCompleted(item, true);
     check('行为：任务被标完成并写完成时间',
         item.completed === true && typeof item.completedAt === 'string' && item.completedAt.length > 0);
-    check('行为：没有周期规则时不生成下一次', result.spawned === null && world.calls.spawned.length === 0);
+    check('行为：前端不再自己生成下一次（等服务端响应）',
+        result && result.project === world.project && world.calls.toasts.length === 0);
     check('行为：标脏了所属项目', world.calls.dirty.includes('p1'));
 
     world.api.setNodeCompleted(item, false);
     check('行为：取消完成会清掉完成时间', item.completed === false && item.completedAt === null);
 }
 
-// ---------- 行为：周期任务只在 false→true 这一次生成 ----------
+// ---------- 行为：拼接服务端回传的副本 ----------
 {
-    const world = buildWorld();
-    const repeat = { id: 'r1', type: 'item', text: '每日任务', completed: false, repeat: { freq: 'daily' } };
-    const first = world.api.setNodeCompleted(repeat, true);
-    check('行为：周期任务 false→true 生成下一次并提示',
-        first.spawned && world.calls.spawned.length === 1 && world.calls.toasts.length === 1,
-        JSON.stringify(world.calls.spawned));
-    world.api.setNodeCompleted(repeat, true);
-    check('行为：重复标完成不再生成（防止指数级克隆）', world.calls.spawned.length === 1);
+    const parent = { id: 'd1', type: 'day', text: '单元1', children: [] };
+    const world = buildWorld([parent, { id: 'w1', type: 'week', text: '第1周', children: [] }]);
+    const spawned = [
+        { parentId: 'd1', node: { id: 'new-1', type: 'item', text: '下一次', dueDate: '2026-09-20' } },
+        { parentId: null, node: { id: 'new-2', type: 'item', text: '根层下一次', dueDate: '2026-09-21' } },
+    ];
+    const applied = world.api.applySpawnedOccurrences(world.project, spawned);
+    check('行为：副本按 parentId 拼到对应父节点下', applied === 2
+        && parent.children.length === 1 && parent.children[0].id === 'new-1'
+        && world.project.tree.length === 3 && world.project.tree[2].id === 'new-2',
+        JSON.stringify(world.project.tree.map(node => node.id)));
+    check('行为：拼进去时给出提示（含下一次日期）',
+        world.calls.toasts.length === 2 && world.calls.toasts[0].includes('2026-09-20'),
+        JSON.stringify(world.calls.toasts));
+    const again = world.api.applySpawnedOccurrences(world.project, spawned);
+    check('行为：同一条副本重复回传不会拼两次', again === 0
+        && parent.children.length === 1 && world.project.tree.length === 3);
+    check('行为：拼完会重绘当前项目的详情页', world.calls.rendered >= 1);
 }
 
 // ---------- 行为：容器节点仍然要写完成标记（分组复选框依赖它） ----------
@@ -125,8 +159,8 @@ check('静态：仍然单独保留容器节点的早退（不能把类型检查�
     check('行为：容器也会被写上 completed / completedAt',
         week.completed === true && typeof week.completedAt === 'string',
         JSON.stringify(week));
-    check('行为：容器不生成周期任务、也不标脏项目',
-        result.spawned === null && result.project === null && world.calls.dirty.length === 0);
+    check('行为：容器不标脏项目、也不返回项目',
+        result.project === null && world.calls.dirty.length === 0);
 }
 
 // ---------- 行为：取消完成会清掉复习安排 ----------
@@ -138,32 +172,15 @@ check('静态：仍然单独保留容器节点的早退（不能把类型检查�
     check('行为：取消完成会删除 review', task.completed === false && task.review === undefined);
 }
 
-// ---------- 行为：项目开了自动复习时，完成任务排明天 ----------
+// ---------- 行为：完成时按项目开关排复习 ----------
 {
     const world = buildWorld();
-    const project = { id: 'p1', reviewEnabled: true };
-    const factory = new Function('deps', `
-        const { calls, owningProjectOfNode, spawnNextOccurrence, showToast, projectAutoReview,
-                addDaysToIso, todayStr, markProjectDirty } = deps;
-        ${extract('setNodeCompleted')}
-        return { setNodeCompleted };
-    `);
-    const api = factory({
-        calls: { spawned: [], toasts: [], dirty: [] },
-        owningProjectOfNode: () => project,
-        spawnNextOccurrence: () => null,
-        showToast: () => {},
-        projectAutoReview: () => true,
-        addDaysToIso: (base, days) => `${base}+${days}`,
-        todayStr: () => '2026-09-19',
-        markProjectDirty: () => {},
-    });
+    world.project.reviewEnabled = true;
     const task = { id: 'i3', type: 'item', text: '任务', completed: false, optional: false };
-    api.setNodeCompleted(task, true);
+    world.api.setNodeCompleted(task, true);
     check('行为：自动复习开启时完成任务会排到明天',
         task.review && task.review.due === '2026-09-19+1' && task.review.learning === false,
         JSON.stringify(task.review));
-    void world;
 }
 
 const failed = results.filter(result => !result).length;

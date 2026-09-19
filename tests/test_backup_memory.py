@@ -23,12 +23,10 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-backup-memory-test-")
 os.environ.setdefault("TODO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "todo.sqlite3"))
 os.environ.setdefault("TODO_SQLITE_BACKUP_DIR", str(Path(_TEMP_DIR.name) / "backups"))
 os.environ.setdefault("TODO_MEMO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "memo.sqlite3"))
-os.environ.setdefault("TODO_SUMMARY_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "summary.sqlite3"))
 
 import backup_service  # noqa: E402
 import memo_storage  # noqa: E402
 import storage  # noqa: E402
-import summary_storage  # noqa: E402
 
 CONTENT_BYTES = 8 * 1024 * 1024          # 8 MB 的备忘录正文 → ZIP 成员约 8 MB
 PEAK_BUDGET_BYTES = 4 * 1024 * 1024      # 流式读的话峰值 ≪ 8 MB（分块 1 MB）
@@ -38,20 +36,17 @@ class BackupMemoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         # 这套测试共用 tests/__init__.py 钉住的临时库：跑完清干净，别把 8 MB 的备忘录和
         # 若干大备份留给后面的模块（否则它们的"memo 计数"之类断言会被带偏）。
-        for database in (storage.DATABASE_FILE, memo_storage.MEMO_DATABASE_FILE,
-                         summary_storage.SUMMARY_DATABASE_FILE):
+        for database in (storage.DATABASE_FILE, memo_storage.MEMO_DATABASE_FILE):
             for suffix in ("", "-wal", "-shm"):
                 Path(f"{database}{suffix}").unlink(missing_ok=True)
         shutil.rmtree(backup_service.BACKUP_DIR, ignore_errors=True)
 
     def setUp(self) -> None:
-        for database in (storage.DATABASE_FILE, memo_storage.MEMO_DATABASE_FILE,
-                         summary_storage.SUMMARY_DATABASE_FILE):
+        for database in (storage.DATABASE_FILE, memo_storage.MEMO_DATABASE_FILE):
             for suffix in ("", "-wal", "-shm"):
                 Path(f"{database}{suffix}").unlink(missing_ok=True)
         storage.ensure_schema()
         memo_storage.initialize()
-        summary_storage.initialize()
         storage.write_project({
             "id": "p1", "name": "项目", "description": "", "createdAt": "2026-09-19",
             "assessmentEnabled": False, "tree": [{

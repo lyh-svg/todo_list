@@ -22,7 +22,6 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-manage-test-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "summary.sqlite3")
 
 import storage  # noqa: E402
 
@@ -101,23 +100,25 @@ class AppSettingsTests(ResetMixin, unittest.TestCase):
     def test_defaults(self) -> None:
         settings = storage.read_app_settings()
         self.assertEqual(settings["trashRetentionDays"], storage.TRASH_RETENTION_DAYS)
-        self.assertFalse(settings["autoArchiveEnabled"])
-        self.assertIsInstance(settings["autoArchiveDays"], int)
+        self.assertIsInstance(settings["reviewDailyLimit"], int)
+        self.assertIsInstance(settings["reviewNewPerDay"], int)
 
     def test_update_and_persist(self) -> None:
-        updated = storage.update_app_settings({"trashRetentionDays": 30, "autoArchiveEnabled": True,
-                                               "autoArchiveDays": 14})
+        updated = storage.update_app_settings({"trashRetentionDays": 30, "reviewDailyLimit": 12,
+                                               "reviewNewPerDay": 3})
         self.assertEqual(updated["trashRetentionDays"], 30)
-        self.assertTrue(updated["autoArchiveEnabled"])
-        self.assertEqual(storage.read_app_settings()["autoArchiveDays"], 14)
+        self.assertEqual(updated["reviewDailyLimit"], 12)
+        self.assertEqual(storage.read_app_settings()["reviewNewPerDay"], 3)
 
     def test_invalid_values_are_rejected(self) -> None:
         for patch, message in (
             ({"trashRetentionDays": 0}, "保留天数"),
             ({"trashRetentionDays": 999}, "保留天数"),
             ({"trashRetentionDays": "很多"}, "整数"),
-            ({"autoArchiveDays": 0}, "归档天数"),
             ({"unknownOption": 1}, "不支持"),
+            # 已取消的自动归档设置必须被拒（否则旧前端/旧书签还能写进库）
+            ({"autoArchiveEnabled": True}, "不支持"),
+            ({"autoArchiveDays": 30}, "不支持"),
         ):
             with self.subTest(patch=patch):
                 with self.assertRaises(ValueError) as ctx:
@@ -473,12 +474,6 @@ class ActivityTests(ResetMixin, unittest.TestCase):
         self.assertIn("reorder", kinds)
         self.assertIn("duplicate", kinds)
         self.assertIn("duplicate-project", kinds)
-
-    def test_clear_activity(self) -> None:
-        storage.log_activity("test", "一条")
-        self.assertGreaterEqual(storage.clear_activity(), 1)
-        self.assertEqual(storage.list_activity(10), [])
-
 
 class BatchUpdateActivityTests(ResetMixin, unittest.TestCase):
     def test_batch_changes_are_logged(self) -> None:

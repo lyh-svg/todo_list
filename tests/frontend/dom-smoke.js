@@ -356,7 +356,6 @@ async function fetchStub(url, options = {}) {
         const base = requested === 'p-assess' ? assessProjectFixture : projectFixture;
         return reply(200, { project: { ...base, id: requested }, revision: 1 });
     }
-    if (path === '/api/background') return reply(404, {});
     if (path === '/api/config') return reply(200, { ready: true, models: { flash: 'f', pro: 'p' }, error: '' });
     if (path === '/api/storage') return reply(200, { projectLimitBytes: 1000, largestProjectBytes: 10, projectCount: 1 });
     if (path === '/api/backups') return reply(200, {
@@ -400,7 +399,6 @@ async function fetchStub(url, options = {}) {
         plan: { description: '冒烟用 AI 计划', tree: [{ type: 'week', text: '第1周：AI 规划', children: [
             { type: 'day', text: '单元1：入门', children: [{ type: 'item', text: 'AI 生成的任务' }] }] }] }
     });
-    if (path === '/api/views') return reply(200, { views: [] });
     if (path === '/api/workbench') return reply(200, workbenchFixture);
     if (path === '/api/recent') return reply(200, { opened: [], modified: [], completed: [] });
     if (path === '/api/trash') {
@@ -412,8 +410,7 @@ async function fetchStub(url, options = {}) {
         return reply(200, { items: [] });
     }
     if (path === '/api/settings') return reply(200, { settings: {
-        trashRetentionDays: 7, autoArchiveEnabled: false, autoArchiveDays: 30,
-        reviewDailyLimit: 10, reviewNewPerDay: 2 } });
+        trashRetentionDays: 7, reviewDailyLimit: 10, reviewNewPerDay: 2 } });
     if (path === '/api/review/summary') return reply(200, { dueToday: 1, overdue: 1, upcoming: 0, weak: 1,
         total: 3, learned: 2, answeredToday: 0, streakDays: 3, limit: 10, newPerDay: 2,
         // 最近答错/最近掌握是"作答记录"：带题型/档位/日期/答案，复习页不能再靠知识点 lastGrade 兜底。

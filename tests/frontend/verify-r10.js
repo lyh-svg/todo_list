@@ -95,25 +95,36 @@ check('导出：按格式带 format 参数与扩展名',
     /async function exportBackup\(format = 'json'\)[\s\S]{0,900}format=\$\{encodeURIComponent\(format\)\}[\s\S]{0,400}meta\.ext/.test(src));
 
 // ⑩ 项目模板与复制项目
-check('模板：内置 + 自定义模板列表接口', /\/api\/templates/.test(src) && /function renderTemplateList/.test(src));
+check('模板：只保留内置模板列表接口', /\/api\/templates/.test(src) && /function loadTemplates/.test(src)
+    && /function renderTemplateOptions/.test(src));
 check('模板：从模板创建项目', /\/api\/project\/from-template/.test(src) && /function createProjectFromTemplate/.test(src));
-check('模板：可以把当前项目存为模板', /async function saveCurrentProjectAsTemplate[\s\S]{0,400}\/api\/templates/.test(src));
+// 自定义项目模板（存为模板/删除）已按冗余审计取消，只留内置模板
+check('模板：自定义模板已取消（前端不再有存为/删除入口）',
+    !src.includes('saveCurrentProjectAsTemplate') && !src.includes('function renderTemplateList')
+    && !html.includes('id="saveTemplateBtn"') && !html.includes('id="templateList"'));
 check('模板：页面有模板下拉与"用模板新建"', html.includes('id="templateSelect"') && html.includes('id="createFromTemplateBtn"'));
 check('复制项目：可选保留完成状态/AI 历史/复习',
     /async function duplicateCurrentProject[\s\S]{0,700}keepAssessment[\s\S]{0,300}\/api\/project\/duplicate/.test(src));
-check('复制项目：详情页有入口', html.includes('id="duplicateProjectBtn"') && html.includes('id="saveTemplateBtn"'));
+check('复制项目：详情页有入口', html.includes('id="duplicateProjectBtn"'));
 
-// ⑪ 活动历史 + 自动归档 + 已完成筛选
-check('活动：拉取并渲染活动历史', /\/api\/activity\?limit=50/.test(src) && /function renderActivity/.test(src));
-check('活动：可以清空历史', /clearActivityBtn\.addEventListener/.test(src) && /callApi\('\/api\/activity', 'DELETE'\)/.test(src));
-check('设置：回收站保留天数与自动归档可配置', html.includes('id="trashRetentionInput"')
-    && html.includes('id="autoArchiveDaysInput"') && html.includes('id="autoArchiveToggle"'));
+// ⑪ 活动历史面板 / 自动归档 / 已完成筛选
+// 活动历史面板与自动归档已按冗余审计取消（log_activity 写入仍在，需要时直接查库）
+check('活动历史面板：已取消（无接口调用与面板元素）',
+    !src.includes('/api/activity') && !html.includes('id="activityList"')
+    && !html.includes('id="refreshActivityBtn"'));
+check('自动归档：已取消（无接口/无设置项/无按钮）',
+    !src.includes('/api/archive/auto') && !html.includes('id="autoArchiveToggle"')
+    && !html.includes('id="autoArchiveDaysInput"') && !html.includes('id="runAutoArchiveBtn"'));
+check('设置：回收站保留天数与复习上限可配置', html.includes('id="trashRetentionInput"')
+    && html.includes('id="reviewDailyLimitInput"') && html.includes('id="reviewNewPerDayInput"'));
 check('设置：保存走 /api/settings', /async function saveSettingsFromUi[\s\S]{0,500}\/api\/settings/.test(src));
 check('设置：每日复习上限与新增名额可配置（含提交路径）',
     html.includes('id="reviewDailyLimitInput"') && html.includes('id="reviewNewPerDayInput"')
     && /async function saveSettingsFromUi[\s\S]{0,800}\breviewDailyLimit:[\s\S]{0,200}\n\s*reviewNewPerDay:/.test(src)
     && /async function loadSettings[\s\S]{0,800}reviewDailyLimit[\s\S]{0,200}reviewNewPerDay/.test(src));
-check('自动归档：有"立即归档已完成项目"入口', html.includes('id="runAutoArchiveBtn"') && /\/api\/archive\/auto/.test(src));
+check('自动归档：入口已取消（连同设置项与接口）',
+    !html.includes('id="runAutoArchiveBtn"') && !html.includes('id="autoArchiveToggle"')
+    && !src.includes('/api/archive/auto'));
 check('已完成筛选仍在（项目列表过滤器）', html.includes('<option value="completed">已完成</option>')
     && /projectFilters\.status === 'completed'/.test(src));
 
@@ -143,8 +154,8 @@ check('删除项目：成功后写入撤销栈（project-delete → 可从回收
 
 // 版本号与样式
 check('资源版本号已更新', /app\.js\?v=\d+/.test(html) && /style\.css\?v=\d+/.test(html));
-check('新面板样式已加', css.includes('.template-row') && css.includes('.activity-row')
-    && css.includes('.import-report') && css.includes('.option-row'));
+check('新面板样式已加', css.includes('.import-report') && css.includes('.option-row')
+    && !css.includes('.template-row') && !css.includes('.activity-row'));
 
 const failed = results.filter(result => !result).length;
 console.log(`\n   通过 ${results.length - failed} 项，失败 ${failed} 项`);

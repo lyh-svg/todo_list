@@ -28,14 +28,12 @@ from typing import Any, Callable
 
 import memo_storage
 import storage as storage_service
-import summary_storage
 
 BACKUP_FORMAT_VERSION = 1
 MANIFEST_NAME = "manifest.json"
 DATABASE_FILES: dict[str, Path] = {
     "todo.sqlite3": Path(storage_service.DATABASE_FILE),
     "memo.sqlite3": Path(memo_storage.MEMO_DATABASE_FILE),
-    "summary.sqlite3": Path(summary_storage.SUMMARY_DATABASE_FILE),
 }
 BACKUP_DIR = Path(storage_service.BACKUP_DIR)
 KEEP_ALL_DAYS = 7
@@ -52,7 +50,6 @@ def _now() -> datetime:
 def _checkpoint_all() -> None:
     storage_service.checkpoint_database()
     memo_storage.checkpoint()
-    summary_storage.checkpoint()
 
 
 def sha256_of(path: Path) -> str:
@@ -111,11 +108,6 @@ def database_counts() -> dict[str, int]:
     try:
         with memo_storage.open_memo_database() as connection:
             counts["memos"] = int(connection.execute("SELECT COUNT(*) FROM memos").fetchone()[0])
-    except (OSError, sqlite3.Error, RuntimeError):
-        pass
-    try:
-        with summary_storage.open_summary_database() as connection:
-            counts["summaries"] = int(connection.execute("SELECT COUNT(*) FROM summaries").fetchone()[0])
     except (OSError, sqlite3.Error, RuntimeError):
         pass
     return counts
@@ -241,7 +233,7 @@ def describe_backup(name: str) -> dict[str, Any]:
 def _all_database_locks() -> ExitStack:
     """恢复会整文件替换三个库，必须同时挡住三边的并发写。
 
-    只加 state 库的锁是不够的：恢复期间进来的 memo/summary 写会提交到被 os.replace 换掉的
+    只加 state 库的锁是不够的：恢复期间进来的备忘录写会提交到被 os.replace 换掉的
     旧 inode 上，静默丢数据（.restore-*/.rollback-* 这些固定名临时文件也会互相覆盖）。
     """
     stack = ExitStack()
@@ -249,14 +241,13 @@ def _all_database_locks() -> ExitStack:
     # 以前是拿 getattr 链在三个模块里"碰运气"找锁：模块只要改名/新增内部锁，这里就会静默
     # 拿到 None 或拿错锁（`if lock is not None` 直接跳过），恢复期间的并发写照样提交到被
     # os.replace 换掉的旧 inode 上 —— 护栏形同虚设且没有任何告警。
-    for lock in (storage_service.state_lock(), memo_storage.memo_lock(),
-                 summary_storage.summary_lock()):
+    for lock in (storage_service.state_lock(), memo_storage.memo_lock()):
         stack.enter_context(lock)
     return stack
 
 
 def restore_full_backup(name: str, *, progress: Callable[[str], None] | None = None) -> dict[str, Any]:
-    """恢复完整备份：校验 → 应急备份 → 原子替换三个库 → 完整性检查，失败回滚。"""
+    """恢复完整备份：校验 → 应急备份 → 原子替换两个库 → 完整性检查，失败回滚。"""
     if str(name or "").endswith(".sqlite3"):
         storage_service.restore_database_backup(name)
         return {"name": str(name), "kind": "legacy", "restored": ["todo.sqlite3"]}
@@ -407,29 +398,6 @@ def create_daily_snapshot() -> str | None:
         pass
     prune_backups()
     return name
-
-
-def rename_backup(old_name: str, new_name: str) -> str:
-    """重命名备份（.zip 完整备份或旧的 .sqlite3），只改文件名不动内容。"""
-    import re as _re
-    old = _valid_name(old_name, ".zip") if str(old_name).endswith(".zip") else _valid_name(old_name, ".sqlite3")
-    suffix = ".zip" if old.endswith(".zip") else ".sqlite3"
-    text = str(new_name or "").strip()
-    if not text.endswith(suffix):
-        text += suffix
-    if (Path(text).name != text or len(text) > 110 or text.startswith(".")
-            or not _re.match(r"[\w.\- ()（）\u4e00-\u9fff]+$", text, _re.UNICODE)):
-        raise ValueError("新名称只能包含字母、数字、中文、空格、括号、下划线、连字符和点")
-    source = BACKUP_DIR / old
-    target = BACKUP_DIR / text
-    if not source.is_file():
-        raise ValueError("备份不存在")
-    if target.exists() and target != source:
-        raise ValueError("该备份名称已经存在")
-    if target != source:
-        source.replace(target)
-        target.chmod(0o600)
-    return text
 
 
 def delete_backup(name: str) -> None:

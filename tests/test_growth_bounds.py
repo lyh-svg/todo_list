@@ -22,7 +22,6 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-growth-bounds-test-")
 os.environ.setdefault("TODO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "todo.sqlite3"))
 os.environ.setdefault("TODO_SQLITE_BACKUP_DIR", str(Path(_TEMP_DIR.name) / "backups"))
 os.environ.setdefault("TODO_MEMO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "memo.sqlite3"))
-os.environ.setdefault("TODO_SUMMARY_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "summary.sqlite3"))
 
 import backup_service  # noqa: E402
 import storage  # noqa: E402
@@ -63,12 +62,6 @@ class ActivityLogBoundsTests(unittest.TestCase):
                 "SELECT summary FROM activity_log ORDER BY id DESC LIMIT 1").fetchone()[0]
         self.assertEqual(rows, keep)
         self.assertEqual(newest, "单独写一条（自己开库）")
-
-    def test_clear_activity_still_works(self) -> None:
-        storage.log_activity("bulk", "一条")
-        self.assertEqual(storage.clear_activity(), 1)
-        self.assertEqual(storage.list_activity(5), [])
-
 
 class BackupRetentionBoundsTests(unittest.TestCase):
     def setUp(self) -> None:

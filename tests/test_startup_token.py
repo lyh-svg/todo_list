@@ -55,7 +55,6 @@ class StartupTokenTests(unittest.TestCase):
             "TODO_SQLITE_FILE": str(root / "todo.sqlite3"),
             "TODO_SQLITE_BACKUP_DIR": str(root / "backups"),
             "TODO_MEMO_SQLITE_FILE": str(root / "memo.sqlite3"),
-            "TODO_SUMMARY_SQLITE_FILE": str(root / "summary.sqlite3"),
             "TMPDIR": str(root),
             "PYTHONUNBUFFERED": "1",
         })

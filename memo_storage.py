@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import tempfile
 import threading
 import uuid
 from datetime import datetime
@@ -297,48 +296,6 @@ def check_integrity(path: Path | None = None) -> bool:
             return connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
     except sqlite3.DatabaseError:
         return False
-
-
-def export_database(target: Path) -> None:
-    checkpoint()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with _memo_lock, sqlite3.connect(MEMO_DATABASE_FILE) as source, sqlite3.connect(target) as destination:
-        source.backup(destination)
-    target.chmod(0o600)
-
-
-def import_database(payload: bytes) -> None:
-    if not payload:
-        raise ValueError("备忘录数据库文件为空")
-    if len(payload) > 110 * 1024 * 1024:
-        raise ValueError("备忘录数据库文件不能超过 110 MB")
-    parent = MEMO_DATABASE_FILE.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(prefix="memo-import-", suffix=".sqlite3", dir=parent, delete=False) as temporary:
-            temporary.write(payload)
-            temp_path = Path(temporary.name)
-        if not check_integrity(temp_path):
-            raise ValueError("备忘录数据库完整性检查失败")
-        with sqlite3.connect(temp_path) as connection:
-            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if "memos" not in tables:
-                raise ValueError("不是有效的备忘录数据库")
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(memos)")}
-            required = {"memo_id", "title", "content", "pinned", "created_at", "updated_at", "revision"}
-            if not required.issubset(columns):
-                raise ValueError("备忘录数据库结构不完整")
-        with _memo_lock:
-            checkpoint()
-            for suffix in ("-wal", "-shm"):
-                Path(f"{MEMO_DATABASE_FILE}{suffix}").unlink(missing_ok=True)
-            os.replace(temp_path, MEMO_DATABASE_FILE)
-            temp_path = None
-            initialize()
-    finally:
-        if temp_path:
-            temp_path.unlink(missing_ok=True)
 
 
 def database_size() -> int:

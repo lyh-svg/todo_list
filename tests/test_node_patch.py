@@ -22,7 +22,6 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-patch-test-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "summary.sqlite3")
 
 import storage  # noqa: E402
 
@@ -88,7 +87,10 @@ class NodePatchTests(unittest.TestCase):
         }}])
         self.assertEqual(result["revision"], self.revision + 1)
         self.assertEqual(result["updated"], ["p1-i1"])
-        self.assertEqual(result["summary"]["stats"]["remaining"], 0, "主线任务只剩这一个，完成即 0")
+        # 这条 patch 同时把 repeat 设成每天并标完成 → 服务端会生成"下一次"，
+        # 于是主线剩余数变成 1（新副本还没完成）。这正是 Q13 统一到服务端后的行为。
+        self.assertEqual(result["summary"]["stats"]["remaining"], 1, "完成周期任务后会多出下一次")
+        self.assertEqual(len(result["spawned"]), 1)
         node = find(storage.read_project("p1")[0]["tree"], "p1-i1")
         self.assertTrue(node["completed"])
         self.assertEqual(node["priority"], "high")
@@ -98,6 +100,25 @@ class NodePatchTests(unittest.TestCase):
         self.assertEqual(node["note"], "备注")
         self.assertEqual(node["links"][0]["url"], "https://example.com")
         self.assertEqual(node["repeat"], {"freq": "daily", "interval": 1})
+
+    def test_null_completed_at_is_stored_as_empty_string(self) -> None:
+        """completion 类 patch 一定带 completedAt（前端 nodeStateFields 会给 null）。
+
+        列是 TEXT NOT NULL DEFAULT ''，所以 None 必须落成 ""；以前直接写 None 会撞
+        NOT NULL，被前端静默回退成整树保存（patch 路径白丢）。
+        """
+        storage.patch_project_nodes("p1", 1, [
+            {"op": "update", "nodeId": "p1-i1", "fields": {"completed": True, "completedAt": None}},
+        ])
+        node = find(storage.read_project("p1")[0]["tree"], "p1-i1")
+        self.assertTrue(node["completed"])
+        self.assertNotIn("completedAt", node, "空 completedAt 不该回读成值")
+        storage.patch_project_nodes("p1", 2, [
+            {"op": "update", "nodeId": "p1-i1", "fields": {"completed": False, "completedAt": None}},
+        ])
+        node = find(storage.read_project("p1")[0]["tree"], "p1-i1")
+        self.assertFalse(node["completed"])
+        self.assertNotIn("completedAt", node, "取消完成必须能把时间清空，而不是 500")
 
     def test_update_review_field_writes_three_columns(self) -> None:
         """前端勾选任务时会带上 review（复习计划）：patch 必须认这个字段。

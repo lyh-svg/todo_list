@@ -28,14 +28,11 @@ TRASH_RETENTION_DAYS = 7
 # 应用级设置（存在 app_state 的 'settings' 键里，可被前端改）
 DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "trashRetentionDays": TRASH_RETENTION_DAYS,   # 回收站保留天数 1~365
-    "autoArchiveEnabled": False,                  # 是否自动归档"全部完成且很久没动"的项目
-    "autoArchiveDays": 30,                        # 多久没动算"很久" 1~3650
     "reviewDailyLimit": 10,                       # 每日复习上限 5~15
     "reviewNewPerDay": 2,                         # 每日新知识点名额 0~5
 }
 MIN_TRASH_RETENTION_DAYS = 1
 MAX_TRASH_RETENTION_DAYS = 365
-MAX_AUTO_ARCHIVE_DAYS = 3650
 ORPHAN_BOX_TITLE = "孤立任务箱"                    # 父节点被删掉时，恢复到这里
 # 活动历史只是「最近发生了什么」的追溯窗：写新记录时顺手裁到这么多条，避免无界增长。
 ACTIVITY_KEEP_ROWS = 2000
@@ -43,7 +40,7 @@ ACTIVITY_KEEP_ROWS = 2000
 # 原来把 500 个 id（每个 36 字符）整串写进 detail，一行活动就 ~20KB。
 ACTIVITY_NODE_IDS_MAX = 100
 ACTIVITY_LIMIT_MAX = 500
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 # 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
 PRIORITIES = ("", "high", "mid", "low")
 MAX_TAGS = 20
@@ -419,13 +416,6 @@ def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Pat
             FOREIGN KEY(project_id, node_id)
                 REFERENCES nodes(project_id, node_id) ON DELETE CASCADE
         );
-        CREATE TABLE IF NOT EXISTS app_asset (
-            key TEXT PRIMARY KEY,
-            payload BLOB NOT NULL,
-            mime_type TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
         CREATE TABLE IF NOT EXISTS trash_items (
             trash_id TEXT PRIMARY KEY,
             kind TEXT NOT NULL CHECK(kind IN ('project', 'node')),
@@ -440,14 +430,6 @@ def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Pat
         );
         CREATE INDEX IF NOT EXISTS idx_trash_deleted_at
             ON trash_items(deleted_at DESC, trash_id);
-        CREATE TABLE IF NOT EXISTS saved_views (
-            view_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            payload TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_saved_views_name ON saved_views(name);
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             at TEXT NOT NULL,
@@ -459,14 +441,6 @@ def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Pat
             undoable INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_activity_at ON activity_log(at DESC, id DESC);
-        CREATE TABLE IF NOT EXISTS project_templates (
-            template_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            description TEXT NOT NULL DEFAULT '',
-            payload TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            builtin INTEGER NOT NULL DEFAULT 0
-        );
         CREATE TABLE IF NOT EXISTS review_points (
             code TEXT PRIMARY KEY,
             title TEXT NOT NULL,
@@ -1059,8 +1033,8 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
 def ensure_schema() -> None:
     """启动/恢复后调用：版本检查 → 未来版本拒绝；低版本逐步迁移（先快照，失败回滚）。
 
-    本项目的阶梯只有一级：v0/legacy（project_state / app_state 单表 JSON）→ 当前分表结构。
-    以后新增版本时在这里加 `_migrate_vN_to_M` 步骤，并保证每步幂等、可回滚。
+    阶梯：v0/legacy（project_state / app_state 单表 JSON）→ 当前分表结构；v8→v9 只删三个
+    已取消功能的空表。以后新增版本时在这里加 `_migrate_vN_to_M` 步骤，并保证每步幂等、可回滚。
     """
     with _database_lock:
         version = 0
@@ -1084,6 +1058,8 @@ def ensure_schema() -> None:
             # v7 -> v8：只新增 5 张复习表与索引（DDL 幂等，已在 open_state_database 里执行），
             # 不改动既有列、不回填数据；迁移前已自动快照，失败会回滚。
             migrate_legacy_state()
+            # v8 -> v9：删掉三个已取消功能留下的空表（背景图 / 筛选视图 / 自定义模板）。
+            _drop_removed_tables()
             with _database_lock:
                 with open_state_database() as connection:
                     if not check_database_integrity():
@@ -1095,6 +1071,15 @@ def ensure_schema() -> None:
             raise
         if backup_name:
             print(f"schema 从 v{version} 迁移到 v{SCHEMA_VERSION}；迁移前快照：{backup_name}")
+
+
+def _drop_removed_tables() -> None:
+    """v8 -> v9：注销三个已取消功能的表（背景图 app_asset / 筛选视图 saved_views /
+    自定义模板 project_templates）。三张表在实际使用中都是空的；迁移前的自动快照
+    （before-migrate-v8-*.sqlite3）仍可用旧版本程序恢复。"""
+    with _database_lock, open_state_database() as connection:
+        for table in ("app_asset", "saved_views", "project_templates"):
+            connection.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 def migrate_legacy_state() -> None:
@@ -1185,10 +1170,6 @@ def read_app_settings(connection: sqlite3.Connection | None = None) -> dict[str,
         merged["trashRetentionDays"] = _clean_int(
             stored.get("trashRetentionDays"), minimum=MIN_TRASH_RETENTION_DAYS,
             maximum=MAX_TRASH_RETENTION_DAYS, default=settings["trashRetentionDays"])
-        merged["autoArchiveEnabled"] = bool(stored.get("autoArchiveEnabled", settings["autoArchiveEnabled"]))
-        merged["autoArchiveDays"] = _clean_int(
-            stored.get("autoArchiveDays"), minimum=1, maximum=MAX_AUTO_ARCHIVE_DAYS,
-            default=settings["autoArchiveDays"])
         merged["reviewDailyLimit"] = _clean_int(
             stored.get("reviewDailyLimit"), minimum=5, maximum=15,
             default=settings["reviewDailyLimit"])
@@ -1220,16 +1201,6 @@ def update_app_settings(patch: dict[str, Any]) -> dict[str, Any]:
             if not MIN_TRASH_RETENTION_DAYS <= days <= MAX_TRASH_RETENTION_DAYS:
                 raise ValueError(f"回收站保留天数应在 {MIN_TRASH_RETENTION_DAYS}~{MAX_TRASH_RETENTION_DAYS} 天之间")
             settings["trashRetentionDays"] = days
-        if "autoArchiveEnabled" in patch:
-            settings["autoArchiveEnabled"] = bool(patch["autoArchiveEnabled"])
-        if "autoArchiveDays" in patch:
-            try:
-                days = int(patch["autoArchiveDays"])
-            except (TypeError, ValueError):
-                raise ValueError("自动归档天数必须是整数") from None
-            if not 1 <= days <= MAX_AUTO_ARCHIVE_DAYS:
-                raise ValueError(f"自动归档天数应在 1~{MAX_AUTO_ARCHIVE_DAYS} 天之间")
-            settings["autoArchiveDays"] = days
         if "reviewDailyLimit" in patch:
             settings["reviewDailyLimit"] = _clean_int(
                 patch.get("reviewDailyLimit"), minimum=5, maximum=15, default=10)
@@ -1316,12 +1287,6 @@ def list_activity(limit: int = 50) -> list[dict[str, Any]]:
             "undoable": bool(row["undoable"]),
         })
     return entries
-
-
-def clear_activity() -> int:
-    with _database_lock, open_state_database() as connection:
-        cursor = connection.execute("DELETE FROM activity_log")
-    return cursor.rowcount
 
 
 def _now() -> str:
@@ -1729,7 +1694,7 @@ def list_review_queue(today: str | None = None, limit: int = MAX_REVIEW_QUEUE) -
 def search_everything(query: Any, limit: int = 100) -> dict[str, Any]:
     """跨项目搜索：SQL LIKE + 递归 CTE（命中的父节点连带其后代）。
 
-    和前端 collectSearchMatches 的口径一致：项目命中看 name/description，
+    口径：项目命中看 name/description，
     节点命中看任务文本或其路径上的任意分组名（搜"第1周"能列出该周的任务）。
     这些规模下 LIKE 全表扫描是亚毫秒级，不需要 FTS5（见第六批 item 4 的实测数据）。
     """
@@ -1986,9 +1951,6 @@ def import_review_snapshot(review: Any) -> dict[str, int]:
 # 导出（Markdown / CSV）、项目模板、导入预览与三种导入模式（第五批 7~10）
 # ---------------------------------------------------------------------------
 
-EXPORT_FORMATS = ("json", "markdown", "csv")
-
-
 def _node_meta_suffix(node: dict[str, Any]) -> str:
     """任务的一行元数据后缀（Markdown/CSV 共用同一套字段名）。"""
     parts: list[str] = []
@@ -2159,73 +2121,8 @@ def _template_payload(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_templates() -> list[dict[str, Any]]:
-    templates = [_template_payload(entry) for entry in BUILTIN_TEMPLATES]
-    with _database_lock, open_state_database() as connection:
-        rows = connection.execute(
-            "SELECT template_id,name,description,payload,builtin FROM project_templates "
-            "ORDER BY builtin DESC, name"
-        ).fetchall()
-    for row in rows:
-        stored = _decode_object(row["payload"], "模板数据损坏")
-        templates.append({
-            "id": str(row["template_id"]),
-            "name": str(row["name"]),
-            "description": str(row["description"] or ""),
-            "builtin": bool(row["builtin"]),
-            "tree": stored.get("tree") or [],
-        })
-    return templates
-
-
-def save_project_as_template(project_id: Any, name: Any = None, description: Any = "") -> dict[str, Any]:
-    """把现有项目存成模板（只存结构，不存完成状态/AI 历史/复习）。"""
-    project_key = str(project_id)
-    with _database_lock, open_state_database() as connection:
-        result = _read_project_from_connection(connection, project_key)
-        if not result:
-            raise ValueError("项目不存在")
-        project, _revision = result
-        template_name = str(name or "").strip()[:60] or f"{_project_title(project)} 模板"
-        existing = connection.execute(
-            "SELECT template_id FROM project_templates WHERE name=?", (template_name,)
-        ).fetchone()
-        tree = []
-        for node in project.get("tree") or []:
-            clone = _refresh_all_ids(node)
-            clone["text"] = str(node.get("text") or "未命名")
-            for entry in _walk_nodes([clone]):
-                entry["completed"] = False
-                entry["completedAt"] = None
-                entry["assessment"] = None
-                entry["assessmentHistory"] = 0
-                entry.pop("review", None)
-            tree.append(clone)
-        payload = _json({"tree": tree})
-        template_id = str(existing["template_id"]) if existing else str(uuid.uuid4())
-        now = _now()
-        if existing:
-            connection.execute(
-                "UPDATE project_templates SET payload=?,description=? WHERE template_id=?",
-                (payload, str(description or "")[:200], template_id))
-        else:
-            connection.execute(
-                "INSERT INTO project_templates(template_id,name,description,payload,created_at,builtin) "
-                "VALUES(?,?,?,?,?,0)",
-                (template_id, template_name, str(description or "")[:200], payload, now))
-        log_activity("template", f"把「{_project_title(project)}」存为模板「{template_name}」",
-                     project_id=project_key, project_name=_project_title(project),
-                     connection=connection)
-    return {"id": template_id, "name": template_name, "description": str(description or ""),
-            "builtin": False, "tree": tree}
-
-
-def delete_template(template_id: Any) -> bool:
-    template_key = str(template_id)
-    if any(entry["id"] == template_key for entry in BUILTIN_TEMPLATES):
-        raise ValueError("内置模板不能删除")
-    with _database_lock, open_state_database() as connection:
-        cursor = connection.execute("DELETE FROM project_templates WHERE template_id=?", (template_key,))
-    return cursor.rowcount > 0
+    """只回内置模板（"存为模板/管理自定义模板"已取消）。"""
+    return [_template_payload(entry) for entry in BUILTIN_TEMPLATES]
 
 
 def create_project_from_template(template_id: Any, name: Any = None) -> dict[str, Any]:
@@ -2502,59 +2399,19 @@ def import_projects(projects: Any, mode: str = "replace", *, keep_ai_history: bo
     return {"mode": mode, "preview": preview, "projects": read_project_summaries()}
 
 
-def auto_archive_projects(days: int | None = None) -> dict[str, Any]:
-    """把"所有任务都完成、且很久没动过"的项目自动归档（可在设置里关掉）。"""
-    archived: list[dict[str, str]] = []
-    with _database_lock:
-        with open_state_database() as connection:
-            settings = read_app_settings(connection)
-            if days is None:
-                if not settings["autoArchiveEnabled"]:
-                    return {"archived": [], "skipped": "autoArchiveEnabled=false"}
-                days = int(settings["autoArchiveDays"])
-            cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).isoformat(timespec="seconds")
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                "SELECT project_id,position,revision,updated_at FROM projects "
-                "WHERE archived=0 AND project_id<>? AND updated_at<>'' AND updated_at<? "
-                "ORDER BY position",
-                (INBOX_PROJECT_ID, cutoff),
-            ).fetchall()
-            # 先用一条 SQL 把"根本不可能全完成"的项目筛掉：以前对每个候选项目都
-            # _read_project_from_connection 重建整棵树，只为数一下有没有没做完的任务
-            # （50 个项目 / 111,220 节点实测 570 ms，其中没有一个能归档）。
-            # 口径与 count_node_progress() 完全一致：**所有** item（含选做）都要完成。
-            node_progress: dict[str, tuple[int, int]] = {}
-            candidate_ids = [str(row["project_id"]) for row in rows]
-            for start in range(0, len(candidate_ids), SQL_PARAM_CHUNK):
-                chunk = candidate_ids[start:start + SQL_PARAM_CHUNK]
-                placeholders = ",".join("?" for _ in chunk)
-                for stat in connection.execute(
-                        f"SELECT project_id,COUNT(*) AS total,COALESCE(SUM(completed),0) AS done "
-                        f"FROM nodes WHERE type='item' AND project_id IN ({placeholders}) "
-                        f"GROUP BY project_id", chunk):
-                    node_progress[str(stat["project_id"])] = (int(stat["total"] or 0), int(stat["done"] or 0))
-            for row in rows:
-                project_id = str(row["project_id"])
-                if project_id in {"inbox"}:
-                    continue
-                total, completed = node_progress.get(project_id, (0, 0))
-                if total == 0 or completed < total:
-                    continue
-                result = _read_project_from_connection(connection, project_id)
-                if not result:
-                    continue
-                project, revision = result
-                project["archived"] = True
-                _upsert_project(connection, project, int(row["position"]), int(revision) + 1, _now())
-                archived.append({"id": project_id, "name": _project_title(project)})
-                log_activity("auto-archive", f"自动归档已完成项目「{_project_title(project)}」",
-                             project_id=project_id, project_name=_project_title(project),
-                             detail={"days": int(days)}, connection=connection)
-    return {"archived": archived, "days": int(days)}
-
-
 def write_project(project: dict[str, Any], expected_revision: int | None) -> tuple[int, dict[str, Any]]:
+    """单项目整树保存（兼容入口）：返回 (revision, summary)。"""
+    revision, summary, _spawned = write_project_with_occurrences(project, expected_revision)
+    return revision, summary
+
+
+def write_project_with_occurrences(project: dict[str, Any], expected_revision: int | None
+                                   ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+    """整树保存，并按"完成翻转"生成周期任务的下一次（返回 [{'parentId','node'}]）。
+
+    服务端是"下一次"的唯一生成者：前端只提交改动，不再自己克隆。副本在同一事务里
+    随整棵树一起写进去，revision 只前进一次。
+    """
     stored = {key: value for key, value in project.items() if not str(key).startswith("_")}
     encoded = _json(stored).encode("utf-8")
     if len(encoded) > MAX_PROJECT_PAYLOAD_BYTES:
@@ -2576,12 +2433,16 @@ def write_project(project: dict[str, Any], expected_revision: int | None) -> tup
                     raise StateConflictError("项目已经被删除，请刷新页面后重试")
                 current_revision = 0
                 position = int(connection.execute("SELECT COALESCE(MAX(position),-1)+1 FROM projects").fetchone()[0])
+            previous_completed = {str(item["node_id"]): bool(item["completed"])
+                                  for item in connection.execute(
+                                      "SELECT node_id,completed FROM nodes WHERE project_id=?", (project_id,))}
+            spawned = _spawn_for_flips(stored, previous_completed)
             next_revision = current_revision + 1
             now = datetime.now().isoformat(timespec="seconds")
             _upsert_project(connection, stored, position, next_revision, now)
         summary = project_summary(stored)
         summary["_revision"] = next_revision
-        return next_revision, summary
+        return next_revision, summary, spawned
 
 
 def delete_project(project_id: Any, expected_revision: int) -> dict[str, Any]:
@@ -2770,92 +2631,10 @@ def checkpoint_database() -> None:
         print(f"Unable to checkpoint SQLite database: {error}", file=sys.stderr)
 
 
-def read_asset(key: str) -> tuple[bytes, str, str] | None:
-    with _database_lock, open_state_database() as connection:
-        row = connection.execute("SELECT payload,mime_type,file_name FROM app_asset WHERE key=?", (key,)).fetchone()
-    return (bytes(row[0]), row[1], row[2]) if row else None
-
-
-def write_asset(key: str, payload: bytes, mime_type: str, file_name: str) -> None:
-    with _database_lock:
-        with open_state_database() as connection:
-            connection.execute(
-                """INSERT INTO app_asset(key,payload,mime_type,file_name,updated_at) VALUES(?,?,?,?,?)
-                ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,mime_type=excluded.mime_type,
-                file_name=excluded.file_name,updated_at=excluded.updated_at""",
-                (key, payload, mime_type, file_name, datetime.now().isoformat(timespec="seconds")),
-            )
-
-
-def delete_asset(key: str) -> None:
-    with _database_lock:
-        with open_state_database() as connection:
-            connection.execute("DELETE FROM app_asset WHERE key=?", (key,))
-
-
 BATCH_ACTIONS = {
     "set-priority", "add-tags", "remove-tags", "set-due", "shift-due",
     "set-estimate", "complete", "uncomplete",
 }
-
-
-def _row_to_view(row: sqlite3.Row) -> dict[str, Any]:
-    try:
-        payload = json.loads(row["payload"])
-    except (TypeError, json.JSONDecodeError):
-        payload = {}
-    return {
-        "id": str(row["view_id"]),
-        "name": str(row["name"]),
-        "payload": payload if isinstance(payload, dict) else {},
-        "createdAt": str(row["created_at"]),
-        "updatedAt": str(row["updated_at"]),
-    }
-
-
-def list_saved_views() -> list[dict[str, Any]]:
-    with _database_lock, open_state_database() as connection:
-        rows = connection.execute(
-            "SELECT view_id,name,payload,created_at,updated_at FROM saved_views ORDER BY name"
-        ).fetchall()
-    return [_row_to_view(row) for row in rows]
-
-
-def save_saved_view(name: Any, payload: Any) -> dict[str, Any]:
-    """按名称 upsert：同名视图直接覆盖，避免存出一堆重复项。"""
-    view_name = str(name or "").strip()[:60]
-    if not view_name:
-        raise ValueError("视图名称不能为空")
-    if not isinstance(payload, dict):
-        raise ValueError("视图内容格式不正确")
-    encoded = _json(payload)
-    if len(encoded.encode("utf-8")) > 64 * 1024:
-        raise ValueError("视图内容过大")
-    now = _now()
-    with _database_lock, open_state_database() as connection:
-        row = connection.execute("SELECT view_id FROM saved_views WHERE name=?", (view_name,)).fetchone()
-        if row:
-            connection.execute(
-                "UPDATE saved_views SET payload=?, updated_at=? WHERE view_id=?",
-                (encoded, now, row["view_id"]),
-            )
-            view_id = str(row["view_id"])
-        else:
-            view_id = str(uuid.uuid4())
-            connection.execute(
-                "INSERT INTO saved_views(view_id,name,payload,created_at,updated_at) VALUES(?,?,?,?,?)",
-                (view_id, view_name, encoded, now, now),
-            )
-        saved = connection.execute(
-            "SELECT view_id,name,payload,created_at,updated_at FROM saved_views WHERE view_id=?", (view_id,)
-        ).fetchone()
-    return _row_to_view(saved)
-
-
-def delete_saved_view(view_id: Any) -> bool:
-    with _database_lock, open_state_database() as connection:
-        cursor = connection.execute("DELETE FROM saved_views WHERE view_id=?", (str(view_id),))
-    return cursor.rowcount > 0
 
 
 def _shift_iso_date(base_iso: str, days: int) -> str:
@@ -2936,10 +2715,40 @@ def _apply_batch_action(node: dict[str, Any], action: str, value: Any, today: st
     raise ValueError("不支持的批量操作：" + str(action))
 
 
-def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[str, Any]]) -> int:
-    """批量完成周期任务时，在同一个父节点下生成下一次出现。"""
+def _next_occurrence_clone(node: dict[str, Any]) -> dict[str, Any] | None:
+    """按周期规则生成"下一次"的节点副本；规则非法或已到 until 就返回 None。
+
+    整树保存、批量完成、节点 patch 三条写路径共用这一份实现（前端不再自己克隆）。
+    """
+    rule = clean_repeat(node.get("repeat"))
+    if not rule:
+        return None
+    next_due = next_repeat_due(rule, clean_due_date(node.get("dueDate")) or date.today().isoformat())
+    if not next_due:
+        return None
+    clone = json.loads(json.dumps(node))
+    clone["id"] = str(uuid.uuid4())
+    clone["completed"] = False
+    clone["completedAt"] = None
+    clone["dueDate"] = next_due
+    clone["assessment"] = None
+    clone["assessmentHistory"] = 0
+    # 不能连 children 一起深拷贝：子节点 id 会重复，_flatten_nodes 会抛
+    # "节点 ID 重复" 让整批事务回滚。周期任务的下一次只复制任务本身。
+    clone["children"] = []
+    clone.pop("review", None)
+    return clone
+
+
+def _spawn_occurrences(project: dict[str, Any], completed_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """完成周期任务时，在同一个父节点下生成"下一次"，返回 [{parentId, node}]。
+
+    只改内存里的树；写库交给调用方（整树保存直接写整棵树，patch 只插新行）。
+    """
+    spawned: list[dict[str, Any]] = []
     if not completed_nodes:
-        return 0
+        return spawned
+
     def find_parent(nodes: list[dict[str, Any]], target_id: str | None) -> list[dict[str, Any]] | None:
         if target_id is None:
             return nodes
@@ -2967,14 +2776,10 @@ def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[
                 return True, result_parent
         return False, None
 
-    spawned = 0
     tree = project.setdefault("tree", [])
     for node in completed_nodes:
-        rule = clean_repeat(node.get("repeat"))
-        if not rule:
-            continue
-        next_due = next_repeat_due(rule, clean_due_date(node.get("dueDate")) or date.today().isoformat())
-        if not next_due:
+        clone = _next_occurrence_clone(node)
+        if clone is None:
             continue
         found, parent_id = locate_parent(tree, str(node.get("id")))
         if not found:
@@ -2984,20 +2789,54 @@ def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[
         siblings = find_parent(tree, parent_id)
         if siblings is None:
             continue
-        clone = json.loads(json.dumps(node))
-        clone["id"] = str(uuid.uuid4())
-        clone["completed"] = False
-        clone["completedAt"] = None
-        clone["dueDate"] = next_due
-        clone["assessment"] = None
-        clone["assessmentHistory"] = 0
-        # 不能连 children 一起深拷贝：子节点 id 会重复，_flatten_nodes 会抛
-        # "节点 ID 重复" 让整批事务回滚。周期任务的下一次只复制任务本身。
-        clone["children"] = []
-        clone.pop("review", None)
         siblings.append(clone)
-        spawned += 1
+        spawned.append({"parentId": parent_id, "node": clone})
     return spawned
+
+
+def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[str, Any]]) -> int:
+    """兼容入口：只要生成数量（批量完成接口用它做统计）。"""
+    return len(_spawn_occurrences(project, completed_nodes))
+
+
+def _spawn_for_flips(project: dict[str, Any],
+                     previous_completed: dict[str, bool]) -> list[dict[str, Any]]:
+    """整树保存路径：按"库里还没完成 → 这次提交已完成"的翻转生成下一次。
+
+    新出现的节点（库里没有）不算"完成了一次"，避免新建/导入时凭空生成副本。
+    """
+    flipped: list[dict[str, Any]] = []
+    for node in _walk_nodes(project.get("tree") or []):
+        if node.get("type") != "item":
+            continue
+        node_id = str(node.get("id"))
+        was = previous_completed.get(node_id)
+        if was is None or was:
+            continue
+        if node.get("completed"):
+            flipped.append(node)
+    return _spawn_occurrences(project, flipped)
+
+
+def _insert_spawned_nodes(connection: sqlite3.Connection, project_key: str,
+                          spawned: list[dict[str, Any]]) -> None:
+    """把生成出来的"下一次"按行插入（与 append op 同一条路径，不做整树重建）。"""
+    for entry in spawned:
+        node = entry.get("node")
+        if not isinstance(node, dict):
+            continue
+        parent_id = entry.get("parentId")
+        parent_key = str(parent_id) if parent_id not in (None, "") else None
+        rows = _flatten_nodes(project_key, [node], parent_key)
+        if not rows:
+            continue
+        next_position = int(connection.execute(
+            "SELECT COALESCE(MAX(position),-1)+1 FROM nodes WHERE project_id=? AND parent_id IS ?",
+            (project_key, parent_key)).fetchone()[0])
+        for offset, flat in enumerate(rows):
+            flat["position"] = next_position + offset
+            flat["assessment"] = flat.get("assessment")
+            _insert_node_row(connection, flat)
 
 
 _BATCH_ACTION_NAMES = {
@@ -3039,6 +2878,7 @@ def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str
     today = date.today().isoformat()
     changed = 0
     spawned_total = 0
+    spawned_detail: list[dict[str, Any]] = []
     failed: list[dict[str, str]] = []
     projects_touched: list[str] = []
     with _database_lock:
@@ -3073,7 +2913,9 @@ def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str
                     for node in marks:
                         if not node.get("optional") and not node.get("review"):
                             node["review"] = {"due": review_due, "learning": False, "log": []}
-                spawned = _spawn_next_occurrences(project, marks)
+                spawned_items = _spawn_occurrences(project, marks)
+                spawned = len(spawned_items)
+                spawned_detail.extend(spawned_items)
                 _upsert_project(connection, project, position(connection, project_id), revision + 1, now)
                 log_activity(
                     "batch", f"批量{_BATCH_ACTION_NAMES.get(action, action)} {applied} 项",
@@ -3090,6 +2932,7 @@ def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str
     return {
         "changed": changed,
         "spawned": spawned_total,
+        "spawnedItems": spawned_detail,
         "failed": failed,
         "projects": [summary for summary in summaries if str(summary.get("id")) in set(projects_touched)],
     }
@@ -3451,7 +3294,10 @@ def duplicate_project(project_id: Any, *, name: str | None = None,
 PATCH_NODE_FIELDS: dict[str, Any] = {
     "text": lambda value: str(value or "").strip()[:500] or "未命名任务",
     "completed": lambda value: int(bool(value)),
-    "completedAt": lambda value: (str(value)[:40] if value else None),
+    # 空值必须写成 ""：列是 TEXT NOT NULL DEFAULT ''（整树写入用 str(... or "")）。
+    # 以前这里写 None，于是"取消完成 / 未完成任务的验收草稿"这类 patch 一定撞
+    # NOT NULL，被前端静默回退成整树保存（白丢 patch 路径）。
+    "completedAt": lambda value: (str(value)[:40] if value else ""),
     "optional": lambda value: int(bool(value)),
     "assessmentRequired": lambda value: int(bool(value)),
     "assessmentHistory": lambda value: max(0, int(value or 0)),
@@ -3542,6 +3388,9 @@ def patch_project_nodes(project_id: Any, expected_revision: Any, ops: Any) -> di
             current_revision = int(base["revision"])
             if expected_revision is not None and int(expected_revision) != current_revision:
                 raise StateConflictError(f"项目已被其他页面更新（当前版本 {current_revision}）")
+            previous_completed = {str(item["node_id"]): bool(item["completed"])
+                                  for item in connection.execute(
+                                      "SELECT node_id,completed FROM nodes WHERE project_id=?", (project_key,))}
             for op in ops:
                 if not isinstance(op, dict):
                     raise ValueError("节点改动格式不正确")
@@ -3628,6 +3477,20 @@ def patch_project_nodes(project_id: Any, expected_revision: Any, ops: Any) -> di
                     deleted.append(node_id)
                 else:
                     raise ValueError("不支持的节点操作：" + (kind or "(空)"))
+            # 服务端是周期任务"下一次"的唯一生成者：patch 里"未完成 → 完成"的节点也要补副本。
+            # 只有真的发生翻转时才读一次树（定位父节点/复制字段），普通 patch 仍是 O(改动数)。
+            flipped_ids = [node_id for node_id in updated if not previous_completed.get(node_id, True)]
+            spawned: list[dict[str, Any]] = []
+            if flipped_ids:
+                current = _read_project_from_connection(connection, project_key)
+                if current:
+                    tree_project = current[0]
+                    nodes_by_id = {str(node.get("id")): node
+                                   for node in _walk_nodes(tree_project.get("tree") or [])}
+                    flipped = [nodes_by_id[node_id] for node_id in flipped_ids
+                               if node_id in nodes_by_id and nodes_by_id[node_id].get("completed")]
+                    spawned = _spawn_occurrences(tree_project, flipped)
+                    _insert_spawned_nodes(connection, project_key, spawned)
             revision = current_revision + 1
             summary = _summary_from_sql(connection, project_key, base)
             connection.execute(
@@ -3638,7 +3501,8 @@ def patch_project_nodes(project_id: Any, expected_revision: Any, ops: Any) -> di
                              project_name=str(base["name"]),
                              detail=activity_node_ids(deleted), connection=connection)
     return {"projectId": project_key, "revision": revision, "summary": summary,
-            "updated": updated, "appended": appended, "deleted": deleted}
+            "updated": updated, "appended": appended, "deleted": deleted,
+            "spawned": spawned}
 
 
 def describe_node_delete(project_id: Any, node_id: Any) -> dict[str, Any]:

@@ -24,12 +24,10 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-backup-test-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "summary.sqlite3")
 
 import backup_service  # noqa: E402
 import memo_storage  # noqa: E402
 import storage  # noqa: E402
-import summary_storage  # noqa: E402
 
 BACKUP_DIR = Path(backup_service.BACKUP_DIR)
 
@@ -61,18 +59,15 @@ class FullBackupTests(unittest.TestCase):
         # 必须按各模块真正使用的路径清：以前用的是本模块自己的 _TEMP_DIR，
         # 而 tests/__init__.py 早就把 TODO_* 钉到共用的临时目录了 —— 等于什么都没清，
         # 于是"memo 计数"这类断言会依赖前一个测试模块留下多少数据。
-        for database in (storage.DATABASE_FILE, memo_storage.MEMO_DATABASE_FILE,
-                         summary_storage.SUMMARY_DATABASE_FILE):
+        for database in (storage.DATABASE_FILE, memo_storage.MEMO_DATABASE_FILE):
             for suffix in ("", "-wal", "-shm"):
                 Path(f"{database}{suffix}").unlink(missing_ok=True)
         with storage.open_state_database() as connection:
             connection.execute(f"PRAGMA user_version={storage.SCHEMA_VERSION}")
         storage.ensure_schema()
         memo_storage.initialize()
-        summary_storage.initialize()
         storage.replace_projects([make_project("p1", "项目一")])
         memo_storage.write_memo({"title": "备忘", "content": "很长的正文" * 50, "pinned": False})
-        summary_storage.upsert_summary("题目", "摘要内容")
 
     def test_create_writes_manifest_with_checksums(self) -> None:
         name = backup_service.create_full_backup("manual")
@@ -81,14 +76,13 @@ class FullBackupTests(unittest.TestCase):
         self.assertTrue(path.is_file())
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
-            self.assertEqual(names, {"todo.sqlite3", "memo.sqlite3", "summary.sqlite3", "manifest.json"})
+            self.assertEqual(names, {"todo.sqlite3", "memo.sqlite3", "manifest.json"})
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         self.assertEqual(manifest["format"], backup_service.BACKUP_FORMAT_VERSION)
         self.assertEqual(manifest["appSchemaVersion"], storage.SCHEMA_VERSION)
         self.assertEqual(manifest["counts"]["projects"], 1)
         self.assertEqual(manifest["counts"]["memos"], 2)   # initialize() 的占位 + 新建的
-        self.assertEqual(manifest["counts"]["summaries"], 1)
-        for file_name in ("todo.sqlite3", "memo.sqlite3", "summary.sqlite3"):
+        for file_name in ("todo.sqlite3", "memo.sqlite3"):
             self.assertEqual(len(manifest["files"][file_name]["sha256"]), 64)
             self.assertGreater(manifest["files"][file_name]["bytes"], 0)
 
@@ -122,16 +116,39 @@ class FullBackupTests(unittest.TestCase):
         name = backup_service.create_full_backup("manual")
         revision = storage.read_project_summaries()[0]["_revision"]
         storage.delete_project("p1", revision)
-        summary_storage.clear_summaries()
+        # 只删测试自己建的那条：delete_memo 清空后会补一条占位备忘录（产品行为）
+        seeded = next(memo for memo in memo_storage.list_memo_summaries() if memo["title"] == "备忘")
+        memo_storage.delete_memo(seeded["id"], memo_storage.read_memo(seeded["id"])["revision"])
         self.assertEqual(storage.read_project_summaries(), [])
-        self.assertEqual(summary_storage.list_summaries(), [])
+        self.assertEqual([memo["title"] for memo in memo_storage.list_memo_summaries()], ["未命名备忘录"])
 
         result = backup_service.restore_full_backup(name)
 
         self.assertEqual(result["kind"], "full")
         self.assertEqual([item["name"] for item in storage.read_project_summaries()], ["项目一"])
-        self.assertEqual(len(summary_storage.list_summaries()), 1)
+        self.assertIn("备忘", [memo["title"] for memo in memo_storage.list_memo_summaries()])
         self.assertTrue(result["emergency"].endswith(".zip"))
+
+    def test_old_three_database_backup_still_restorable(self) -> None:
+        """摘要库取消后，**旧的三库备份**必须仍能恢复：只替换现在认识的两个库。
+
+        老备份（daily-*.zip 等）里带着 summary.sqlite3；恢复逻辑按 DATABASE_FILES 取文件，
+        所以多出来的成员会被安全忽略，而不是报错或把它写到别处。
+        """
+        fake_summary = BACKUP_DIR / "legacy-summary.sqlite3"
+        with sqlite3.connect(fake_summary) as connection:
+            connection.execute("CREATE TABLE summaries(summary_id TEXT PRIMARY KEY)")
+        name = backup_service.create_full_backup("legacy", include_databases={
+            "todo.sqlite3": Path(storage.DATABASE_FILE),
+            "memo.sqlite3": Path(memo_storage.MEMO_DATABASE_FILE),
+            "summary.sqlite3": fake_summary,
+        })
+        preview = backup_service.describe_backup(name)
+        self.assertEqual(sorted(preview["files"] and [item["name"] for item in preview["files"]]),
+                         ["memo.sqlite3", "summary.sqlite3", "todo.sqlite3"])
+        result = backup_service.restore_full_backup(name)
+        self.assertEqual(sorted(result["restored"]), ["memo.sqlite3", "todo.sqlite3"])
+        self.assertEqual([item["name"] for item in storage.read_project_summaries()], ["项目一"])
 
     def test_restore_failure_rolls_back(self) -> None:
         good = backup_service.create_full_backup("manual")

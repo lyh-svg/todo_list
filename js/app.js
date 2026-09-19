@@ -65,9 +65,6 @@ const openKnowledgeBtn = document.getElementById('openKnowledgeBtn');
 // 复习页的模块下拉和知识点库共用这一份 /api/review/points 结果（见 showKnowledgeLibrary）。
 let knowledgePoints = [];
     const exportBtn = document.getElementById('exportBtn');
-    const viewBar = document.getElementById('viewBar');
-    const viewChips = document.getElementById('viewChips');
-    const saveViewBtn = document.getElementById('saveViewBtn');
     const nodePriorityFilter = document.getElementById('nodePriorityFilter');
     const nodeDueFilter = document.getElementById('nodeDueFilter');
     const nodeTagFilter = document.getElementById('nodeTagFilter');
@@ -77,23 +74,15 @@ let knowledgePoints = [];
     const undoBtn = document.getElementById('undoBtn');
     const redoBtn = document.getElementById('redoBtn');
     const duplicateProjectBtn = document.getElementById('duplicateProjectBtn');
-    const saveTemplateBtn = document.getElementById('saveTemplateBtn');
     const templateSelect = document.getElementById('templateSelect');
     const createFromTemplateBtn = document.getElementById('createFromTemplateBtn');
     const exportMarkdownBtn = document.getElementById('exportMarkdownBtn');
     const exportCsvBtn = document.getElementById('exportCsvBtn');
-    const runAutoArchiveBtn = document.getElementById('runAutoArchiveBtn');
     const trashRetentionInput = document.getElementById('trashRetentionInput');
     const reviewDailyLimitInput = document.getElementById('reviewDailyLimitInput');
     const reviewNewPerDayInput = document.getElementById('reviewNewPerDayInput');
-    const autoArchiveDaysInput = document.getElementById('autoArchiveDaysInput');
-    const autoArchiveToggle = document.getElementById('autoArchiveToggle');
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
     const settingsStatus = document.getElementById('settingsStatus');
-    const templateList = document.getElementById('templateList');
-    const activityList = document.getElementById('activityList');
-    const refreshActivityBtn = document.getElementById('refreshActivityBtn');
-    const clearActivityBtn = document.getElementById('clearActivityBtn');
     const batchToolbar = document.getElementById('batchToolbar');
     const workbenchView = document.getElementById('workbenchView');
     const workbenchBody = document.getElementById('workbenchBody');
@@ -115,16 +104,11 @@ let knowledgePoints = [];
         });
     }
     const importInput = document.getElementById('importInput');
-    const backgroundInput = document.getElementById('backgroundInput');
-    const resetBackgroundBtn = document.getElementById('resetBackgroundBtn');
     const databaseBackupSelect = document.getElementById('databaseBackupSelect');
     const backupPicker = document.getElementById('backupPicker');
     const databaseBackupPickerButton = document.getElementById('databaseBackupPickerButton');
     const databaseBackupMenu = document.getElementById('databaseBackupMenu');
-    const renameDatabaseBackupBtn = document.getElementById('renameDatabaseBackupBtn');
     const downloadDatabaseBackupBtn = document.getElementById('downloadDatabaseBackupBtn');
-    const inspectDatabaseBackupBtn = document.getElementById('inspectDatabaseBackupBtn');
-    const createDatabaseBackupBtn = document.getElementById('createDatabaseBackupBtn');
     const restoreDatabaseBackupBtn = document.getElementById('restoreDatabaseBackupBtn');
     const toast = document.getElementById('toast');
     const toastMessage = document.getElementById('toastMessage');
@@ -164,8 +148,6 @@ let knowledgePoints = [];
     const extraCount = document.getElementById('extraCount');
     const extraConfirmBtn = document.getElementById('extraConfirmBtn');
     const extraCancelBtn = document.getElementById('extraCancelBtn');
-    const summaryQuestionBtn = document.getElementById('summaryQuestionBtn');
-    const openSummaryBtn = document.getElementById('openSummaryBtn');
     const assessmentFileHint = document.getElementById('assessmentFileHint');
     const assessmentTemplateConclusionBtn = document.getElementById('assessmentTemplateConclusionBtn');
     const assessmentTemplateExplainBtn = document.getElementById('assessmentTemplateExplainBtn');
@@ -178,8 +160,6 @@ let knowledgePoints = [];
     // 收集箱是系统保留项目（服务端 INBOX_PROJECT_ID），不能归档：归档后工作台里
     // 看不到它，可快速添加仍然往里写，等于把任务丢进看不见的地方。
     const INBOX_PROJECT_ID = 'inbox';
-    const MAX_BACKGROUND_FILE_SIZE = 25 * 1024 * 1024;
-    const MAX_BACKGROUND_DIMENSION = 2560;
     const HEARTBEAT_INTERVAL_MS = 30 * 1000;
     const SAVE_DEBOUNCE_MS = 250;
     const MAX_CONVERSATION_MESSAGES = 12;
@@ -212,7 +192,6 @@ let knowledgePoints = [];
     let saveWaiters = [];
     let toastTimer = null;
     let toastActionHandler = null;
-    let backgroundObjectUrl = null;
     let assessmentNode = null;
     let assessmentSubmitting = false;
     let assessmentQuestioning = false;
@@ -237,8 +216,6 @@ let knowledgePoints = [];
     const projectFilters = { query: '', status: 'all' };
     const nodeFilters = { query: '', status: 'all', priority: 'all', due: 'all', tag: '' };
     const batchState = { active: false, selected: new Set() };
-    let savedViews = [];
-    let savedViewsError = '';
 
     function initializeSessionToken() {
         const tokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
@@ -295,21 +272,15 @@ let knowledgePoints = [];
     function setNodeCompleted(node, completed) {
         // 判空必须放在第一行：以前它写在三处 node.X 读写之后，node 为 null 时上面早就抛了，
         // 守卫只是看着像防御，实际是死代码。
-        if (!node) return { spawned: null, project: null };
-        // 记住原状态：只有"未完成 → 完成"这一次才生成下一次周期任务。
-        // 否则对已完成的周期任务反复点（分组复选框会把整棵子树再标一遍）会指数级复制。
-        const wasCompleted = Boolean(node.completed);
+        if (!node) return { project: null };
         node.completed = Boolean(completed);
         node.completedAt = node.completed ? new Date().toISOString() : null;
         // 容器（周/单元）到这里就收工：它自己的完成标记必须照写（分组复选框与空单元的显示都靠它），
         // 但周期任务与复习安排只对任务生效。
-        if (node.type !== 'item') return { spawned: null, project: null };
+        if (node.type !== 'item') return { project: null };
         const project = owningProjectOfNode(node);
-        let spawned = null;
-        if (node.completed && !wasCompleted && node.repeat) {
-            spawned = project ? spawnNextOccurrence(project, node) : null;
-            if (spawned) showToast(`周期任务：已生成下一次（${spawned.dueDate}）`);
-        }
+        // 周期任务的"下一次"由服务端生成（保存响应里带回来，见 applySpawnedOccurrences）：
+        // 前端不再自己克隆，避免两套规则各写一遍（Q13）。
         if (node.completed) {
             if (project && projectAutoReview(project) && !node.optional && !node.review) {
                 node.review = { due: addDaysToIso(todayStr(), 1), learning: false,
@@ -319,7 +290,7 @@ let knowledgePoints = [];
             delete node.review;
         }
         markProjectDirty(project);
-        return { spawned, project };
+        return { project };
     }
 
     function addDaysToIso(baseIso, days) {
@@ -952,32 +923,6 @@ let knowledgePoints = [];
         });
     }
 
-    async function readStoredBackground() {
-        const response = await apiFetch('/api/background', { cache: 'no-store' });
-        if (response.status === 404) return null;
-        if (!response.ok) throw new Error('读取背景图片失败');
-        return {
-            blob: await response.blob(),
-            fileName: decodeURIComponent(response.headers.get('X-File-Name') || 'background')
-        };
-    }
-
-    async function writeStoredBackground(blob, fileName) {
-        const response = await apiFetch(
-            `/api/background?name=${encodeURIComponent(fileName)}&type=${encodeURIComponent(blob.type || 'application/octet-stream')}`,
-            { method: 'POST', body: blob }
-        );
-        if (!response.ok) {
-            const payload = await response.json().catch(() => ({}));
-            throw new Error(payload.error || '保存背景图片失败，请重试');
-        }
-    }
-
-    async function deleteStoredBackground() {
-        const response = await apiFetch('/api/background', { method: 'DELETE' });
-        if (!response.ok) throw new Error('删除背景图片失败');
-    }
-
     function normalizeAssessment(value) {
         if (!value || typeof value !== 'object') return null;
         const assessment = { ...value };
@@ -1138,39 +1083,6 @@ let knowledgePoints = [];
         };
     }
 
-    // 纯函数：找出导入 JSON 里的重复 ID。节点 ID 按项目作用域校验（与服务端一致）。
-    function findImportDuplicateIds(projects) {
-        const problems = [];
-        const projectIds = new Map();
-        (projects || []).forEach((project, index) => {
-            if (!project || typeof project !== 'object') return;
-            const name = String(project.name || `第 ${index + 1} 个项目`);
-            const projectId = project.id;
-            if (projectId !== undefined && projectId !== null && String(projectId).trim() !== '') {
-                const key = String(projectId);
-                if (projectIds.has(key)) problems.push(`重复项目 ID：${key}（“${projectIds.get(key)}”与“${name}”）`);
-                else projectIds.set(key, name);
-            }
-            const seenNodes = new Set();
-            const walk = (nodes, path) => {
-                for (const node of nodes || []) {
-                    if (!node || typeof node !== 'object') continue;
-                    const label = String(node.text || node.type || '未命名节点');
-                    const nodePath = path ? `${path} / ${label}` : label;
-                    const nodeId = node.id;
-                    if (nodeId !== undefined && nodeId !== null && String(nodeId).trim() !== '') {
-                        const key = String(nodeId);
-                        if (seenNodes.has(key)) problems.push(`重复节点 ID：${nodePath}（${key}）`);
-                        else seenNodes.add(key);
-                    }
-                    walk(node.children, nodePath);
-                }
-            };
-            walk(project.tree, name);
-        });
-        return problems;
-    }
-
     function extractProjects(payload) {
         if (Array.isArray(payload)) return payload;
         if (payload && Array.isArray(payload.projects)) {
@@ -1291,7 +1203,12 @@ let knowledgePoints = [];
                         continue;
                     }
                     const snapshot = currentSnapshotById.get(projectId);
-                    rememberSavedProjectState(project, snapshot.json, snapshot.seq);
+                    const spawnedCount = applySpawnedOccurrences(project, payload.spawned);
+                    // 拼进了服务端生成的副本 → 基线要用"拼完之后的树"，但序号仍用发送那一刻的，
+                    // 这样请求期间用户新改的东西依旧是"未保存"。
+                    rememberSavedProjectState(project, spawnedCount
+                        ? projectStateJson(serializeProject(project))
+                        : snapshot.json, snapshot.seq);
                     dirtyProjectIds.delete(projectId);
                     if (current) {
                         current._revision = Number(payload.revision) || expectedRevision + 1;
@@ -1697,105 +1614,6 @@ let knowledgePoints = [];
         saveStatus.classList.toggle('error', state === 'error');
     }
 
-    function loadImageFromBlob(blob) {
-        return new Promise((resolve, reject) => {
-            const url = URL.createObjectURL(blob);
-            const image = new Image();
-            image.onload = () => {
-                URL.revokeObjectURL(url);
-                resolve(image);
-            };
-            image.onerror = () => {
-                URL.revokeObjectURL(url);
-                reject(new Error('无法识别这张图片'));
-            };
-            image.src = url;
-        });
-    }
-
-    function canvasToBlob(canvas, type, quality) {
-        return new Promise(resolve => canvas.toBlob(resolve, type, quality));
-    }
-
-    async function prepareBackgroundImage(file) {
-        if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
-        if (file.size > MAX_BACKGROUND_FILE_SIZE) {
-            throw new Error('图片过大，请选择 25 MB 以内的图片');
-        }
-        const image = await loadImageFromBlob(file);
-        const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
-        const scale = Math.min(1, MAX_BACKGROUND_DIMENSION / longestSide);
-        const needsCompression = file.size > 2 * 1024 * 1024 || scale < 1;
-        if (!needsCompression) return file;
-
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-        const context = canvas.getContext('2d');
-        if (!context) throw new Error('浏览器无法压缩这张图片');
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        const compressed = await canvasToBlob(canvas, 'image/webp', 0.86);
-        if (!compressed) throw new Error('图片压缩失败');
-        return compressed.size < file.size ? compressed : file;
-    }
-
-    function applyBackground(blob) {
-        if (backgroundObjectUrl) URL.revokeObjectURL(backgroundObjectUrl);
-        backgroundObjectUrl = URL.createObjectURL(blob);
-        document.body.style.backgroundImage = `url("${backgroundObjectUrl}")`;
-        document.body.classList.add('custom-background');
-        resetBackgroundBtn.disabled = false;
-    }
-
-    function applyDefaultBackground() {
-        if (backgroundObjectUrl) {
-            URL.revokeObjectURL(backgroundObjectUrl);
-            backgroundObjectUrl = null;
-        }
-        document.body.style.removeProperty('background-image');
-        document.body.classList.remove('custom-background');
-        resetBackgroundBtn.disabled = true;
-    }
-
-    async function loadSavedBackground() {
-        resetBackgroundBtn.disabled = true;
-        try {
-            const saved = await readStoredBackground();
-            if (saved && saved.blob instanceof Blob) applyBackground(saved.blob);
-        } catch (error) {
-            console.warn('背景图片读取失败', error);
-            showToast('背景图片读取失败，请重试');
-        }
-    }
-
-    async function handleBackgroundUpload(file) {
-        if (!file) return;
-        try {
-            showToast('正在处理背景图片…');
-            const prepared = await prepareBackgroundImage(file);
-            await writeStoredBackground(prepared, file.name);
-            applyBackground(prepared);
-            const size = (prepared.size / 1024 / 1024).toFixed(1);
-            showToast(`背景已保存（${size} MB）`);
-        } catch (error) {
-            console.error('背景图片处理失败', error);
-            showToast(`背景设置失败：${error.message || '图片读取失败，请重试'}`);
-        } finally {
-            backgroundInput.value = '';
-        }
-    }
-
-    async function resetBackground() {
-        try {
-            await deleteStoredBackground();
-            applyDefaultBackground();
-            showToast('已恢复默认背景');
-        } catch (error) {
-            console.error('恢复默认背景失败', error);
-            showToast('恢复默认背景失败，请重试');
-        }
-    }
-
     function countRemainingInTree(nodes) {
         let count = 0;
         for (const node of nodes) {
@@ -2047,9 +1865,7 @@ let knowledgePoints = [];
     }
 
     function setBackupActionsEnabled(enabled) {
-        renameDatabaseBackupBtn.disabled = !enabled;
         downloadDatabaseBackupBtn.disabled = !enabled;
-        inspectDatabaseBackupBtn.disabled = !enabled;
         restoreDatabaseBackupBtn.disabled = !enabled;
     }
 
@@ -2062,47 +1878,6 @@ let knowledgePoints = [];
         const selected = databaseBackupSelect.options[databaseBackupSelect.selectedIndex];
         databaseBackupPickerButton.textContent = selected ? selected.textContent : '还没有数据库备份';
         setBackupActionsEnabled(Boolean(databaseBackupSelect.value));
-    }
-
-    async function createDatabaseBackupFromUi() {
-        try {
-            const response = await apiFetch('/api/backup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'create' })
-            });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '创建备份失败，请重试');
-            await loadDatabaseBackups();
-            databaseBackupSelect.value = payload.name;
-            updateBackupPickerLabel();
-            showToast(`已创建完整备份：${payload.name}`);
-        } catch (error) {
-            showToast(error.message || '创建数据库备份失败，请重试');
-        }
-    }
-
-    async function renameDatabaseBackupFromUi() {
-        const name = databaseBackupSelect.value;
-        if (!name) return;
-        const suggested = name.replace(/\.(sqlite3|zip)$/, '');
-        const newName = window.prompt('请输入新的备份名称（可不写 .sqlite3）：', suggested);
-        if (newName === null || !newName.trim()) return;
-        try {
-            const response = await apiFetch('/api/backup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'rename', name, newName: newName.trim() })
-            });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '重命名备份失败，请重试');
-            await loadDatabaseBackups();
-            databaseBackupSelect.value = payload.name;
-            updateBackupPickerLabel();
-            showToast(`已重命名备份：${payload.name}`);
-        } catch (error) {
-            showToast(error.message || '重命名备份失败，请重试');
-        }
     }
 
     async function deleteDatabaseBackupByName(name) {
@@ -2120,81 +1895,6 @@ let knowledgePoints = [];
             showToast(`已删除备份：${name}`);
         } catch (error) {
             showToast(error.message || '删除备份失败，请重试');
-        }
-    }
-
-    async function inspectBackup(name) {
-        const response = await apiFetch(`/api/backup/inspect?name=${encodeURIComponent(name)}`, { cache: 'no-store' });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.backup) throw new Error(payload.error || '读取备份内容失败，请重试');
-        return payload.backup;
-    }
-
-    async function inspectDatabaseBackupFromUi() {
-        const name = databaseBackupSelect.value;
-        if (!name) return;
-        showUtilityModal('备份内容', '恢复预览');
-        renderUtilityMessage('正在校验备份…');
-        let preview;
-        try {
-            preview = await inspectBackup(name);
-        } catch (error) {
-            renderUtilityMessage(error.message || '读取备份内容失败，请重试');
-            return;
-        }
-        utilityBody.innerHTML = '';
-        const list = document.createElement('div');
-        list.className = 'conflict-list';
-        const addRow = text => {
-            const row = document.createElement('div');
-            row.className = 'conflict-row';
-            row.textContent = text;
-            list.appendChild(row);
-        };
-        addRow(`备份：${preview.name}`);
-        addRow(preview.kind === 'legacy'
-            ? '格式：旧格式，只包含任务数据库（todo.sqlite3）'
-            : `格式：完整备份（任务 + 备忘录 + 摘要），生成于 ${preview.createdAt || '未知'}`);
-        if (preview.kind !== 'legacy') {
-            const counts = preview.counts || {};
-            addRow(`内容：项目 ${counts.projects ?? 0} · 节点 ${counts.nodes ?? 0} · 备忘录 ${counts.memos ?? 0} · 摘要 ${counts.summaries ?? 0}`);
-            addRow(`schema 版本：${preview.appSchemaVersion ?? '未知'}`);
-        }
-        (preview.files || []).forEach(file => addRow(`${file.ok ? '校验通过' : '校验失败'} · ${file.name}（${formatBytes(file.bytes || 0)}）`));
-        utilityBody.appendChild(list);
-        const actions = document.createElement('div');
-        actions.className = 'utility-actions';
-        const restore = document.createElement('button');
-        restore.type = 'button';
-        restore.className = 'utility-primary-btn';
-        restore.textContent = '恢复这个备份';
-        restore.disabled = !preview.checksumOk;
-        restore.addEventListener('click', () => resolveRestoreBackup(preview));
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'utility-secondary-btn';
-        close.textContent = '关闭';
-        close.addEventListener('click', closeUtilityModal);
-        actions.append(restore, close);
-        utilityBody.appendChild(actions);
-    }
-
-    async function resolveRestoreBackup(preview) {
-        const scope = preview.kind === 'legacy'
-            ? '任务数据库（todo.sqlite3）'
-            : '任务、备忘录、摘要三个数据库';
-        if (!window.confirm(`确认用“${preview.name}”覆盖${scope}？\n\n恢复前会自动生成一份完整应急备份；恢复后页面会重新加载。`)) return;
-        try {
-            const response = await apiFetch('/api/backup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'restore', name: preview.name })
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '恢复备份失败，请重试');
-            window.location.reload();
-        } catch (error) {
-            showToast(error.message || '恢复备份失败，请重试');
         }
     }
 
@@ -2432,7 +2132,7 @@ let knowledgePoints = [];
     }
 
     function setQuickDisabled(disabled) {
-        const els = [copyQuestionBtn, summaryQuestionBtn, extraQuestionBtn,
+        const els = [copyQuestionBtn, extraQuestionBtn,
             assessmentTemplateConclusionBtn, assessmentTemplateExplainBtn,
             assessmentTemplateCodeBtn];
         for (const el of els) {
@@ -3890,23 +3590,6 @@ let knowledgePoints = [];
             editor.appendChild(empty);
         }
         renderMemoList(list, editor);
-        const databaseTools = document.createElement('div');
-        databaseTools.className = 'memo-database-tools';
-        const exportButton = document.createElement('button');
-        exportButton.type = 'button';
-        exportButton.className = 'utility-secondary-btn';
-        exportButton.textContent = '导出备忘录数据库';
-        exportButton.addEventListener('click', downloadMemoDatabase);
-        const importLabel = document.createElement('label');
-        importLabel.className = 'utility-secondary-btn memo-import-label';
-        importLabel.textContent = '导入备忘录数据库';
-        const importInput = document.createElement('input');
-        importInput.type = 'file';
-        importInput.accept = '.sqlite3,.db,application/vnd.sqlite3';
-        importInput.addEventListener('change', () => importMemoDatabase(importInput.files?.[0]));
-        importLabel.appendChild(importInput);
-        databaseTools.append(exportButton, importLabel);
-        utilityBody.appendChild(databaseTools);
     }
 
     let editorFocusTitle = () => undefined;
@@ -3920,34 +3603,6 @@ let knowledgePoints = [];
             await renderMemoPanel();
         } catch (error) {
             renderUtilityMessage(error.message || '读取备忘录失败，请重试');
-        }
-    }
-
-    async function downloadMemoDatabase() {
-        try {
-            await downloadResponse(
-                await apiFetch('/api/memos/database-download', { cache: 'no-store' }),
-                'memo.sqlite3', '导出备忘录数据库失败');
-            showToast('已导出独立备忘录数据库');
-        } catch (error) {
-            showToast(error.message || '导出备忘录数据库失败，请重试');
-        }
-    }
-
-    async function importMemoDatabase(file) {
-        if (!file) return;
-        if (!window.confirm('导入会替换当前全部备忘录，项目数据库不会改变。确认继续？')) return;
-        try {
-            const response = await apiFetch('/api/memos/database-import', { method: 'POST', body: await file.arrayBuffer() });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !Array.isArray(payload.memos)) throw new Error(payload.error || '导入备忘录数据库失败，请重试');
-            memoState.memos = payload.memos;
-            memoState.selectedId = memoState.memos[0]?.id || null;
-            memoState.query = '';
-            renderMemoPanel();
-            showToast('已导入独立备忘录数据库');
-        } catch (error) {
-            showToast(error.message || '导入备忘录数据库失败，请重试');
         }
     }
 
@@ -4801,6 +4456,8 @@ let knowledgePoints = [];
         const payload = await run;
         project._revision = Number(payload.revision) || project._revision;
         if (payload.summary && payload.summary.stats) project.stats = payload.summary.stats;
+        // 服务端生成的"下一次"先拼回本地树，再刷基线（否则基线少了这条，下次又要全量保存）
+        applySpawnedOccurrences(project, payload.spawned);
         // 服务和内存现在一致：刷新"已保存"基线，免得下一次全量保存又整棵树重写
         if (Array.isArray(project.tree)) {
             rememberProjectBaseline(project);
@@ -4863,18 +4520,6 @@ let knowledgePoints = [];
             saveProjects();
         }
         return owner;
-    }
-
-    function findNodeParentIdIn(project, nodeId) {
-        const walk = (nodes, parent) => {
-            for (const entry of nodes || []) {
-                if (String(entry.id) === String(nodeId)) return parent ? String(parent.id) : null;
-                const found = walk(entry.children || [], entry);
-                if (found !== undefined && found !== null) return found;
-            }
-            return null;
-        };
-        return walk(project.tree || [], null);
     }
 
     async function restoreTrashItemById(trashId) {
@@ -5029,18 +4674,6 @@ let knowledgePoints = [];
 
     let templatesCache = [];
 
-    function countTemplateItems(tree) {
-        let count = 0;
-        const walk = (nodes) => {
-            (nodes || []).forEach(node => {
-                if (node.type === 'item') count += 1;
-                walk(node.children);
-            });
-        };
-        walk(tree);
-        return count;
-    }
-
     async function loadTemplates() {
         try {
             const response = await apiFetch('/api/templates', { cache: 'no-store' });
@@ -5052,7 +4685,6 @@ let knowledgePoints = [];
             console.warn('读取模板失败', error);
         }
         renderTemplateOptions();
-        renderTemplateList();
     }
 
     function renderTemplateOptions() {
@@ -5072,53 +4704,6 @@ let knowledgePoints = [];
         templateSelect.value = templatesCache.some(entry => entry.id === previous) ? previous : '';
     }
 
-    function renderTemplateList() {
-        if (!templateList) return;
-        templateList.replaceChildren();
-        if (templatesCache.length === 0) {
-            const empty = document.createElement('p');
-            empty.className = 'utility-empty';
-            empty.textContent = '还没有模板：可以在项目详情页点「存为模板」。';
-            templateList.appendChild(empty);
-            return;
-        }
-        templatesCache.forEach(entry => {
-            const row = document.createElement('div');
-            row.className = 'template-row';
-            const info = document.createElement('div');
-            info.className = 'template-info';
-            const name = document.createElement('strong');
-            name.textContent = entry.name + (entry.builtin ? '（内置）' : '');
-            const desc = document.createElement('small');
-            desc.textContent = (entry.description || '没有说明') + ` · ${countTemplateItems(entry.tree)} 个任务`;
-            info.append(name, desc);
-            const use = document.createElement('button');
-            use.type = 'button';
-            use.className = 'utility-secondary-btn';
-            use.textContent = '用它建项目';
-            use.addEventListener('click', () => createProjectFromTemplate(entry.id));
-            row.append(info, use);
-            if (!entry.builtin) {
-                const remove = document.createElement('button');
-                remove.type = 'button';
-                remove.className = 'utility-secondary-btn template-delete';
-                remove.textContent = '删除';
-                remove.addEventListener('click', async () => {
-                    if (!window.confirm(`删除模板「${entry.name}」？`)) return;
-                    try {
-                        await callApi(`/api/templates?id=${encodeURIComponent(entry.id)}`, 'DELETE');
-                        await loadTemplates();
-                        showToast('已删除模板');
-                    } catch (error) {
-                        showToast(error.message || '删除模板失败');
-                    }
-                });
-                row.appendChild(remove);
-            }
-            templateList.appendChild(row);
-        });
-    }
-
     async function createProjectFromTemplate(templateId, name) {
         try {
             const response = await apiFetch('/api/project/from-template', {
@@ -5134,22 +4719,6 @@ let knowledgePoints = [];
             showToast(`已用模板创建项目：${payload.project.name}`);
         } catch (error) {
             showToast(error.message || '用模板创建项目失败');
-        }
-    }
-
-    async function saveCurrentProjectAsTemplate() {
-        const project = getCurrentProject();
-        if (!project) return;
-        const name = window.prompt('模板名称（只保存结构，不带完成状态与 AI 历史）：',
-            `${project.name} 模板`);
-        if (name === null) return;
-        try {
-            await callApi('/api/templates', 'POST',
-                { projectId: project.id, name: name.slice(0, 60), description: project.description || '' });
-            await loadTemplates();
-            showToast('已存为模板（可在“更多工具 → 项目模板”里使用）');
-        } catch (error) {
-            showToast(error.message || '存为模板失败');
         }
     }
 
@@ -5192,11 +4761,7 @@ let knowledgePoints = [];
             reviewDailyLimitInput.value = String(reviewLimitValue === undefined || reviewLimitValue === null ? 10 : reviewLimitValue);
             const reviewNewValue = settings.reviewNewPerDay;
             reviewNewPerDayInput.value = String(reviewNewValue === undefined || reviewNewValue === null ? 2 : reviewNewValue);
-            autoArchiveDaysInput.value = String(settings.autoArchiveDays || 30);
-            autoArchiveToggle.checked = Boolean(settings.autoArchiveEnabled);
-            settingsStatus.textContent = `回收站保留 ${settings.trashRetentionDays} 天；`
-                + `自动归档${settings.autoArchiveEnabled ? '已开启' : '未开启'}`
-                + `（超过 ${settings.autoArchiveDays} 天没动且全部完成的项目会被归档；收集箱永不归档）。`;
+            settingsStatus.textContent = `回收站保留 ${settings.trashRetentionDays} 天。`;
         } catch (error) {
             settingsStatus.textContent = `读取设置失败：${error.message || ''}`;
         }
@@ -5209,84 +4774,12 @@ let knowledgePoints = [];
                     trashRetentionDays: Number(trashRetentionInput.value),
                     reviewDailyLimit: Number(reviewDailyLimitInput.value) || 10,
                     reviewNewPerDay: Number(reviewNewPerDayInput.value) || 0,
-                    autoArchiveDays: Number(autoArchiveDaysInput.value),
-                    autoArchiveEnabled: autoArchiveToggle.checked,
                 },
             });
             await loadSettings();
             showToast('设置已保存');
         } catch (error) {
             showToast(error.message || '保存设置失败');
-        }
-    }
-
-    async function runAutoArchiveFromUi() {
-        try {
-            const response = await apiFetch('/api/archive/auto', { method: 'POST' });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '自动归档失败');
-            await loadProjects();
-            renderProjects();
-            const count = (payload.archived || []).length;
-            showToast(count ? `已归档 ${count} 个已完成项目` : '没有需要归档的项目');
-        } catch (error) {
-            showToast(error.message || '自动归档失败');
-        }
-    }
-
-    async function loadActivity() {
-        if (!activityList) return;
-        try {
-            const response = await apiFetch('/api/activity?limit=50', { cache: 'no-store' });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '读取活动历史失败');
-            renderActivity(payload.entries || []);
-        } catch (error) {
-            activityList.replaceChildren();
-            const failed = document.createElement('p');
-            failed.className = 'utility-empty';
-            failed.textContent = `读取活动历史失败：${error.message || ''}`;
-            activityList.appendChild(failed);
-        }
-    }
-
-    function renderActivity(entries) {
-        activityList.replaceChildren();
-        if (entries.length === 0) {
-            const empty = document.createElement('p');
-            empty.className = 'utility-empty';
-            empty.textContent = '还没有活动记录。';
-            activityList.appendChild(empty);
-            return;
-        }
-        entries.forEach(entry => {
-            const row = document.createElement('div');
-            row.className = 'activity-row';
-            const time = document.createElement('span');
-            time.className = 'activity-time';
-            time.textContent = String(entry.at || '').replace('T', ' ').slice(5, 16);
-            const text = document.createElement('span');
-            text.className = 'activity-text';
-            text.textContent = `${entry.summary}${entry.projectName ? ' · ' + entry.projectName : ''}`;
-            row.append(time, text);
-            if (entry.undoable) {
-                const tag = document.createElement('span');
-                tag.className = 'activity-tag';
-                tag.textContent = '可撤销';
-                row.appendChild(tag);
-            }
-            activityList.appendChild(row);
-        });
-    }
-
-    async function clearActivityFromUi() {
-        if (!window.confirm('清空活动历史？（只清记录，不影响项目数据）')) return;
-        try {
-            await callApi('/api/activity', 'DELETE');
-            await loadActivity();
-            showToast('已清空活动历史');
-        } catch (error) {
-            showToast(error.message || '清空失败');
         }
     }
 
@@ -6227,11 +5720,8 @@ let knowledgePoints = [];
             const owner = outcome.project || owningProjectOfNode(node);
             markProjectDirty(owner);
             if (patchSafe && owner) {
+                // 只提交这一行的改动；"下一次"由服务端生成并在响应里回传
                 const ops = [{ op: 'update', nodeId: node.id, fields: nodeStateFields(node) }];
-                if (outcome.spawned) {
-                    ops.push({ op: 'append', parentId: findNodeParentIdIn(owner, node.id),
-                               node: outcome.spawned });
-                }
                 await saveNodeChange(owner, ops, () => saveProjects());
                 // patch 路径下服务端已完成，重绘一次让统计/父节点状态跟上
                 refreshAfterToggle(owner, node);
@@ -7427,6 +6917,32 @@ let knowledgePoints = [];
         return draft;
     }
 
+    // 服务端是周期任务"下一次"的唯一生成者：保存响应里带回来的副本在这里拼回本地树，
+    // 用户立刻能看到它（旧实现是前端自己克隆一份，两套规则容易走偏）。
+    function applySpawnedOccurrences(project, spawned) {
+        if (!project || !Array.isArray(project.tree) || !Array.isArray(spawned) || spawned.length === 0) {
+            return 0;
+        }
+        let applied = 0;
+        for (const entry of spawned) {
+            const node = entry && entry.node;
+            if (!node || !node.id) continue;
+            const parentId = entry.parentId === undefined || entry.parentId === null
+                ? null : String(entry.parentId);
+            const siblings = parentId === null ? project.tree : findParentList(project.tree, parentId);
+            if (!siblings) continue;
+            if (siblings.some(item => String(item.id) === String(node.id))) continue;
+            siblings.push(node);
+            applied += 1;
+            showToast(`周期任务：已生成下一次（${node.dueDate || ''}）`);
+        }
+        if (applied && currentProjectId && String(currentProjectId) === String(project.id)
+            && !document.querySelector('#detailView input.edit-input')) {
+            renderDetail();
+        }
+        return applied;
+    }
+
     function findParentList(nodes, targetId, parent = null) {
         for (const node of nodes || []) {
             if (String(node.id) === String(targetId)) return parent || nodes;
@@ -7434,26 +6950,6 @@ let knowledgePoints = [];
             if (found) return found;
         }
         return null;
-    }
-
-    function spawnNextOccurrence(project, node) {
-        const rule = cleanRepeat(node.repeat);
-        if (!rule) return null;
-        const nextDue = nextRepeatDue(rule, node.dueDate || todayStr());
-        if (!nextDue) return null;
-        const siblings = findParentList(project.tree || [], node.id);
-        if (!siblings) return null;
-        const clone = cloneData(node);
-        clone.id = generateId();
-        clone.completed = false;
-        clone.completedAt = null;
-        clone.dueDate = nextDue;
-        clone.assessment = null;
-        clone.assessmentHistory = 0;
-        delete clone.review;
-        clone.children = [];
-        siblings.push(clone);
-        return clone;
     }
 
     // ---------- 批次 3：归档 / 筛选视图 / 批量编辑 ----------
@@ -7800,127 +7296,6 @@ let knowledgePoints = [];
         } catch (error) {
             showToast(error.message || '归档失败，请重试');
         }
-    }
-
-    async function loadSavedViews() {
-        try {
-            const response = await apiFetch('/api/views', { cache: 'no-store' });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '读取筛选视图失败');
-            savedViews = payload.views || [];
-            savedViewsError = '';
-        } catch (error) {
-            savedViews = [];
-            savedViewsError = (error && error.message) || '读取筛选视图失败';
-            console.warn('读取筛选视图失败', error);
-        }
-        renderViewChips();
-    }
-
-    function renderViewChips() {
-        if (!viewChips) return;
-        viewChips.replaceChildren();
-        if (savedViewsError) {
-            const failed = document.createElement('span');
-            failed.className = 'view-empty';
-            failed.textContent = `读取筛选视图失败：${savedViewsError}`;
-            viewChips.appendChild(failed);
-            viewChips.appendChild(createRetryButton('重试', () => loadSavedViews()));
-            return;
-        }
-        if (savedViews.length === 0) {
-            const empty = document.createElement('span');
-            empty.className = 'view-empty';
-            empty.textContent = '还没有保存的视图：设置好筛选后点右侧保存';
-            viewChips.appendChild(empty);
-            return;
-        }
-        const fragment = document.createDocumentFragment();
-        savedViews.forEach(view => {
-            const chip = document.createElement('span');
-            chip.className = 'view-chip';
-            const apply = document.createElement('button');
-            apply.type = 'button';
-            apply.className = 'view-chip-apply';
-            apply.textContent = view.name;
-            apply.title = '应用这个筛选视图';
-            apply.addEventListener('click', () => applySavedView(view));
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.className = 'view-chip-remove';
-            remove.textContent = '×';
-            remove.title = `删除视图 ${view.name}`;
-            remove.addEventListener('click', async (event) => {
-                event.stopPropagation();
-                if (!window.confirm(`确认删除筛选视图“${view.name}”？`)) return;
-                try {
-                    const response = await apiFetch(`/api/views?id=${encodeURIComponent(view.id)}`, { method: 'DELETE' });
-                    const payload = await response.json().catch(() => ({}));
-                    if (!response.ok) throw new Error(payload.error || '删除失败');
-                    savedViews = payload.views || [];
-                    renderViewChips();
-                    showToast('已删除视图');
-                } catch (error) {
-                    showToast(error.message || '删除视图失败，请重试');
-                }
-            });
-            chip.append(apply, remove);
-            fragment.appendChild(chip);
-        });
-        viewChips.appendChild(fragment);
-    }
-
-    function currentFilterSnapshot() {
-        return {
-            projectFilters: { query: projectFilters.query, status: projectFilters.status },
-            nodeFilters: {
-                query: nodeFilters.query, status: nodeFilters.status,
-                priority: nodeFilters.priority, due: nodeFilters.due, tag: nodeFilters.tag,
-            },
-        };
-    }
-
-    async function saveCurrentView() {
-        const suggested = projectFilters.query || nodeFilters.query || nodeFilters.tag || '我的筛选';
-        const name = window.prompt('给这个筛选视图起个名字：', suggested);
-        if (name === null || !name.trim()) return;
-        try {
-            const response = await apiFetch('/api/views', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.trim(), payload: currentFilterSnapshot() })
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '保存视图失败');
-            savedViews = payload.views || [];
-            renderViewChips();
-            showToast('已保存筛选视图');
-        } catch (error) {
-            showToast(error.message || '保存视图失败，请重试');
-        }
-    }
-
-    function applySavedView(view) {
-        const payload = view.payload || {};
-        const projectPart = payload.projectFilters || {};
-        const nodePart = payload.nodeFilters || {};
-        projectFilters.query = String(projectPart.query || '');
-        projectFilters.status = String(projectPart.status || 'all');
-        nodeFilters.query = String(nodePart.query || '');
-        nodeFilters.status = String(nodePart.status || 'all');
-        nodeFilters.priority = String(nodePart.priority || 'all');
-        nodeFilters.due = String(nodePart.due || 'all');
-        nodeFilters.tag = String(nodePart.tag || '');
-        projectSearchInput.value = projectFilters.query;
-        projectStatusFilter.value = projectFilters.status;
-        nodeSearchInput.value = nodeFilters.query;
-        nodeStatusFilter.value = nodeFilters.status;
-        nodePriorityFilter.value = nodeFilters.priority;
-        nodeDueFilter.value = nodeFilters.due;
-        nodeTagFilter.value = nodeFilters.tag;
-        renderProjects();
-        if (currentProjectId) renderDetail();
-        showToast(`已应用视图：${view.name}`);
     }
 
     // ---------- 批次 2：今日工作台 / 收集箱 / 最近入口 ----------
@@ -8965,8 +8340,7 @@ let knowledgePoints = [];
         aiGroup.className = 'review-ai-group';
         const aiBtns = [
             ['拟题', 'queueOpenAssessment', '针对本任务再出题'],
-            ['复制', 'copyText', '复制任务文本'],
-            ['摘要', 'queueSummary', '生成核心摘要']
+            ['复制', 'copyText', '复制任务文本']
         ];
         aiBtns.forEach((pair) => {
             const btn = document.createElement('button');
@@ -8976,7 +8350,6 @@ let knowledgePoints = [];
             btn.title = pair[2];
             btn.addEventListener('click', () => {
                 if (pair[1] === 'copyText') copyText(item.node.text || '');
-                else if (pair[1] === 'queueSummary') queueSummary(item);
                 else queueOpenAssessment(item);
             });
             aiGroup.appendChild(btn);
@@ -9059,26 +8432,6 @@ let knowledgePoints = [];
         }
     }
 
-
-    async function queueSummary(item) {
-        if (!item || !item.node) return;
-        try {
-            const response = await apiFetch('/api/summary', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    question: item.node.text || '',
-                    context: { project: item.projectName || '' },
-                    model: 'flash'
-                })
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败，请重试');
-            showToast('已保存到摘要清单（同题去重）');
-        } catch (error) {
-            showToast(error.message || '生成摘要失败，请重试');
-        }
-    }
 
     async function queueOpenAssessment(item) {
         if (!item) return;
@@ -9286,128 +8639,6 @@ let knowledgePoints = [];
     function copyCurrentQuestion() {
         copyText(assessmentQuestionItems[assessmentQuestionIndex] || '');
         if (assessmentQuestionItems[assessmentQuestionIndex]) showToast('已复制当前题目');
-    }
-
-    async function generateSummary() {
-        if (!assessmentNode) return;
-        const question = assessmentQuestionItems[assessmentQuestionIndex] || assessmentNode.text || '';
-        if (!question) { showToast('没有可总结的内容'); return; }
-        summaryQuestionBtn.disabled = true;
-        const label = summaryQuestionBtn.textContent;
-        summaryQuestionBtn.textContent = '生成中…';
-        try {
-            const response = await apiFetch('/api/summary', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    question,
-                    context: getAssessmentContext(assessmentNode),
-                    model: assessmentModel.value
-                })
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.summary) throw new Error(payload.error || '生成摘要失败，请重试');
-            showToast('已保存到摘要清单（同题去重）');
-        } catch (error) {
-            showToast(error.message || '生成摘要失败，请重试');
-        } finally {
-            summaryQuestionBtn.disabled = false;
-            summaryQuestionBtn.textContent = label;
-        }
-    }
-
-    async function openSummaryList() {
-        showUtilityModal('核心摘要', '摘要清单');
-        renderUtilityMessage('正在读取摘要…');
-        try {
-            const response = await apiFetch('/api/summaries', { cache: 'no-store' });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || '读取摘要清单失败，请重试');
-            renderSummaryList(payload.summaries || []);
-        } catch (error) {
-            renderUtilityMessage(error.message || '读取摘要清单失败，请重试');
-        }
-    }
-
-    function renderSummaryList(summaries) {
-        utilityBody.innerHTML = '';
-        const toolbar = document.createElement('div');
-        toolbar.className = 'utility-toolbar';
-        const count = document.createElement('span');
-        count.textContent = '共 ' + summaries.length + ' 条摘要 · 点击卡片查看详情';
-        toolbar.appendChild(count);
-        if (summaries.length > 0) {
-            const clearBtn = document.createElement('button');
-            clearBtn.type = 'button';
-            clearBtn.className = 'utility-secondary-btn';
-            clearBtn.textContent = '清空全部';
-            clearBtn.addEventListener('click', async (event) => {
-                event.stopPropagation();
-                if (!window.confirm('确认清空全部核心摘要？')) return;
-                try {
-                    const res = await apiFetch('/api/summaries', { method: 'DELETE' });
-                    const body = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(body.error || '清空失败，请重试');
-                    renderSummaryList(body.summaries || []);
-                    showToast('已清空摘要清单');
-                } catch (error) {
-                    showToast(error.message || '清空失败，请重试');
-                }
-            });
-            toolbar.appendChild(clearBtn);
-        }
-        utilityBody.appendChild(toolbar);
-        if (summaries.length === 0) {
-            const empty = document.createElement('p');
-            empty.className = 'utility-empty';
-            empty.textContent = '还没有摘要；在 AI 验收题目区点「核心摘要」即可生成并收藏';
-            utilityBody.appendChild(empty);
-            return;
-        }
-        const grid = document.createElement('div');
-        grid.className = 'summary-grid';
-        const summaryFragment = document.createDocumentFragment();
-        for (const item of summaries) {
-            const card = document.createElement('div');
-            card.className = 'summary-item';
-            const title = document.createElement('div');
-            title.className = 'summary-question';
-            title.textContent = item.question || '未知知识点';
-            const content = document.createElement('div');
-            content.className = 'summary-content';
-            content.textContent = item.content || '';
-            const footer = document.createElement('div');
-            footer.className = 'summary-footer';
-            const date = document.createElement('span');
-            date.className = 'summary-date';
-            date.textContent = '创建于 ' + (item.createdAt || '').slice(0, 10);
-            const del = document.createElement('button');
-            del.type = 'button';
-            del.className = 'utility-secondary-btn summary-delete';
-            del.textContent = '删除';
-            del.addEventListener('click', async (event) => {
-                event.stopPropagation();
-                if (!window.confirm('删除这条摘要？')) return;
-                try {
-                    const res = await apiFetch('/api/summary?id=' + encodeURIComponent(item.id), { method: 'DELETE' });
-                    const body = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(body.error || '删除失败，请重试');
-                    renderSummaryList(body.summaries || []);
-                    showToast('已删除');
-                } catch (error) {
-                    showToast(error.message || '删除失败，请重试');
-                }
-            });
-            footer.appendChild(date);
-            footer.appendChild(del);
-            card.appendChild(title);
-            card.appendChild(content);
-            card.appendChild(footer);
-            card.addEventListener('click', () => card.classList.toggle('expanded'));
-            summaryFragment.appendChild(card);
-        }
-        grid.replaceChildren(summaryFragment);
-        utilityBody.appendChild(grid);
     }
 
     async function loadTrashItems() {
@@ -9962,8 +9193,6 @@ let knowledgePoints = [];
         if (extraConfirmBtn) extraConfirmBtn.addEventListener('click', generateExtraQuestions);
         if (extraCancelBtn) extraCancelBtn.addEventListener('click', closeExtraAsk);
         if (copyQuestionBtn) copyQuestionBtn.addEventListener('click', copyCurrentQuestion);
-        if (summaryQuestionBtn) summaryQuestionBtn.addEventListener('click', generateSummary);
-        if (openSummaryBtn) openSummaryBtn.addEventListener('click', openSummaryList);
         if (globalSearchBtn) globalSearchBtn.addEventListener('click', openGlobalSearch);
         if (openTrashBtn) openTrashBtn.addEventListener('click', openTrashBin);
         if (assessmentTemplateConclusionBtn) assessmentTemplateConclusionBtn.addEventListener('click', () => insertAssessmentTemplate('conclusion'));
@@ -10023,7 +9252,6 @@ let knowledgePoints = [];
             renderDetail();
         }, SEARCH_DEBOUNCE_MS));
         batchToggleBtn.addEventListener('click', () => setBatchMode(!batchState.active));
-        saveViewBtn.addEventListener('click', saveCurrentView);
         projectArchiveBtn.addEventListener('click', () => {
             if (currentProjectId) toggleProjectArchived(currentProjectId);
         });
@@ -10034,7 +9262,6 @@ let knowledgePoints = [];
         if (undoBtn) undoBtn.addEventListener('click', () => performUndo());
         if (redoBtn) redoBtn.addEventListener('click', () => performRedo());
         if (duplicateProjectBtn) duplicateProjectBtn.addEventListener('click', duplicateCurrentProject);
-        if (saveTemplateBtn) saveTemplateBtn.addEventListener('click', saveCurrentProjectAsTemplate);
         if (createFromTemplateBtn) createFromTemplateBtn.addEventListener('click', () => {
             const templateId = templateSelect ? templateSelect.value : '';
             if (!templateId) {
@@ -10043,25 +9270,15 @@ let knowledgePoints = [];
             }
             createProjectFromTemplate(templateId);
         });
-        if (runAutoArchiveBtn) runAutoArchiveBtn.addEventListener('click', runAutoArchiveFromUi);
         if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettingsFromUi);
-        if (refreshActivityBtn) refreshActivityBtn.addEventListener('click', loadActivity);
-        if (clearActivityBtn) clearActivityBtn.addEventListener('click', clearActivityFromUi);
         document.addEventListener('keydown', handleHistoryShortcut);
         exportBtn.addEventListener('click', () => exportBackup('json'));
         exportMarkdownBtn.addEventListener('click', () => exportBackup('markdown'));
         exportCsvBtn.addEventListener('click', () => exportBackup('csv'));
         downloadDatabaseBackupBtn.addEventListener('click', downloadDatabaseBackup);
-        inspectDatabaseBackupBtn.addEventListener('click', inspectDatabaseBackupFromUi);
         importInput.addEventListener('change', () => {
             importBackup(importInput.files && importInput.files[0]);
         });
-        backgroundInput.addEventListener('change', () => {
-            handleBackgroundUpload(backgroundInput.files && backgroundInput.files[0]);
-        });
-        resetBackgroundBtn.addEventListener('click', resetBackground);
-        createDatabaseBackupBtn.addEventListener('click', createDatabaseBackupFromUi);
-        renameDatabaseBackupBtn.addEventListener('click', renameDatabaseBackupFromUi);
         databaseBackupPickerButton.addEventListener('click', () => {
             if (backupListError) {
                 loadDatabaseBackups();
@@ -10262,20 +9479,18 @@ let knowledgePoints = [];
     }
 
     async function init() {
-        await Promise.all([loadProjects(), loadSavedBackground()]);
+        await loadProjects();
         renderProjects();
         loadReviewCounts();
         initEvents();
         startServiceHeartbeat();
         checkStorageHealth();
         loadDatabaseBackups();
-        loadSavedViews();
         loadReminderSettings();
         renderReminderStatus();
         loadUndoStack();
         loadTemplates();
         loadSettings();
-        loadActivity();
         if (reminderState.enabled) startReminders();
     }
     if (document.readyState === 'loading') {

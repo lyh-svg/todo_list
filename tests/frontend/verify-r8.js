@@ -94,15 +94,11 @@ check('归档：收集箱卡片不显示归档按钮',
     /String\(project\.id\) !== INBOX_PROJECT_ID[\s\S]{0,120}actions\.appendChild\(archiveBtn\)/.test(src));
 check('归档：收集箱详情页归档按钮置灰',
     /projectArchiveBtn\.disabled = isInbox/.test(src));
-check('视图：页面有视图栏与保存按钮', html.includes('id="viewBar"') && html.includes('id="saveViewBtn"'));
-check('视图：三个接口都接了',
-    src.includes("apiFetch('/api/views', { cache: 'no-store' })")
-    && src.includes("method: 'POST',") && src.includes("`/api/views?id=${encodeURIComponent(view.id)}`")
-    && src.includes("method: 'DELETE'"));
-check('视图：快照含项目与节点筛选', /function currentFilterSnapshot[\s\S]{0,400}nodeFilters: \{[\s\S]{0,200}priority: nodeFilters.priority, due: nodeFilters.due, tag: nodeFilters.tag/.test(src));
-check('视图：应用时会回填输入框并重渲染',
-    /function applySavedView[\s\S]{0,900}nodePriorityFilter\.value = nodeFilters\.priority;[\s\S]{0,300}renderProjects\(\);/.test(src));
-check('视图：同名覆盖（服务端 upsert）', src.includes('已保存筛选视图'));
+// 筛选视图（保存/应用/删除）已按冗余审计取消：这里改成"不许再长回来"的守卫。
+check('视图：筛选视图功能已取消（页面/接口/存储都不该再有）',
+    !html.includes('id="viewBar"') && !html.includes('id="saveViewBtn"')
+    && !src.includes('/api/views') && !src.includes('function currentFilterSnapshot')
+    && !src.includes('function applySavedView'));
 check('批量：页面有开关与工具栏', html.includes('id="batchToggleBtn"') && html.includes('id="batchToolbar"'));
 check('批量：模式切换会清空选择并重渲染', /function setBatchMode[\s\S]{0,300}if \(!batchState\.active\) batchState\.selected\.clear\(\);[\s\S]{0,200}renderDetail\(\);/.test(src));
 check('批量：动作齐全（优先级/标签/截止/延期/完成/移动）',
@@ -113,7 +109,7 @@ check('批量：动作齐全（优先级/标签/截止/延期/完成/移动）',
 check('批量：提交 /api/batch 并按项目刷新', /async function runBatch[\s\S]{0,700}'\/api\/batch'[\s\S]{0,1400}await reloadProjectFromServer\(projectId\);/.test(src));
 check('批量：跳过项会提示原因', src.includes('项被跳过：${failed[0].error}'));
 check('批量：同步服务端统计', src.includes('projects[index].stats = summary.stats;'));
-check('批量：样式已加', css.includes('.batch-toolbar') && css.includes('.view-chip') && css.includes('.batch-selected'));
+check('批量：样式已加', css.includes('.batch-toolbar') && css.includes('.batch-selected'));
 const failed = results.filter(r => !r).length;
 console.log(`\n   通过 ${results.length - failed} 项，失败 ${failed} 项`);
 process.exit(failed ? 1 : 0);

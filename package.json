@@ -4,7 +4,7 @@
   "description": "前端验证脚本与 ESLint 配置（页面本身零依赖，这里只是开发期检查工具）",
   "scripts": {
     "lint": "eslint .",
-    "test": "node tests/frontend/dom-smoke.js && node tests/frontend/measure-collapsed-render.js && node tests/frontend/verify-study-tools.js && node tests/frontend/verify-round1.js && node tests/frontend/verify-round2.js && node tests/frontend/verify-round4.js && node tests/frontend/verify-assessment-sync.js && node tests/frontend/verify-r2.js && node tests/frontend/verify-r3.js && node tests/frontend/verify-r45.js && node tests/frontend/verify-r6.js && node tests/frontend/verify-r7.js && node tests/frontend/verify-r8.js && node tests/frontend/verify-r9.js"
+    "test": "./scripts/check.sh"
   },
   "devDependencies": {
     "eslint": "^10.10.0",

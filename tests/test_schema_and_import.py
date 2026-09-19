@@ -25,11 +25,9 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-schema-test-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "summary.sqlite3")
 
 import memo_storage  # noqa: E402
 import storage  # noqa: E402
-import summary_storage  # noqa: E402
 
 DB = Path(storage.DATABASE_FILE)
 
@@ -139,15 +137,13 @@ class SchemaVersionTests(unittest.TestCase):
         self.assertEqual(list(Path(storage.BACKUP_DIR).glob("before-migrate-v0-*.sqlite3")) != [], True,
                          "回滚前应先有快照")
 
-    def test_memo_and_summary_refuse_future_version(self) -> None:
-        for module, attribute in ((memo_storage, "MEMO_SCHEMA_VERSION"), (summary_storage, "SUMMARY_SCHEMA_VERSION")):
-            path = Path(module.MEMO_DATABASE_FILE if hasattr(module, "MEMO_DATABASE_FILE") else module.SUMMARY_DATABASE_FILE)
-            path.unlink(missing_ok=True)
-            with module.open_memo_database() if hasattr(module, "open_memo_database") else module.open_summary_database() as connection:
-                connection.execute(f"PRAGMA user_version={getattr(module, attribute) + 1}")
-            opener = module.open_memo_database if hasattr(module, "open_memo_database") else module.open_summary_database
-            with self.assertRaises(RuntimeError):
-                opener()
+    def test_memo_refuses_future_version(self) -> None:
+        path = Path(memo_storage.MEMO_DATABASE_FILE)
+        path.unlink(missing_ok=True)
+        with memo_storage.open_memo_database() as connection:
+            connection.execute(f"PRAGMA user_version={memo_storage.MEMO_SCHEMA_VERSION + 1}")
+        with self.assertRaises(RuntimeError):
+            memo_storage.open_memo_database()
 
 
 class ImportValidationTests(unittest.TestCase):

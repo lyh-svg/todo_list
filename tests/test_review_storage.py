@@ -15,7 +15,6 @@ _TEMP = tempfile.TemporaryDirectory(prefix="todo-review-store-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP.name) / "summary.sqlite3")
 
 import review_storage  # noqa: E402
 import storage  # noqa: E402

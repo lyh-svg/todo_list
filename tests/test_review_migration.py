@@ -11,7 +11,6 @@ _TEMP = tempfile.TemporaryDirectory(prefix="todo-review-migrate-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP.name) / "summary.sqlite3")
 
 import storage  # noqa: E402
 
@@ -20,8 +19,26 @@ REVIEW_TABLES = ("review_points", "review_point_tasks", "review_states",
 
 
 class ReviewMigrationTests(unittest.TestCase):
-    def test_schema_version_is_8(self) -> None:
-        self.assertEqual(storage.SCHEMA_VERSION, 8)
+    def test_schema_version_is_9(self) -> None:
+        self.assertEqual(storage.SCHEMA_VERSION, 9)
+
+    def test_v8_database_drops_removed_tables(self) -> None:
+        """v9 迁移注销三个已取消功能的空表（背景图 / 筛选视图 / 自定义模板）。"""
+        storage.ensure_schema()
+        removed = ("app_asset", "saved_views", "project_templates")
+        with storage.open_state_database() as connection:
+            for table in removed:
+                connection.execute(f"CREATE TABLE IF NOT EXISTS {table}(x TEXT)")
+            connection.execute("PRAGMA user_version=8")
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertEqual(version, storage.SCHEMA_VERSION)
+        for table in removed:
+            self.assertNotIn(table, tables, f"{table} 应该被 v9 迁移删掉")
+        self.assertTrue(storage.check_database_integrity())
 
     def test_v7_database_migrates_without_touching_projects(self) -> None:
         storage.ensure_schema()
@@ -47,7 +64,7 @@ class ReviewMigrationTests(unittest.TestCase):
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             tables = {row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(version, 8)
+        self.assertEqual(version, storage.SCHEMA_VERSION)
         for table in REVIEW_TABLES:
             self.assertIn(table, tables)
         self.assertEqual(storage.read_project("p-old")[0], before, "迁移不得改动项目数据")

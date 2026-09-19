@@ -36,7 +36,6 @@ WORK = Path(tempfile.mkdtemp(prefix="todo-bench-"))
 os.environ["TODO_SQLITE_FILE"] = str(WORK / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(WORK / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(WORK / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(WORK / "summary.sqlite3")
 
 
 def assert_temp_databases() -> None:
@@ -47,7 +46,7 @@ def assert_temp_databases() -> None:
     落到真实 data/todo.sqlite3 上（实测把 10220 个节点的基线项目写进了用户的库）。
     现在环境变量在模块级就设好，并且把这一层断言放在真正写库的入口上。
     """
-    for env_name in ("TODO_SQLITE_FILE", "TODO_MEMO_SQLITE_FILE", "TODO_SUMMARY_SQLITE_FILE"):
+    for env_name in ("TODO_SQLITE_FILE", "TODO_MEMO_SQLITE_FILE"):
         path = Path(os.environ[env_name]).resolve()
         if path == REAL_DATA_DIR or REAL_DATA_DIR in path.parents:
             raise SystemExit(f"基准拒绝写入真实数据目录：{path}")
@@ -172,11 +171,6 @@ def run_size(total: int, repeat: int) -> dict[str, object]:
         "memoSearchMs": timed(lambda: memo_storage.search_memo_summaries("正文"), repeat),
         "savePayloadBytes": payload_bytes,
     }
-    summary_storage = __import__("summary_storage")
-    summary_storage.initialize()
-    for index in range(200):
-        summary_storage.upsert_summary(f"题目 {index}", "摘要正文" * 200)
-    result["summaryListMs"] = timed(summary_storage.list_summaries, repeat)
     return result
 
 
@@ -221,7 +215,6 @@ def main() -> int:
         ("exportSnapshotMs", "导出快照（全项目）"),
         ("memoListMs", "备忘录列表（200 条）"),
         ("memoSearchMs", "备忘录全文搜索（200 条）"),
-        ("summaryListMs", "摘要列表（200 条，含全文）"),
     ]
     header = f"{'指标':<40}" + "".join(f"{str(entry['tasks']) + ' 任务':>16}" for entry in results)
     print(header)

@@ -20,7 +20,6 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-batch3-test-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "summary.sqlite3")
 
 import storage  # noqa: E402
 
@@ -56,48 +55,6 @@ def make_project(project_id: str, items: list[dict], *, archived: bool = False) 
 def read_items(project_id: str = "p1") -> list[dict]:
     project = storage.read_project(project_id)[0]
     return project["tree"][0]["children"][0]["children"]
-
-
-class SavedViewTests(unittest.TestCase):
-    def setUp(self) -> None:
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{DB}{suffix}").unlink(missing_ok=True)
-        with storage.open_state_database() as connection:
-            connection.execute(f"PRAGMA user_version={storage.SCHEMA_VERSION}")
-        storage.ensure_schema()
-
-    def test_create_list_and_delete(self) -> None:
-        created = storage.save_saved_view("高优先级未完成", {"projectFilters": {"status": "active"},
-                                                        "nodeFilters": {"priority": "high"}})
-        self.assertEqual(created["name"], "高优先级未完成")
-        self.assertEqual(created["payload"]["nodeFilters"]["priority"], "high")
-        views = storage.list_saved_views()
-        self.assertEqual([view["name"] for view in views], ["高优先级未完成"])
-        self.assertTrue(storage.delete_saved_view(created["id"]))
-        self.assertEqual(storage.list_saved_views(), [])
-        self.assertFalse(storage.delete_saved_view(created["id"]))
-
-    def test_same_name_overwrites(self) -> None:
-        first = storage.save_saved_view("本周 Python", {"nodeFilters": {"tag": "Python"}})
-        second = storage.save_saved_view("本周 Python", {"nodeFilters": {"tag": "Python", "due": "week"}})
-        self.assertEqual(first["id"], second["id"], "同名视图应该覆盖而不是新增")
-        self.assertEqual(len(storage.list_saved_views()), 1)
-        self.assertEqual(second["payload"]["nodeFilters"]["due"], "week")
-
-    def test_name_and_payload_are_validated(self) -> None:
-        with self.assertRaises(ValueError):
-            storage.save_saved_view("   ", {})
-        with self.assertRaises(ValueError):
-            storage.save_saved_view("视图", ["不是对象"])
-        with self.assertRaises(ValueError):
-            storage.save_saved_view("视图", {"big": "x" * (65 * 1024)})
-
-    def test_views_survive_reload(self) -> None:
-        storage.save_saved_view("阻塞任务", {"nodeFilters": {"status": "active"}})
-        # 新连接读一次，确认落库而不是只存在内存
-        with storage.open_state_database() as connection:
-            count = connection.execute("SELECT COUNT(*) FROM saved_views").fetchone()[0]
-        self.assertEqual(count, 1)
 
 
 class BatchUpdateTests(unittest.TestCase):

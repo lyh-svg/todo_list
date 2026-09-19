@@ -1,7 +1,10 @@
 // 批次 4 验证：自然语言解析表 + 周期日期计算（真跑）+ 提醒/预览接线。
 const fs = require('fs');
 const ROOT = require('path').resolve(__dirname, '..', '..');
-const src = fs.readFileSync(ROOT + '/js/app.js', 'utf8');
+function read(relative) {
+    return fs.readFileSync(ROOT + '/' + relative, 'utf8');
+}
+const src = read('js/app.js');
 const html = fs.readFileSync(ROOT + '/index.html', 'utf8');
 function extract(name) {
     const at = src.indexOf(`    function ${name}(`);
@@ -82,14 +85,19 @@ check('周期：until 到点即停', api.nextRepeatDue({ freq: 'daily', until: '
 check('周期：非法规则返回空', api.nextRepeatDue({ freq: 'hourly' }, '2026-09-15') === '');
 
 // 接线
-check('接线：完成后生成下一次并提示', /if \(node\.completed && !wasCompleted && node\.repeat\)[\s\S]{0,300}spawnNextOccurrence\(project, node\)[\s\S]{0,200}showToast\(`周期任务：已生成下一次/.test(src));
+// Q13：周期任务的"下一次"由服务端生成，前端只把响应里的副本拼回本地树并提示
+check('接线：完成后由服务端生成下一次并拼回本地树',
+    !src.includes('function spawnNextOccurrence(')
+    && /function applySpawnedOccurrences\(project, spawned\)[\s\S]{0,900}showToast\(`周期任务：已生成下一次/.test(src));
 check('周期：重复标完成不会再次生成（分组连点会指数复制）', /toggleAllChildren[\s\S]{0,600}Boolean\(node\.completed\) !== Boolean\(completed\)/.test(src));
 check('周期：保存时保留规则锚点（每周几/每月几号 + until）',
     /function buildRepeatRule[\s\S]{0,1600}keep = !opts\.anchorChanged/.test(src)
     && /const until = prev && prev\.until/.test(src));
 check('工作台：findNodeById 用字符串比较（默认项目的数字 ID 也能查到）',
     /function findNodeById[\s\S]{0,200}const wanted = String\(id\)/.test(src));
-check('接线：生成时复制元数据但清空验收/复习', /function spawnNextOccurrence[\s\S]{0,700}clone\.assessment = null;[\s\S]{0,200}delete clone\.review;/.test(src));
+check('接线：生成规则只在服务端（前端不再深拷贝节点）',
+    !src.includes('function spawnNextOccurrence(')
+    && /def _next_occurrence_clone\(node[\s\S]{0,900}clone\["assessment"\] = None/.test(read('storage.py')));
 check('接线：元数据弹窗有周期选择与下一次提示',
     src.includes("repeatCaption.textContent = '周期'") && src.includes('下一次：${next}') && src.includes("['daily', '每天']"));
 check('接线：徽标显示周期', src.includes('repeat-badge') && src.includes('describeRepeat(node.repeat)'));

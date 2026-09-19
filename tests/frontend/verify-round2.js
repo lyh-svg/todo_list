@@ -98,7 +98,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     check('③ 详情树一次挂载', src.includes('treeRoot.replaceChildren(treeFragment);'));
     check('③ 备忘录列表一次挂载', src.includes('container.replaceChildren(memoFragment);'));
     check('③ 复习分组一次挂载', src.includes('group.appendChild(blockFragment);'));
-    check('③ 摘要卡片一次挂载', src.includes('grid.replaceChildren(summaryFragment);'));
     check('③ 回收站一次挂载', src.includes('list.replaceChildren(trashFragment);'));
     check('③ 今日聚焦用 replaceChildren(...map())',
         src.includes('list.replaceChildren(...entries.slice(0, visibleCount).map(entry => createTaskButton(entry, project.id)));'));

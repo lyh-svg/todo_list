@@ -15,7 +15,6 @@ import threading
 import time
 import traceback
 import urllib.parse
-import zipfile
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,7 +24,6 @@ import backup_service
 import storage as storage_service
 import ai_service
 import memo_storage
-import summary_storage
 import review_storage
 import review_content
 
@@ -63,13 +61,9 @@ MAX_PROJECT_PAYLOAD_BYTES = storage_service.MAX_PROJECT_PAYLOAD_BYTES
 StateConflictError = storage_service.StateConflictError
 migrate_legacy_state = storage_service.migrate_legacy_state
 ensure_schema = storage_service.ensure_schema
-ensure_inbox_project = storage_service.ensure_inbox_project
 add_project_item = storage_service.add_project_item
 move_node = storage_service.move_node
 touch_project_opened = storage_service.touch_project_opened
-list_saved_views = storage_service.list_saved_views
-save_saved_view = storage_service.save_saved_view
-delete_saved_view = storage_service.delete_saved_view
 batch_update_nodes = storage_service.batch_update_nodes
 patch_project_nodes = storage_service.patch_project_nodes
 reorder_node = storage_service.reorder_node
@@ -80,15 +74,10 @@ preview_import = storage_service.preview_import
 import_projects = storage_service.import_projects
 import_review_snapshot = storage_service.import_review_snapshot
 list_templates = storage_service.list_templates
-save_project_as_template = storage_service.save_project_as_template
-delete_template = storage_service.delete_template
 create_project_from_template = storage_service.create_project_from_template
 log_activity = storage_service.log_activity
-list_activity = storage_service.list_activity
-clear_activity = storage_service.clear_activity
 read_app_settings = storage_service.read_app_settings
 update_app_settings = storage_service.update_app_settings
-auto_archive_projects = storage_service.auto_archive_projects
 export_markdown = storage_service.export_markdown
 export_csv = storage_service.export_csv
 workbench = storage_service.workbench
@@ -100,13 +89,12 @@ read_project_summaries = storage_service.read_project_summaries
 read_project = storage_service.read_project
 export_projects_snapshot = storage_service.export_projects_snapshot
 write_project = storage_service.write_project
+write_project_with_occurrences = storage_service.write_project_with_occurrences
 delete_project = storage_service.delete_project
 harden_storage_permissions = storage_service.harden_storage_permissions
 list_database_backups = backup_service.list_backups
 create_full_backup = backup_service.create_full_backup
-describe_backup = backup_service.describe_backup
 restore_full_backup = backup_service.restore_full_backup
-rename_backup = backup_service.rename_backup
 delete_backup = backup_service.delete_backup
 check_database_integrity = storage_service.check_database_integrity
 checkpoint_database = storage_service.checkpoint_database
@@ -476,12 +464,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取项目失败：{error}"})
             return
-        if path == "/api/views":
-            try:
-                self.send_json(200, {"views": list_saved_views()})
-            except (OSError, sqlite3.Error, RuntimeError) as error:
-                self.send_json(500, {"error": f"读取筛选视图失败：{error}"})
-            return
         if path.startswith("/api/review/"):
             try:
                 params = query_params(self)
@@ -490,6 +472,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 if raw_today and not today:
                     raise ValueError("参数 today 必须是 YYYY-MM-DD")
                 server_today = datetime.date.today().isoformat()
+                # 注意：这是"复习页顶部统计"（due/overdue/weak/streak），与已取消的
+                # 摘要清单（summary_storage）没有任何关系，别被名字骗了。
                 if path == "/api/review/summary":
                     self.send_json(200, review_storage.summary(today or server_today))
                     return
@@ -580,14 +564,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取最近记录失败：{error}"})
             return
-        if path == "/api/inbox":
-            try:
-                project, revision = ensure_inbox_project()
-                self.send_json(200, {"ok": True, "project": project, "revision": revision,
-                                     "summary": storage_service.project_summary(project)})
-            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
-                self.send_json(500, {"error": f"读取收集箱失败：{error}"})
-            return
         if path == "/api/heartbeat":
             touch_heartbeat()
             self.send_json(200, {"ok": True})
@@ -629,21 +605,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取备份列表失败：{error}"})
             return
-        if path == "/api/backup/inspect":
-            try:
-                name = required_param(query_params(self), "name")
-                if Path(name).name != name or not (name.endswith(".sqlite3") or name.endswith(".zip")):
-                    raise ValueError("备份文件名不正确")
-                # 名字非法 → 400；名字合法但文件不存在 → 404（与其它资源接口一致）。
-                if not (BACKUP_DIR / name).is_file():
-                    self.send_json(404, {"error": "备份不存在"})
-                    return
-                self.send_json(200, {"backup": describe_backup(name)})
-            except ValueError as error:
-                self.send_json(400, {"error": str(error)})
-            except (OSError, RuntimeError, zipfile.BadZipFile) as error:
-                self.send_json(500, {"error": f"读取备份内容失败：{error}"})
-            return
         if path == "/api/node/delete-impact":
             try:
                 params = query_params(self)
@@ -660,13 +621,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取模板失败：{error}"})
             return
-        if path == "/api/activity":
-            try:
-                limit = int_param(query_params(self), "limit", required=False, default=50)
-                self.send_json(200, {"entries": list_activity(limit)})
-            except (ValueError, OSError, sqlite3.Error, RuntimeError) as error:
-                self.send_json(400 if isinstance(error, ValueError) else 500, {"error": f"读取活动历史失败：{error}"})
-            return
         if path == "/api/settings":
             try:
                 self.send_json(200, {"settings": read_app_settings()})
@@ -678,41 +632,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 self.send_json(200, {"items": list_trash_items()})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取回收站失败：{error}"})
-            return
-        if path == "/api/background":
-            try:
-                row = storage_service.read_asset("background")
-                if not row:
-                    self.send_json(404, {"error": "未设置背景"})
-                else:
-                    self.send_blob(bytes(row[0]), str(row[1]), str(row[2]))
-            except (OSError, sqlite3.Error) as error:
-                self.send_json(500, {"error": f"读取背景失败：{error}"})
-            return
-        if path == "/api/summaries":
-            try:
-                params = query_params(self)
-                limit = int_param(params, "limit", required=False, default=summary_storage.MAX_SUMMARY_LIST)
-                offset = int_param(params, "offset", required=False, default=0)
-                self.send_json(200, {
-                    "summaries": summary_storage.list_summaries(limit, offset),
-                    "total": summary_storage.count_summaries(),
-                })
-            except (ValueError, OSError, sqlite3.Error, RuntimeError) as error:
-                status = 400 if isinstance(error, ValueError) else 500
-                self.send_json(status, {"error": f"读取摘要清单失败：{error}"})
-            return
-        if path == "/api/summary":
-            try:
-                summary = summary_storage.read_summary(required_param(query_params(self), "id"))
-                if not summary:
-                    self.send_json(404, {"error": "摘要不存在"})
-                else:
-                    self.send_json(200, {"summary": summary})
-            except ValueError as error:
-                self.send_json(400, {"error": str(error)})
-            except (OSError, sqlite3.Error, RuntimeError) as error:
-                self.send_json(500, {"error": f"读取摘要失败：{error}"})
             return
         if path == "/api/memos":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q", [""])[0]
@@ -743,15 +662,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取备忘录失败：{error}"})
             return
-        if path == "/api/memos/database-download":
-            # 和别的 GET 分支一样必须有兜底：checkpoint()/send_file() 都可能抛异常，
-            # 抛出去就是"空回复"（客户端看到连接直接断开，没有任何 JSON）。
-            try:
-                memo_storage.checkpoint()
-                self.send_file(memo_storage.MEMO_DATABASE_FILE, "application/vnd.sqlite3", "memo.sqlite3")
-            except (OSError, sqlite3.Error, RuntimeError) as error:
-                self.send_json(500, {"error": f"导出备忘录数据库失败：{error}"})
-            return
         if path not in PUBLIC_PATHS:
             self.send_json(404, {"error": "资源不存在"})
             return
@@ -768,15 +678,13 @@ class TodoHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         length = self.request_length()
         if path not in {"/api/evaluate", "/api/question", "/api/project", "/api/import", "/api/backup",
-                        "/api/node/patch", "/api/assessment",
+                        "/api/node/patch",
                         "/api/node/reorder", "/api/node/duplicate", "/api/project/duplicate",
-                        "/api/import/preview", "/api/templates", "/api/project/from-template",
-                        "/api/activity", "/api/settings", "/api/archive/auto",
-                        "/api/inbox/add", "/api/inbox/move", "/api/views", "/api/batch",
-                        "/api/background",
-                        "/api/memo", "/api/memos/database-import",
+                        "/api/import/preview", "/api/project/from-template",
+                        "/api/settings",
+                        "/api/inbox/add", "/api/inbox/move", "/api/batch",
+                        "/api/memo",
                         "/api/trash",
-                        "/api/summary",
                         "/api/project/plan",
                         "/api/review/reveal", "/api/review/answer", "/api/review/session",
                         "/api/review/generate", "/api/review/ai-grade"}:
@@ -791,11 +699,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.discard_body(length)
             self.send_json(403, {"error": "不允许的请求来源"})
             return
-        if path == "/api/memos/database-import":
-            request_limit = 110 * 1024 * 1024
-        elif path == "/api/background":
-            request_limit = 30 * 1024 * 1024
-        elif path == "/api/memo":
+        if path == "/api/memo":
             request_limit = MAX_MEMO_REQUEST_BYTES
         elif path in {"/api/project", "/api/import", "/api/import/preview"}:
             # 预览与真正导入必须同档：预览过去落在 5MiB 的 AI 限额分支，
@@ -807,40 +711,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.discard_body(length)
             self.send_json(413, {"error": "请求内容为空或过大"})
             return
-        if path == "/api/background":
-            # 先把 body 读完：任何校验失败都不会留下未读数据（否则客户端看到的是空回复/连接重置）。
-            blob = self.read_body(length)
-            if blob is None:
-                return
-            if len(blob) != length:
-                # 客户端声明了长度却提前断开：半截数据绝不能当完整图片入库。
-                self.send_json(400, {"error": "请求体不完整，背景图片未保存"})
-                return
-            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-            file_name = query.get("name", ["background"])[0][:200]
-            mime_type = query.get("type", ["application/octet-stream"])[0][:100]
-            try:
-                if not mime_type.startswith("image/"):
-                    raise ValueError("背景文件必须是图片")
-                if len(blob) > 25 * 1024 * 1024:
-                    raise ValueError("背景图片不能超过 25 MB")
-                storage_service.write_asset("background", blob, mime_type, file_name)
-                self.send_json(200, {"ok": True})
-            except ValueError as error:
-                self.send_json(400, {"error": f"保存背景失败：{error}"})
-            except (OSError, sqlite3.Error) as error:
-                self.send_json(500, {"error": f"保存背景失败：{error}"})
-            return
-        if path == "/api/memos/database-import":
-            try:
-                raw = self.read_body(length)
-                if raw is None:
-                    return
-                memo_storage.import_database(raw)
-                self.send_json(200, {"ok": True, "memos": memo_storage.list_memo_summaries()})
-            except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
-                self.send_json(400, {"error": f"导入备忘录数据库失败：{error}"})
-            return
         try:
             raw_body = self.read_body(length)
             if raw_body is None:
@@ -851,13 +721,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("请求必须是 JSON 对象")
             if path == "/api/backup":
-                action = str(payload.get("action", "create"))
-                if action == "create":
-                    self.send_json(200, {"ok": True, "name": create_full_backup("manual")})
-                elif action == "rename":
-                    name = rename_backup(str(payload.get("name", "")), str(payload.get("newName", "")))
-                    self.send_json(200, {"ok": True, "name": name})
-                elif action == "delete":
+                action = str(payload.get("action", ""))
+                if action == "delete":
                     delete_backup(str(payload.get("name", "")))
                     self.send_json(200, {"ok": True})
                 elif action == "restore":
@@ -983,8 +848,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         expected_revision = int(expected_revision)
                     except (TypeError, ValueError):
                         raise ValueError("expectedRevision 格式不正确") from None
-                revision, summary = write_project(project, expected_revision)
-                self.send_json(200, {"ok": True, "revision": revision, "summary": summary})
+                revision, summary, spawned = write_project_with_occurrences(project, expected_revision)
+                self.send_json(200, {"ok": True, "revision": revision, "summary": summary,
+                                     "spawned": spawned})
             elif path == "/api/import/preview":
                 projects = payload.get("projects")
                 if not isinstance(projects, list):
@@ -1025,25 +891,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         raise ValueError("expectedRevision 格式不正确") from None
                 result = patch_project_nodes(str(project_id), expected, payload.get("ops"))
                 self.send_json(200, {"ok": True, **result})
-            elif path == "/api/assessment":
-                # 验收记录的专用入口：就是"只改 assessment 字段"的节点 patch
-                project_id = payload.get("projectId")
-                node_id = payload.get("nodeId")
-                if not project_id or not node_id:
-                    raise ValueError("缺少 projectId 或 nodeId")
-                expected = payload.get("expectedRevision")
-                if expected is not None:
-                    try:
-                        expected = int(expected)
-                    except (TypeError, ValueError):
-                        raise ValueError("expectedRevision 格式不正确") from None
-                fields = {"assessment": payload.get("assessment")}
-                if isinstance(payload.get("fields"), dict):
-                    fields.update(payload["fields"])
-                result = patch_project_nodes(
-                    str(project_id), expected,
-                    [{"op": "update", "nodeId": str(node_id), "fields": fields}])
-                self.send_json(200, {"ok": True, **result})
             elif path == "/api/node/reorder":
                 moved = reorder_node(str(payload.get("projectId") or ""), str(payload.get("nodeId") or ""),
                                      payload.get("parentId"),
@@ -1075,37 +922,10 @@ class TodoHandler(SimpleHTTPRequestHandler):
                                                        payload.get("name"))
                 self.send_json(200, {"ok": True, "project": created["project"],
                                      "projects": read_project_summaries()})
-            elif path == "/api/templates":
-                template = save_project_as_template(str(payload.get("projectId") or ""),
-                                                    payload.get("name"), payload.get("description"))
-                self.send_json(200, {"ok": True, "template": template, "templates": list_templates()})
-            elif path == "/api/activity":
-                log_activity(str(payload.get("kind") or "note"), str(payload.get("summary") or ""),
-                             project_id=payload.get("projectId") or "",
-                             project_name=str(payload.get("projectName") or ""),
-                             detail=payload.get("detail") if isinstance(payload.get("detail"), dict) else {},
-                             undoable=bool(payload.get("undoable")))
-                self.send_json(200, {"ok": True, "entries": list_activity(50)})
             elif path == "/api/settings":
                 patch = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
                 self.send_json(200, {"ok": True, "settings": update_app_settings(
                     {key: value for key, value in patch.items() if key != "ok"})})
-            elif path == "/api/archive/auto":
-                days = payload.get("days")
-                if days in (None, ""):
-                    result = auto_archive_projects()
-                else:
-                    try:
-                        value = int(days)
-                    except (TypeError, ValueError):
-                        raise ValueError("自动归档天数必须是整数") from None
-                    if not 1 <= value <= 3650:
-                        raise ValueError("自动归档天数应在 1~3650 天之间")
-                    result = auto_archive_projects(value)
-                self.send_json(200, {"ok": True, **result, "projects": read_project_summaries()})
-            elif path == "/api/views":
-                saved = save_saved_view(payload.get("name"), payload.get("payload"))
-                self.send_json(200, {"ok": True, "view": saved, "views": list_saved_views()})
             elif path == "/api/batch":
                 targets = payload.get("targets")
                 action = str(payload.get("action") or "")
@@ -1196,15 +1016,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     raise ValueError("学习主题不能为空")
                 plan = ai_service.plan_project(topic, model)
                 self.send_json(200, {"ok": True, "plan": plan})
-            elif path == "/api/summary":
-                question = str(payload.get("question") or "").strip()[:4000]
-                context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-                model = str(payload.get("model") or "flash")
-                if not question:
-                    raise ValueError("题目不能为空")
-                result = ai_service.summarize_knowledge(question, context, model)
-                saved = summary_storage.upsert_summary(question, result["summary"])
-                self.send_json(200, {"ok": True, "summary": saved})
             elif path == "/api/evaluate":
                 if payload.get("stream"):
                     self.send_evaluate_stream(payload)
@@ -1223,8 +1034,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
-        if path not in {"/api/project", "/api/background", "/api/memo", "/api/summary", "/api/summaries",
-                        "/api/views", "/api/templates", "/api/activity", "/api/node"}:
+        if path not in {"/api/project", "/api/memo"}:
             self.discard_body(self.request_length())
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -1241,50 +1051,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
         # 绝不把异常抛到 HTTP 层（那会变成"空回复"）。
         params = query_params(self)
         try:
-            if path == "/api/node":
-                # 节点级删除：一个事务里删掉子树（回收站条目由前端先写好，便于撤销）
-                project_id = required_param(params, "projectId")
-                node_id = required_param(params, "nodeId")
-                expected_revision = int_param(params, "revision", required=False, default=None)
-                result = patch_project_nodes(
-                    project_id, expected_revision,
-                    [{"op": "delete", "nodeId": node_id}])
-                self.send_json(200, {"ok": True, **result})
-                return
-            if path == "/api/templates":
-                template_id = required_param(params, "id")
-                if not delete_template(template_id):
-                    self.send_json(404, {"error": "模板不存在"})
-                    return
-                self.send_json(200, {"ok": True, "templates": list_templates()})
-                return
-            if path == "/api/activity":
-                removed = clear_activity()
-                self.send_json(200, {"ok": True, "removed": removed, "entries": []})
-                return
-            if path == "/api/views":
-                view_id = required_param(params, "id")
-                if not delete_saved_view(view_id):
-                    self.send_json(404, {"error": "视图不存在"})
-                    return
-                self.send_json(200, {"ok": True, "views": list_saved_views()})
-                return
-            if path == "/api/summary":
-                summary_id = required_param(params, "id")
-                if not summary_storage.delete_summary(summary_id):
-                    self.send_json(404, {"error": "摘要不存在"})
-                    return
-                self.send_json(200, {"ok": True, "summaries": summary_storage.list_summaries(),
-                                     "total": summary_storage.count_summaries()})
-                return
-            if path == "/api/summaries":
-                summary_storage.clear_summaries()
-                self.send_json(200, {"ok": True, "summaries": [], "total": 0})
-                return
-            if path == "/api/background":
-                storage_service.delete_asset("background")
-                self.send_json(200, {"ok": True})
-                return
             if path == "/api/memo":
                 memo_id = required_param(params, "id")
                 expected_revision = int_param(params, "revision")
@@ -1326,13 +1092,6 @@ def main() -> None:
             f"SQLite integrity check failed; restore a backup from {BACKUP_DIR}"
         )
     ensure_schema()
-    # 自动归档：只归档"全部完成且很久没动"的项目；设置里没打开就什么都不做
-    try:
-        archived = storage_service.auto_archive_projects()
-        if archived.get("archived"):
-            print(f"Auto archived {len(archived['archived'])} completed project(s).")
-    except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
-        print(f"Auto archive skipped: {error}", file=sys.stderr)
     backup_service.create_daily_snapshot()
     review_count = review_storage.ensure_review_content_ready()
     if review_count is None:
@@ -1346,9 +1105,6 @@ def main() -> None:
     memo_storage.initialize()
     if not memo_storage.check_integrity():
         raise RuntimeError("备忘录 SQLite 完整性检查失败")
-    summary_storage.initialize()
-    if not summary_storage.check_integrity():
-        raise RuntimeError("摘要清单 SQLite 完整性检查失败")
     SESSION_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     handler = partial(TodoHandler, directory=str(APP_DIR))
     # 先 bind 成功再写 token 文件。反过来的话，两个实例几乎同时启动时，抢不到端口的那一个

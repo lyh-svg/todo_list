@@ -78,7 +78,6 @@ class ServerProcess:
             "TODO_SQLITE_FILE": str(workdir / "todo.sqlite3"),
             "TODO_SQLITE_BACKUP_DIR": str(workdir / "backups"),
             "TODO_MEMO_SQLITE_FILE": str(workdir / "memo.sqlite3"),
-            "TODO_SUMMARY_SQLITE_FILE": str(workdir / "summary.sqlite3"),
             "TODO_SESSION_TOKEN": TOKEN,
             "TODO_SESSION_TOKEN_FILE": str(workdir / "session.token"),
             "TODO_AI_PORT": str(self.port),
@@ -290,13 +289,15 @@ class BrowserFlowTests(unittest.TestCase):
         self.assertNotIn("浏览器测试项目", self.page.inner_text("#projectGrid"), "导入是整体替换")
 
     def test_05_restore_backup(self) -> None:
-        """恢复备份：先用 UI 建备份 → 用 API 改坏数据 → 用 UI 恢复到备份状态。"""
-        self.open_more_tools()
-        self.page.click("#createDatabaseBackupBtn")
-        self.page.wait_for_function(
-            "() => !document.getElementById('databaseBackupPickerButton').innerText.includes('还没有')",
-            timeout=15000,
-        )
+        """恢复备份：先触发一次"改动前快照" → 用 API 改坏数据 → 用 UI 恢复到快照状态。
+
+        备份 UI 的"创建 / 重命名 / 查看内容"已按冗余审计取消；仍然保留的写入路径是
+        改动前快照（snapshot）与每日快照，这里测的就是前者 + 列表/下载/恢复。
+        """
+        status, payload = self.server.api("/api/backup", method="POST",
+                                          body={"action": "snapshot", "reason": "browser-test"})
+        self.assertEqual(status, 200)
+        snapshot_name = payload["name"]
         # 改坏：把当前项目删掉（模拟误删）
         status, payload = self.server.api("/api/projects")
         self.assertEqual(status, 200)
@@ -313,7 +314,7 @@ class BrowserFlowTests(unittest.TestCase):
         self.open_more_tools()
         self.page.click("#databaseBackupPickerButton")
         self.page.wait_for_selector("#databaseBackupMenu .backup-picker-option")
-        self.page.click("#databaseBackupMenu .backup-picker-option")
+        self.page.click(f"#databaseBackupMenu .backup-picker-option:has-text('{snapshot_name}')")
         with self.page.expect_navigation(timeout=30000):
             self.page.click("#restoreDatabaseBackupBtn")
         self.wait_for_text("#projectGrid", "导入的项目", timeout=20000)

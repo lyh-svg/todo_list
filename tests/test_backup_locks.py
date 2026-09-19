@@ -9,7 +9,7 @@
 memo/summary 写会提交到被 os.replace 换掉的旧 inode 上，静默丢数据，而且**没有任何告警**。
 
 这里断言四件事：
-1. 三把锁分别来自 storage.state_lock / memo_storage.memo_lock / summary_storage.summary_lock；
+1. 两把锁分别来自 storage.state_lock / memo_storage.memo_lock；
 2. 某个模块拿不到锁时必须当场报错，而不是"少挡一把锁"继续跑；
 3. 三把锁互不相同（不能被别名成一把）；
 4. 真并发：持有这三把锁时，另一个线程写备忘录必须被挡住，释放后立刻完成。
@@ -33,12 +33,10 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-backup-locks-test-")
 os.environ.setdefault("TODO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "todo.sqlite3"))
 os.environ.setdefault("TODO_SQLITE_BACKUP_DIR", str(Path(_TEMP_DIR.name) / "backups"))
 os.environ.setdefault("TODO_MEMO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "memo.sqlite3"))
-os.environ.setdefault("TODO_SUMMARY_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "summary.sqlite3"))
 
 import backup_service  # noqa: E402
 import memo_storage  # noqa: E402
 import storage  # noqa: E402
-import summary_storage  # noqa: E402
 
 
 class _RecordingLock:
@@ -65,19 +63,17 @@ class BackupDatabaseLockTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         # 共享临时目录：本模块写过的备忘录库不能留给后面的用例。
-        for storage_file in (memo_storage.MEMO_DATABASE_FILE, summary_storage.SUMMARY_DATABASE_FILE):
+        for storage_file in (memo_storage.MEMO_DATABASE_FILE,):
             for suffix in ("", "-wal", "-shm"):
                 Path(f"{storage_file}{suffix}").unlink(missing_ok=True)
 
-    def test_acquires_the_three_public_locks(self) -> None:
+    def test_acquires_the_two_public_locks(self) -> None:
         log: list[str] = []
         with mock.patch.object(storage, "state_lock", lambda: _RecordingLock("state", log)), \
-                mock.patch.object(memo_storage, "memo_lock", lambda: _RecordingLock("memo", log)), \
-                mock.patch.object(summary_storage, "summary_lock", lambda: _RecordingLock("summary", log)):
+                mock.patch.object(memo_storage, "memo_lock", lambda: _RecordingLock("memo", log)):
             with backup_service._all_database_locks():
-                self.assertEqual(log, ["enter:state", "enter:memo", "enter:summary"])
-            self.assertEqual(log, ["enter:state", "enter:memo", "enter:summary",
-                                   "exit:summary", "exit:memo", "exit:state"])
+                self.assertEqual(log, ["enter:state", "enter:memo"])
+            self.assertEqual(log, ["enter:state", "enter:memo", "exit:memo", "exit:state"])
 
     def test_missing_lock_fails_loudly_instead_of_skipping(self) -> None:
         """拿不到锁必须炸：少挡一把锁继续恢复 = 静默丢数据。"""
@@ -87,9 +83,9 @@ class BackupDatabaseLockTests(unittest.TestCase):
                 with backup_service._all_database_locks():
                     pass
 
-    def test_the_three_locks_are_distinct(self) -> None:
-        locks = (storage.state_lock(), memo_storage.memo_lock(), summary_storage.summary_lock())
-        self.assertEqual(len({id(lock) for lock in locks}), 3, "三个库不能共用同一把锁")
+    def test_the_two_locks_are_distinct(self) -> None:
+        locks = (storage.state_lock(), memo_storage.memo_lock())
+        self.assertEqual(len({id(lock) for lock in locks}), 2, "两个库不能共用同一把锁")
         self.assertTrue(all(hasattr(lock, "acquire") for lock in locks))
 
     def test_holding_locks_blocks_concurrent_memo_write(self) -> None:

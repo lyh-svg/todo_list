@@ -222,7 +222,6 @@ body {
 }
 .backup-actions button,
 .backup-actions .import-btn,
-.backup-actions .background-upload-btn,
 .backup-picker {
     display: inline-flex;
     align-items: center;
@@ -242,15 +241,13 @@ body {
 }
 .backup-actions button:hover,
 .backup-actions .import-btn:hover,
-.backup-actions .background-upload-btn:hover,
 .backup-picker-toggle:hover {
     background: var(--primary-hover);
     box-shadow: 0 8px 18px rgba(92, 124, 250, 0.3);
     transform: translateY(-1px);
 }
 .backup-actions button:active,
-.backup-actions .import-btn:active,
-.backup-actions .background-upload-btn:active {
+.backup-actions .import-btn:active {
     transform: translateY(0) scale(0.98);
 }
 .backup-actions input[type="file"] {
@@ -432,30 +429,7 @@ body {
 }
 .repeat-badge { border-color: #cfe3d8; background: #f1faf5; color: #2f7a55; }
 #reminderStatus { margin: 6px 0 0; }
-/* 筛选视图栏与批量编辑（批次 3） */
-.view-bar {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-    margin: 10px 0 12px; padding: 8px 10px;
-    border: 1px solid #e2e8f5; border-radius: 10px; background: #f8faff;
-}
-.view-bar-label { font-size: 12px; font-weight: 600; color: #52607a; }
-.view-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
-.view-chip { display: inline-flex; align-items: stretch; border-radius: 999px; overflow: hidden; border: 1px solid #ccd8f0; }
-.view-chip-apply {
-    border: 0; background: #fff; color: #3a4a68; font-size: 12px; padding: 4px 10px; cursor: pointer;
-}
-.view-chip-apply:hover { background: #eef3ff; }
-.view-chip-remove {
-    border: 0; border-left: 1px solid #e2e8f5; background: #fff; color: #97a1b5;
-    font-size: 12px; padding: 4px 8px; cursor: pointer;
-}
-.view-chip-remove:hover { background: #fff0f0; color: #c0392b; }
-.view-empty { font-size: 12px; color: #97a1b5; }
-#saveViewBtn {
-    border: 1px solid #ccd8f0; background: #fff; color: var(--primary, #4d6ff0);
-    border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer;
-}
-#saveViewBtn:hover { background: #eef3ff; }
+/* 批量编辑（批次 3） */
 .batch-toolbar {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
     margin: 10px 0; padding: 8px 10px;
@@ -497,25 +471,6 @@ body {
 .import-report-line { margin: 0 0 5px; font-size: 12px; line-height: 1.6; color: #414b5f; }
 .settings-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; align-items: end; }
 .settings-row button { justify-self: start; min-height: 34px; }
-.template-list, .activity-list { display: grid; gap: 6px; max-height: 280px; overflow-y: auto; }
-.template-row {
-    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-    border: 1px solid var(--border); border-radius: 8px; background: #fff;
-}
-.template-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.template-info small { color: #8995a6; font-size: 11px; }
-.template-row .utility-secondary-btn, .template-delete { flex: 0 0 auto; min-height: 28px; padding: 2px 10px; font-size: 11px; }
-.template-delete { color: var(--delete); }
-.activity-row {
-    display: flex; align-items: baseline; gap: 8px; padding: 6px 8px;
-    border-bottom: 1px dashed var(--border); font-size: 12px; color: #414b5f;
-}
-.activity-time { flex: 0 0 88px; color: #9aa5b4; font-variant-numeric: tabular-nums; }
-.activity-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.activity-tag {
-    flex: 0 0 auto; padding: 1px 6px; border-radius: 999px;
-    background: var(--primary-soft); color: var(--primary); font-size: 10px;
-}
 /* 今日工作台快捷添加（批次 2） */
 .workbench-quick { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; min-width: 0; }
 .workbench-quick input {
@@ -1312,23 +1267,6 @@ body {
     cursor: pointer;
     font-size: 11px;
 }
-.assessment-question {
-    margin: 0 0 14px;
-    padding: 11px 12px;
-    border-left: 3px solid #5c7cfa;
-    border-radius: 4px;
-    background: #f1f4ff;
-    color: #2f3741;
-    font-size: 12px;
-    line-height: 1.6;
-    white-space: pre-wrap;
-}
-.assessment-question-label {
-    margin-bottom: 4px;
-    color: #435dc0;
-    font-size: 11px;
-    font-weight: 800;
-}
 .assessment-consent {
     margin: 4px 0 14px;
     color: var(--text-light);
@@ -1450,7 +1388,6 @@ body.assessment-open {
 }
 button:focus-visible,
 .import-btn:focus-within,
-.background-upload-btn:focus-within,
 select:focus-visible {
     outline: 3px solid var(--primary-soft);
     outline-offset: 2px;
@@ -1512,16 +1449,14 @@ select:focus-visible {
     .detail-tools select,
     .backup-actions,
     .backup-actions button,
-    .backup-actions .import-btn,
-    .backup-actions .background-upload-btn {
+    .backup-actions .import-btn {
         flex: 1;
     }
     .backup-picker {
         flex: 1;
     }
     .backup-actions button,
-    .backup-actions .import-btn,
-    .backup-actions .background-upload-btn {
+    .backup-actions .import-btn {
         text-align: center;
     }
     .backup-actions {
@@ -1529,8 +1464,7 @@ select:focus-visible {
         flex-wrap: wrap;
     }
     .backup-actions button,
-    .backup-actions .import-btn,
-    .backup-actions .background-upload-btn {
+    .backup-actions .import-btn {
         flex: 1 1 calc(50% - 6px);
     }
     .project-card {
@@ -1636,8 +1570,7 @@ body.modal-open { overflow: hidden; }
 }
 .shortcut-btn,
 .backup-actions button,
-.backup-actions .import-btn,
-.backup-actions .background-upload-btn {
+.backup-actions .import-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1657,8 +1590,7 @@ body.modal-open { overflow: hidden; }
 }
 .shortcut-btn:hover,
 .backup-actions button:hover,
-.backup-actions .import-btn:hover,
-.backup-actions .background-upload-btn:hover {
+.backup-actions .import-btn:hover {
     transform: none;
     border-color: #9bb1d9;
     background: #f7f9fd;
@@ -2140,9 +2072,6 @@ body.modal-open { overflow: hidden; }
 .memo-delete-btn { color: var(--delete); }
 .memo-updated { margin-top: 8px; color: #9aa5b4; font-size: 9px; }
 .memo-empty { margin: 0; padding: 22px 6px; color: #8995a6; font-size: 11px; text-align: center; }
-.memo-database-tools { display: flex; gap: 7px; margin-top: 10px; }
-.memo-import-label { position: relative; overflow: hidden; }
-.memo-import-label input { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
 
 @media (max-width: 760px) {
     .project-grid { grid-template-columns: 1fr; }
@@ -2181,8 +2110,6 @@ body.modal-open { overflow: hidden; }
     .memo-editor-toolbar { align-items: flex-start; }
     .memo-save-group { flex-wrap: wrap; }
     .memo-save-status { flex-basis: 100%; text-align: right; }
-    .memo-database-tools { flex-wrap: wrap; }
-    .memo-database-tools > * { flex: 1; }
     /* 窄屏下工具条/快捷添加必须能换行，否则会横向溢出 */
     .workbench-quick { width: 100%; margin-left: 0; }
     .workbench-quick input { flex-basis: 100%; max-width: none; }
@@ -2420,7 +2347,6 @@ body.modal-open { overflow: hidden; }
 .summary-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .summary-question { font-size: 12px; color: var(--text-light); word-break: break-word; }
 .summary-content { white-space: pre-wrap; margin-top: 6px; font-size: 14px; line-height: 1.6; color: var(--text); word-break: break-word; }
-.summary-meta { margin-top: 6px; font-size: 11px; color: var(--text-light); }
 .summary-delete { flex-shrink: 0; }
 /* ===== 拟题 ===== */
 .extra-ask { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-light); }
@@ -2436,14 +2362,11 @@ body.modal-open { overflow: hidden; }
 /* ===== 摘要清单: 大弹窗 + 网格卡片 ===== */
 .utility-modal .utility-dialog.utility-wide { width: min(96vw, 1120px); max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column; }
 .utility-modal .utility-dialog.utility-wide .utility-body { overflow-y: auto; flex: 1; }
-.summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .summary-item { cursor: pointer; transition: border-color var(--transition), box-shadow var(--transition); }
 .summary-item:hover { border-color: var(--primary); box-shadow: var(--shadow); }
 .summary-question { font-weight: 700; color: var(--text); }
 .summary-content { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .summary-item.expanded .summary-content { display: block; -webkit-line-clamp: unset; }
-.summary-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
-.summary-date { font-size: 11px; color: var(--text-light); }
 /* ===== 题目区排版优化 ===== */
 .assessment-question-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .assessment-question-heading > * { flex: 0 0 auto; white-space: nowrap; }

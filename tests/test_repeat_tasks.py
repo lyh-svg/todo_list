@@ -21,7 +21,6 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-repeat-test-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "summary.sqlite3")
 
 import storage  # noqa: E402
 
@@ -154,6 +153,84 @@ class RepeatStorageTests(unittest.TestCase):
                          ["第1周", "顶层周期任务", "顶层周期任务"])
         self.assertEqual(project["tree"][-1]["completed"], False)
         self.assertNotEqual(project["tree"][-1]["id"], "top")
+
+    def test_single_completion_via_patch_spawns_on_server(self) -> None:
+        """Q13：单条完成（节点 patch）由服务端生成下一次，并回传副本给前端拼接。"""
+        storage.replace_projects([make_project([
+            item("i1", "每天背单词", dueDate=TODAY, repeat={"freq": "daily"}),
+        ])])
+        result = storage.patch_project_nodes("p1", 1, [
+            {"op": "update", "nodeId": "i1",
+             "fields": {"completed": True, "completedAt": f"{TODAY}T09:00:00"}},
+        ])
+        self.assertEqual(len(result["spawned"]), 1, "patch 完成周期任务必须生成下一次")
+        entry = result["spawned"][0]
+        self.assertEqual(entry["parentId"], "p1-d", "副本要挂在同一个父节点下")
+        self.assertEqual(entry["node"]["dueDate"], (date.today() + timedelta(days=1)).isoformat())
+        self.assertFalse(entry["node"]["completed"])
+        self.assertEqual(entry["node"]["repeat"], {"freq": "daily", "interval": 1})
+        nodes = storage.read_project("p1")[0]["tree"][0]["children"][0]["children"]
+        self.assertEqual(len(nodes), 2, "库里也要真的多出这一条")
+        self.assertEqual([node["text"] for node in nodes], ["每天背单词", "每天背单词"])
+
+    def test_patch_that_does_not_complete_does_not_spawn(self) -> None:
+        """守卫：改标签/取消完成都不该生成下一次。"""
+        storage.replace_projects([make_project([
+            item("i1", "每天背单词", dueDate=TODAY, repeat={"freq": "daily"}),
+        ])])
+        tagged = storage.patch_project_nodes("p1", 1, [
+            {"op": "update", "nodeId": "i1", "fields": {"tags": ["英语"]}},
+        ])
+        self.assertEqual(tagged["spawned"], [])
+        completed = storage.patch_project_nodes("p1", 2, [
+            {"op": "update", "nodeId": "i1",
+             "fields": {"completed": True, "completedAt": f"{TODAY}T09:00:00"}},
+        ])
+        self.assertEqual(len(completed["spawned"]), 1)
+        undone = storage.patch_project_nodes("p1", 3, [
+            {"op": "update", "nodeId": "i1", "fields": {"completed": False, "completedAt": None}},
+        ])
+        self.assertEqual(undone["spawned"], [], "取消完成不能生成")
+        self.assertEqual(len(storage.read_project("p1")[0]["tree"][0]["children"][0]["children"]), 2)
+
+    def test_full_save_spawns_on_completion_flip(self) -> None:
+        """Q13：整树保存（非 patch 路径）也由服务端按"翻转"生成，且 revision 只前进一次。"""
+        storage.replace_projects([make_project([
+            item("i1", "每天背单词", dueDate=TODAY, repeat={"freq": "daily"}),
+        ])])
+        project, revision = storage.read_project("p1")
+        node = project["tree"][0]["children"][0]["children"][0]
+        node["completed"] = True
+        node["completedAt"] = f"{TODAY}T09:00:00"
+        saved_revision, summary, spawned = storage.write_project_with_occurrences(project, revision)
+        self.assertEqual(saved_revision, revision + 1)
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0]["parentId"], "p1-d")
+        project_after = storage.read_project("p1")[0]
+        self.assertEqual(len(project_after["tree"][0]["children"][0]["children"]), 2)
+        self.assertEqual(summary["_revision"], revision + 1)
+
+    def test_full_save_is_idempotent_and_ignores_new_completed_nodes(self) -> None:
+        """再存一次（已完成没再翻转）不生成；新建一个"生来就完成"的节点也不生成。"""
+        storage.replace_projects([make_project([
+            item("i1", "每天背单词", dueDate=TODAY, repeat={"freq": "daily"}),
+        ])])
+        project, revision = storage.read_project("p1")
+        node = project["tree"][0]["children"][0]["children"][0]
+        node["completed"] = True
+        _rev, _summary, first = storage.write_project_with_occurrences(project, revision)
+        self.assertEqual(len(first), 1)
+
+        same, revision_after = storage.read_project("p1")
+        _rev2, _summary2, second = storage.write_project_with_occurrences(same, revision_after)
+        self.assertEqual(second, [], "没有新的完成翻转就不能再生成")
+
+        fresh, revision_now = storage.read_project("p1")
+        fresh["tree"][0]["children"][0]["children"].append(
+            item("i-new", "生来就完成的周期任务", dueDate=TODAY, repeat={"freq": "daily"},
+                 completed=True, completedAt=f"{TODAY}T09:00:00"))
+        _rev3, _summary3, third = storage.write_project_with_occurrences(fresh, revision_now)
+        self.assertEqual(third, [], "库里没有过的新节点不算'完成了一次'")
 
     def test_batch_complete_ignores_stale_node_ids(self) -> None:
         """走公开 API：批量请求里混入"早就删掉"的节点 id，也不能在项目根留下垃圾。"""

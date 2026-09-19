@@ -18,7 +18,6 @@ from prompts import (
     REVIEW_GRADE_PROMPT,
     REVIEW_POINTS_PROMPT,
     REVIEW_REMEDIAL_PROMPT,
-    SUMMARY_PROMPT,
     SYSTEM_PROMPT,
 )
 
@@ -633,65 +632,6 @@ def plan_project(topic: str, model_alias: str = "flash") -> dict[str, Any]:
         "description": str(parsed.get("description", ""))[:500],
         "tree": tree,
     }
-
-
-def summarize_knowledge(question: str, context: dict[str, Any] | None = None,
-                        model_alias: str = "flash") -> dict[str, str]:
-    settings = read_settings()
-    api_key = settings.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("未在 %s 中配置 DEEPSEEK_API_KEY" % CONFIG_FILE.name)
-    ctx = context if isinstance(context, dict) else {}
-    user_prompt = json.dumps({
-        "题目": str(question or "").strip()[:4000],
-        "课程": str(ctx.get("project", ""))[:500],
-        "周": str(ctx.get("week", ""))[:500],
-        "学习单元": str(ctx.get("unit", ""))[:500],
-    }, ensure_ascii=False, indent=2)
-    if _mock_enabled():
-        return {"summary": "（模拟摘要）本题核心：理解函数作用域与闭包变量查找；注意 inner 里的 x 是作用于内层的绑定，不影响外层 x。"}
-    models = model_aliases(settings)
-    alias = model_alias if model_alias in models else "flash"
-    request_body = {
-        "model": models[alias],
-        "temperature": 0.3,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": SUMMARY_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
-    request = urllib.request.Request(
-        api_url(settings),
-        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
-                 "Accept": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=75) as response:
-            upstream = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")[:1000]
-        raise RuntimeError("DeepSeek API 返回 %s: %s" % (error.code, detail)) from None
-    except urllib.error.URLError as error:
-        raise RuntimeError("无法连接 DeepSeek API: %s" % error.reason) from None
-    except (TimeoutError, OSError) as error:
-        # 连接建立之后的读超时/连接中断不是 URLError，原样冒出去会变成"未预期错误"。
-        raise RuntimeError("DeepSeek API 连接中断或超时: %s" % error) from None
-    try:
-        content = upstream["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError("DeepSeek API 响应格式不正确") from None
-    summary = ""
-    try:
-        parsed = parse_json_object(str(content))
-        summary = str(parsed.get("summary", "")).strip()
-    except ValueError:
-        summary = str(content).strip()
-    if not summary:
-        raise RuntimeError("AI 未生成有效摘要")
-    return {"summary": summary[:5000]}
 
 
 def _review_point_count(count: Any) -> int:

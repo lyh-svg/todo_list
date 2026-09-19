@@ -67,9 +67,9 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "周期任务的克隆不能带上 children（否则节点 ID 重复）",
         "storage.py",
-        crlf('        # 不能连 children 一起深拷贝：子节点 id 会重复，_flatten_nodes 会抛\n'
-             '        # "节点 ID 重复" 让整批事务回滚。周期任务的下一次只复制任务本身。\n'
-             '        clone["children"] = []\n'),
+        crlf('    # 不能连 children 一起深拷贝：子节点 id 会重复，_flatten_nodes 会抛\n'
+             '    # "节点 ID 重复" 让整批事务回滚。周期任务的下一次只复制任务本身。\n'
+             '    clone["children"] = []\n'),
         "",
         [sys.executable, "-m", "unittest",
          "tests.test_repeat_tasks.RepeatStorageTests.test_spawn_drops_children_to_avoid_duplicate_ids"],
@@ -150,19 +150,15 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "setNodeCompleted 的判空必须在解引用之前",
         "js/app.js",
-        crlf("        if (!node) return { spawned: null, project: null };\n"
-             "        // 记住原状态：只有\"未完成 → 完成\"这一次才生成下一次周期任务。\n"
-             "        // 否则对已完成的周期任务反复点（分组复选框会把整棵子树再标一遍）会指数级复制。\n"
-             "        const wasCompleted = Boolean(node.completed);\n"
+        crlf("        if (!node) return { project: null };\n"
              "        node.completed = Boolean(completed);\n"
              "        node.completedAt = node.completed ? new Date().toISOString() : null;\n"
              "        // 容器（周/单元）到这里就收工：它自己的完成标记必须照写（分组复选框与空单元的显示都靠它），\n"
              "        // 但周期任务与复习安排只对任务生效。\n"
-             "        if (node.type !== 'item') return { spawned: null, project: null };\n"),
-        crlf("        const wasCompleted = Boolean(node.completed);\n"
-             "        node.completed = Boolean(completed);\n"
+             "        if (node.type !== 'item') return { project: null };\n"),
+        crlf("        node.completed = Boolean(completed);\n"
              "        node.completedAt = node.completed ? new Date().toISOString() : null;\n"
-             "        if (!node || node.type !== 'item') return { spawned: null, project: null };\n"),
+             "        if (!node || node.type !== 'item') return { project: null };\n"),
         ["node", "tests/frontend/verify-node-completed.js"],
     ),
     (
@@ -218,16 +214,6 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
         crlf("                    staged.write_bytes(archive.read(file_name))\n"),
         [sys.executable, "-m", "unittest", "tests.test_backup_memory.BackupMemoryTests."
          "test_restore_stages_files_without_loading_them"],
-    ),
-    (
-        "自动归档必须先用 SQL 筛完成度（不能逐个读树）",
-        "storage.py",
-        crlf("                if total == 0 or completed < total:\n"
-             "                    continue\n"),
-        crlf("                if False:\n"
-             "                    continue\n"),
-        [sys.executable, "-m", "unittest", "tests.test_import_export_templates."
-         "AutoArchiveTests.test_auto_archive_only_reads_qualifying_projects"],
     ),
     (
         "回收站存在性校验必须走轻量查询（不能全量列一遍）",
@@ -436,10 +422,9 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "三库锁必须显式点名（getattr 猜锁名拿不到锁时会静默少挡一把）",
         "backup_service.py",
-        crlf("    for lock in (storage_service.state_lock(), memo_storage.memo_lock(),\n"
-             "                 summary_storage.summary_lock()):\n"
+        crlf("    for lock in (storage_service.state_lock(), memo_storage.memo_lock()):\n"
              "        stack.enter_context(lock)\n"),
-        crlf("    for module in (storage_service, memo_storage, summary_storage):\n"
+        crlf("    for module in (storage_service, memo_storage):\n"
              "        lock = (getattr(module, \"_database_lock\", None)\n"
              "                or getattr(module, \"_memo_lock\", None)\n"
              "                or getattr(module, \"_summary_lock\", None))\n"
@@ -506,6 +491,23 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
         "            content.innerHTML = richToHtml(message.content);",
         "            content.innerHTML = message.content;",
         ["node", "tests/frontend/verify-xss-surface.js"],
+    ),
+    (
+        "单条完成（节点 patch）也必须由服务端生成周期任务的\u201c下一次\u201d",
+        "storage.py",
+        crlf("                    spawned = _spawn_occurrences(tree_project, flipped)\n"
+             "                    _insert_spawned_nodes(connection, project_key, spawned)\n"),
+        crlf("                    spawned = []\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_repeat_tasks.RepeatStorageTests.test_single_completion_via_patch_spawns_on_server"],
+    ),
+    (
+        "patch 里的空 completedAt 必须落成 ''（列是 NOT NULL DEFAULT ''）",
+        "storage.py",
+        crlf('    "completedAt": lambda value: (str(value)[:40] if value else ""),\n'),
+        crlf('    "completedAt": lambda value: (str(value)[:40] if value else None),\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_node_patch.NodePatchTests.test_null_completed_at_is_stored_as_empty_string"],
     ),
 ]
 

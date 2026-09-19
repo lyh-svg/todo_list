@@ -1,6 +1,6 @@
 // P4 验证：一次勾选不该付两次"整棵项目树 stringify"。
 //
-// 做法和 dom-smoke / measure-scale 一致：从 js/app.js 抽出**真实函数**，配最小桩跑，
+// 做法和 dom-smoke 一致：从 js/app.js 抽出**真实函数**，配最小桩跑，
 // 并且把 JSON.stringify 换成会计数的版本——断言的是"到底序列化了几次、序列化了谁"，
 // 不是耗时（耗时随机器波动）。
 const fs = require('fs');
@@ -93,6 +93,7 @@ const BUNDLE = [
     'projectMutationSeq', 'markProjectDirty',
     'rememberSavedProjectState', 'rememberProjectBaseline', 'forgetProjectBaseline', 'forgetAllProjectBaselines',
     'canUseNodePatch', 'savePending', 'saveProjects', 'flushProjectsSave',
+    'applySpawnedOccurrences',
 ];
 
 function buildSandbox(loaded) {

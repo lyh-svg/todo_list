@@ -24,7 +24,6 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-workbench-paths-test-")
 os.environ.setdefault("TODO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "todo.sqlite3"))
 os.environ.setdefault("TODO_SQLITE_BACKUP_DIR", str(Path(_TEMP_DIR.name) / "backups"))
 os.environ.setdefault("TODO_MEMO_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "memo.sqlite3"))
-os.environ.setdefault("TODO_SUMMARY_SQLITE_FILE", str(Path(_TEMP_DIR.name) / "summary.sqlite3"))
 
 import storage  # noqa: E402
 
@@ -321,7 +320,7 @@ class ReviewQueueAndSearchPathTests(unittest.TestCase):
 
     def test_search_on_container_lists_descendants_with_paths(self) -> None:
         found = storage.search_everything("第1周")
-        # 命中周本身，也连带它的后代（口径与前端 collectSearchMatches 一致）
+        # 命中周本身，也连带它的后代
         self.assertEqual({row["label"] for row in found["results"]}, {"第1周", "单元1", "要复习的任务"})
         item = next(row for row in found["results"] if row["label"] == "要复习的任务")
         self.assertEqual(item["detail"], "第1周 / 单元1")

@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -21,7 +21,6 @@ _TEMP_DIR = tempfile.TemporaryDirectory(prefix="todo-import-export-test-")
 os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "memo.sqlite3")
-os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(Path(_TEMP_DIR.name) / "summary.sqlite3")
 
 import storage  # noqa: E402
 
@@ -166,37 +165,6 @@ class TemplateTests(ResetMixin, unittest.TestCase):
         with self.assertRaises(ValueError):
             storage.create_project_from_template("不存在")
 
-    def test_save_project_as_template_strips_state(self) -> None:
-        saved = storage.save_project_as_template("p1", name="我的模板", description="来自项目一")
-        self.assertEqual(saved["name"], "我的模板")
-        stored = next(entry for entry in storage.list_templates() if entry["id"] == saved["id"])
-        nodes = storage._walk_nodes(stored["tree"])
-        self.assertTrue(nodes)
-        for node in nodes:
-            self.assertFalse(node.get("completed"))
-            self.assertIsNone(node.get("assessment"))
-            self.assertEqual(node.get("assessmentHistory", 0), 0)
-            self.assertNotIn("review", node)
-        # 用来建项目也能用
-        created = storage.create_project_from_template(saved["id"])
-        self.assertEqual(created["project"]["name"], "我的模板")
-
-    def test_same_name_overwrites_instead_of_duplicating(self) -> None:
-        first = storage.save_project_as_template("p1", name="同名模板")
-        storage.replace_projects([make_project("p2", "项目二")])
-        second = storage.save_project_as_template("p2", name="同名模板")
-        self.assertEqual(first["id"], second["id"])
-        names = [entry["name"] for entry in storage.list_templates()]
-        self.assertEqual(names.count("同名模板"), 1)
-
-    def test_delete_template(self) -> None:
-        saved = storage.save_project_as_template("p1", name="待删模板")
-        self.assertTrue(storage.delete_template(saved["id"]))
-        self.assertFalse(storage.delete_template(saved["id"]))
-        with self.assertRaises(ValueError):
-            storage.delete_template("builtin-8-week-review")
-
-
 class ImportPreviewTests(ResetMixin, unittest.TestCase):
     def incoming(self, project_id: str = "p1", *, extra_node: bool = True) -> dict:
         project = make_project(project_id)
@@ -316,115 +284,3 @@ class ImportModeTests(ResetMixin, unittest.TestCase):
         self.assertTrue(any(entry["kind"] == "import" for entry in storage.list_activity(5)))
 
 
-class AutoArchiveTests(ResetMixin, unittest.TestCase):
-    def _set_updated(self, project_id: str, days_ago: int) -> None:
-        stamp = (storage.datetime.now() - timedelta(days=days_ago)).isoformat(timespec="seconds")
-        with storage.open_state_database() as connection:
-            connection.execute("UPDATE projects SET updated_at=? WHERE project_id=?",
-                               (stamp, project_id))
-
-    def test_disabled_by_default(self) -> None:
-        self._set_updated("p1", 100)
-        result = storage.auto_archive_projects()
-        self.assertEqual(result["archived"], [])
-        self.assertIn("autoArchiveEnabled", result.get("skipped", ""))
-
-    def test_archives_only_fully_completed_old_projects(self) -> None:
-        completed = make_project("done", "已完成项目")
-        for node in storage._walk_nodes(completed["tree"]):
-            if node["type"] == "item":
-                node["completed"] = True
-        storage.replace_projects([make_project("p1"), completed])
-        self._set_updated("p1", 100)
-        self._set_updated("done", 100)
-        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 30})
-        result = storage.auto_archive_projects()
-        self.assertEqual([entry["id"] for entry in result["archived"]], ["done"])
-        summaries = {entry["id"]: entry for entry in storage.read_project_summaries()}
-        self.assertTrue(summaries["done"]["archived"])
-        self.assertFalse(bool(summaries["p1"].get("archived")))
-        self.assertTrue(any(entry["kind"] == "auto-archive" for entry in storage.list_activity(5)))
-
-    def test_auto_archive_only_reads_qualifying_projects(self) -> None:
-        """候选项目先用 SQL 筛完成度，只有真正要归档的才去重建树（P11）。
-
-        以前对每个"很久没动"的项目都 _read_project_from_connection 重建整棵树只为判断是否全部完成：
-        50 个项目 / 111,220 节点实测 570 ms，其中没一个能归档。
-        """
-        pending = [make_project(f"p{index}", f"没完成 {index}") for index in range(5)]
-        done = make_project("done", "已完成")
-        for node in storage._walk_nodes(done["tree"]):
-            if node["type"] == "item":
-                node["completed"] = True
-        storage.replace_projects(pending + [done])
-        for index in range(5):
-            self._set_updated(f"p{index}", 100)
-        self._set_updated("done", 100)
-        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 30})
-
-        calls: list[str] = []
-        original = storage._read_project_from_connection
-
-        def counted(connection, project_id):
-            calls.append(str(project_id))
-            return original(connection, project_id)
-
-        storage._read_project_from_connection = counted
-        try:
-            result = storage.auto_archive_projects()
-        finally:
-            storage._read_project_from_connection = original
-        self.assertEqual([entry["id"] for entry in result["archived"]], ["done"])
-        self.assertEqual(calls, ["done"], f"只该读真正要归档的项目，实际读了 {calls}")
-
-    def test_incomplete_optional_item_blocks_auto_archive(self) -> None:
-        """完成度口径不变：选做任务没做完也不算"全部完成"（沿用 count_node_progress 的口径）。"""
-        project = make_project("opt", "含选做")
-        for node in storage._walk_nodes(project["tree"]):
-            if node["type"] == "item":
-                node["completed"] = True
-        project["tree"][0]["children"][0]["children"].append({
-            "id": "opt-extra", "type": "item", "text": "没做完的选做任务", "completed": False,
-            "completedAt": None, "optional": True, "assessmentRequired": False,
-            "assessmentHistory": 0, "createdAt": TODAY, "children": []})
-        storage.replace_projects([project])
-        self._set_updated("opt", 100)
-        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 30})
-        result = storage.auto_archive_projects()
-        self.assertEqual(result["archived"], [], "选做没做完就不该自动归档")
-
-        with storage.open_state_database() as connection:
-            connection.execute("UPDATE nodes SET completed=1 WHERE project_id='opt' AND node_id='opt-extra'")
-        result = storage.auto_archive_projects()
-        self.assertEqual([entry["id"] for entry in result["archived"]], ["opt"], "补完后才归档")
-
-    def test_recent_projects_are_left_alone(self) -> None:
-        completed = make_project("done", "刚完成的项目")
-        for node in storage._walk_nodes(completed["tree"]):
-            if node["type"] == "item":
-                node["completed"] = True
-        storage.replace_projects([completed])
-        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 30})
-        self.assertEqual(storage.auto_archive_projects()["archived"], [])
-
-    def test_inbox_is_never_auto_archived(self) -> None:
-        storage.add_inbox_item({"text": "收集箱任务", "completed": True})
-        storage._read_project_from_connection  # noqa: B018 - 明确只用公开接口
-        self._set_updated("inbox", 100)
-        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 1})
-        result = storage.auto_archive_projects()
-        self.assertNotIn("inbox", [entry["id"] for entry in result["archived"]])
-
-    def test_explicit_days_argument_overrides_settings(self) -> None:
-        completed = make_project("done", "完成")
-        for node in storage._walk_nodes(completed["tree"]):
-            if node["type"] == "item":
-                node["completed"] = True
-        storage.replace_projects([completed])
-        self._set_updated("done", 10)
-        self.assertEqual([entry["id"] for entry in storage.auto_archive_projects(days=5)["archived"]],
-                         ["done"])
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
