@@ -620,6 +620,125 @@ def reveal(code: str, question_type: str) -> dict[str, Any]:
     return block
 
 
+# ---------- AI 现场出题（临时加练 + 收藏库） ----------
+
+AI_QUESTION_HISTORY_LIMIT = 5
+
+
+def ai_question_context(code: str) -> dict[str, Any]:
+    """出题上下文：知识点内容（含四种题型的"题面"，**不含答案**）+ 最近 5 条作答 + 薄弱标记。"""
+    with _connection() as connection:
+        point = connection.execute(
+            "SELECT title,content_json,module,level,minutes FROM review_points WHERE code=?",
+            (str(code),)).fetchone()
+        if point is None:
+            raise ValueError("知识点不存在")
+        rows = connection.execute(
+            "SELECT question_type,grade,answer,reviewed_on FROM review_attempts "
+            "WHERE code=? ORDER BY created_at DESC LIMIT ?",
+            (str(code), AI_QUESTION_HISTORY_LIMIT)).fetchall()
+        state = connection.execute(
+            "SELECT due,weak FROM review_states WHERE code=?", (str(code),)).fetchone()
+    content = json.loads(point["content_json"])
+    prompts = {
+        kind: str((content.get(kind) or {}).get("prompt") or "").strip()
+        for kind in review_content.QUESTION_TYPES
+    }
+    return {
+        "code": str(code), "title": point["title"], "module": point["module"],
+        "level": point["level"], "minutes": int(point["minutes"]),
+        "pitfalls": [str(item) for item in (content.get("pitfalls") or [])],
+        "existingPrompts": prompts,
+        "weak": bool(state["weak"]) if state else False,
+        "due": str(state["due"]) if state else "",
+        "history": [{"questionType": str(row["question_type"]), "grade": int(row["grade"]),
+                     "answer": str(row["answer"])[:200], "reviewedOn": str(row["reviewed_on"])}
+                    for row in rows],
+    }
+
+
+def collect_ai_question(code: str, question_type: str, prompt: str, question_code: str = "",
+                        focus: str = "", reference: dict[str, Any] | None = None) -> dict[str, Any]:
+    """把 AI 现场出的题收进题库：校验 → 规范化 → 落库（完全相同的题复用已有行，防连点重复）。"""
+    question = review_content.normalize_ai_question({
+        "questionType": question_type, "prompt": prompt, "code": question_code,
+        "focus": focus, "reference": reference or {},
+    })
+    errors = review_content.validate_ai_question(question, require_reference=True)
+    if errors:
+        raise ValueError("AI 题不合法：" + "；".join(errors[:3]))
+    payload = _json(question)
+    stamp = _now()
+    with storage.state_lock(), _connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM review_points WHERE code=?", (str(code),)).fetchone() is None:
+            raise ValueError("知识点不存在")
+        existing = connection.execute(
+            "SELECT question_id,created_at FROM review_ai_questions WHERE code=? AND content_json=?",
+            (str(code), payload)).fetchone()
+        if existing is not None:
+            return {"id": str(existing["question_id"]), "code": str(code),
+                    "questionType": question["questionType"],
+                    "createdAt": str(existing["created_at"]), "duplicated": True}
+        question_id = str(uuid.uuid4())
+        connection.execute(
+            "INSERT INTO review_ai_questions(question_id,code,question_type,content_json,"
+            "created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (question_id, str(code), question["questionType"], payload, stamp, stamp))
+    return {"id": question_id, "code": str(code), "questionType": question["questionType"],
+            "createdAt": stamp, "duplicated": False}
+
+
+def list_ai_questions(code: str | None = None) -> list[dict[str, Any]]:
+    """已收藏的 AI 题：只给题面与考察点，参考答案走 reveal（列表绝不吐 reference）。"""
+    sql = ("SELECT question_id,code,question_type,content_json,created_at "
+           "FROM review_ai_questions")
+    params: tuple[Any, ...] = ()
+    if code:
+        sql += " WHERE code=?"
+        params = (str(code),)
+    sql += " ORDER BY created_at,question_id"
+    items: list[dict[str, Any]] = []
+    with _connection() as connection:
+        for row in connection.execute(sql, params):
+            content = json.loads(row["content_json"])
+            items.append({"id": str(row["question_id"]), "code": str(row["code"]),
+                          "questionType": str(row["question_type"]),
+                          "prompt": str(content.get("prompt") or ""),
+                          "questionCode": str(content.get("code") or ""),
+                          "focus": str(content.get("focus") or ""),
+                          "createdAt": str(row["created_at"])})
+    return items
+
+
+def read_ai_question(question_id: Any) -> dict[str, Any] | None:
+    """读一道收藏题的完整内容（含 reference）；不存在返回 None。"""
+    with _connection() as connection:
+        row = connection.execute(
+            "SELECT question_id,code,question_type,content_json,created_at "
+            "FROM review_ai_questions WHERE question_id=?", (str(question_id),)).fetchone()
+    if row is None:
+        return None
+    content = json.loads(row["content_json"])
+    return {"id": str(row["question_id"]), "code": str(row["code"]),
+            "questionType": str(row["question_type"]), "createdAt": str(row["created_at"]),
+            **content}
+
+
+def delete_ai_question(question_id: Any) -> dict[str, Any]:
+    """删除一道收藏题，返回 {code, items}（该点删除后的剩余列表）；未知 id 抛 ValueError。"""
+    with storage.state_lock(), _connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT code FROM review_ai_questions WHERE question_id=?",
+                                 (str(question_id),)).fetchone()
+        if row is None:
+            raise ValueError("AI 题不存在")
+        code = str(row["code"])
+        connection.execute("DELETE FROM review_ai_questions WHERE question_id=?",
+                           (str(question_id),))
+    return {"code": code, "items": list_ai_questions(code)}
+
+
 def finish_session(session_id: str, *, answered: int, grade_counts: dict[int, int],
                    duration_ms: int) -> int:
     """标记会话结束并返回受影响行数：0 表示 sessionId 不存在，调用方应据此报错。"""
