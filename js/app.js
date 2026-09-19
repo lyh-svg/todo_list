@@ -6272,6 +6272,7 @@ let knowledgePoints = [];
     let aiPractice = null;
     // 收藏题的本地缓存：知识点页徽标/弹窗共用；收藏/删除后就地作废。
     let aiQuestionsLoaded = false;
+    let aiLibraryContainer = null;
     const AI_TYPE_LABELS = { concept: '概念题', predict: '输出预测', debug: '找错', code_task: '写实现' };
 
     function renderAiVerdict(container, verdict, reference) {
@@ -6513,8 +6514,10 @@ let knowledgePoints = [];
         if (state.surface === 'card') {
             aiPracticeRestoreCard();
         } else {
-            state.container.replaceChildren();
-            state.container.hidden = true;
+            // 弹窗里加练面板与「我的 AI 题」清单各占一个容器，清父容器才真的收干净
+            // （DOM 桩里 closeUtilityModal 的 innerHTML='' 清不掉子节点，真实浏览器里等价）。
+            utilityBody.replaceChildren();
+            aiLibraryContainer = null;
             closeUtilityModal();
         }
     }
@@ -6547,9 +6550,18 @@ let knowledgePoints = [];
 
     function openAiPracticeModal(code, title) {
         showUtilityModal('AI 加练', title || '现场出题');
-        const container = utilityBody;
+        // 弹窗里两块内容各占一个容器：加练面板与「我的 AI 题」列表互不覆盖
+        // （在同一个 utilityBody 上先渲染列表再渲染面板，会把列表清掉）。
+        utilityBody.replaceChildren();
+        const practiceBox = document.createElement('div');
+        practiceBox.className = 'ai-practice-box';
+        const libraryBox = document.createElement('div');
+        libraryBox.className = 'ai-library-box';
+        utilityBody.append(practiceBox, libraryBox);
+        aiLibraryContainer = libraryBox;
         aiPractice = null;
-        startAiPractice(code, container, title);
+        renderAiQuestionLibrary(code, title);
+        startAiPractice(code, practiceBox, title);
     }
 
     async function deleteAiQuestion(questionId, code, title) {
@@ -6560,7 +6572,9 @@ let knowledgePoints = [];
             if (!response.ok) throw new Error(payload.error || '删除失败');
             aiQuestionsLoaded = false;
             await loadAiQuestions(true);
-            openAiPracticeModal(code, title);
+            // 只刷新清单：旧写法调 openAiPracticeModal 会顺手再出一道题，白花一次 AI 调用。
+            renderAiQuestionLibrary(code, title);
+            renderKnowledgeList();
             showToast('已删除这道 AI 题');
         } catch (error) {
             showToast(error.message || '删除失败，请重试');
@@ -6568,7 +6582,8 @@ let knowledgePoints = [];
     }
 
     function renderAiQuestionLibrary(code, title) {
-        const container = utilityBody;
+        const container = aiLibraryContainer || utilityBody;
+        container.replaceChildren();
         const items = aiQuestionsFor(code);
         const box = document.createElement('div');
         box.className = 'ai-question-library';
@@ -7013,9 +7028,7 @@ let knowledgePoints = [];
             aiButton.className = 'utility-secondary-btn';
             aiButton.textContent = 'AI 出题';
             aiButton.addEventListener('click', () => {
-                showUtilityModal('AI 加练', point.title);
-                renderAiQuestionLibrary(point.code, point.title);
-                startAiPractice(point.code, utilityBody, point.title);
+                openAiPracticeModal(point.code, point.title);
             });
             const saved = aiQuestionsFor(point.code);
             if (saved.length > 0) {
@@ -7023,8 +7036,7 @@ let knowledgePoints = [];
                 badge.className = 'ai-badge';
                 badge.textContent = `AI 题 ${saved.length}`;
                 badge.addEventListener('click', () => {
-                    showUtilityModal('AI 加练', point.title);
-                    renderAiQuestionLibrary(point.code, point.title);
+                    openAiPracticeModal(point.code, point.title);
                 });
                 card.append(title, meta, practice, aiButton, badge);
             } else {

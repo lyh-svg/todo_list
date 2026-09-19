@@ -485,6 +485,13 @@ async function fetchStub(url, options = {}) {
     if (path === '/api/review/session') return reply(200, { ok: true, sessionId: 's-review-1' });
     // AI 加练：出题（无答案）→ 批改（判分 + 示范解法）→ 收藏。
     if (path === '/api/review/ai-question') {
+        if ((options.method || 'GET') === 'DELETE') {
+            // 删除要走真实语义：夹具里移掉那一条，回该点剩余列表（前端随后会刷新清单与徽标）。
+            const query = String(url).split('?')[1] || '';
+            const removedId = new URLSearchParams(query).get('id');
+            aiQuestionsFixture = aiQuestionsFixture.filter(entry => entry.id !== removedId);
+            return reply(200, { ok: true, code: 'py.a.b', items: aiQuestionsFixture });
+        }
         if (options.body) {
             try { reviewAiQuestionBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
         }
@@ -1438,6 +1445,14 @@ function step(name, fn) {
         reviewAiCollectBodies.slice(-1)[0]?.reference?.reference.includes('items is None')
         && textOf(elementsById.get('reviewAiPractice')).includes('已收藏'),
         JSON.stringify(reviewAiCollectBodies.slice(-1)[0]).slice(0, 240));
+    const questionCallsBefore = fetchLog.filter(line => line === 'POST /api/review/ai-question').length;
+    const againBtn = findAll(elementsById.get('reviewAiPractice'), el => el.textContent === '再来一题')[0];
+    if (againBtn) step('点击「再来一题」不抛异常', () => againBtn.dispatch('click'));
+    await sleep(80);
+    check('再来一题会重新出题并清掉上一次的批改结果',
+        fetchLog.filter(line => line === 'POST /api/review/ai-question').length > questionCallsBefore
+        && !textOf(elementsById.get('reviewAiPractice')).includes('示范解法'),
+        textOf(elementsById.get('reviewAiPractice')).slice(0, 160));
     const discardBtn = findAll(elementsById.get('reviewAiPractice'), el => el.textContent === '放弃加练')[0];
     if (discardBtn) step('点击「放弃加练」不抛异常', () => discardBtn.dispatch('click'));
     await sleep(60);
@@ -1463,11 +1478,25 @@ function step(name, fn) {
     check('知识点页出题走弹窗且渲染出题面',
         textOf(elementsById.get('utilityBody')).includes('（AI 出的）写出两次调用的输出'),
         textOf(elementsById.get('utilityBody')).slice(0, 200));
+    const modalText = textOf(elementsById.get('utilityBody'));
+    check('弹窗同屏显示加练面板与「我的 AI 题」清单',
+        modalText.includes('AI 加练') && modalText.includes('我的 AI 题（1）'),
+        modalText.slice(0, 240));
+    const deleteBtn = findAll(elementsById.get('utilityBody'), el => el.textContent === '删除')[0];
+    if (deleteBtn) step('点击弹窗里的「删除」不抛异常', () => deleteBtn.dispatch('click'));
+    await sleep(100);
+    check('删除调用 DELETE 接口并把清单与徽标一起刷新',
+        fetchLog.includes('DELETE /api/review/ai-question')
+        && textOf(elementsById.get('utilityBody')).includes('我的 AI 题（0）'),
+        JSON.stringify({ log: fetchLog.slice(-4), text: textOf(elementsById.get('utilityBody')).slice(0, 160) }));
     const closeBtn = elementsById.get('utilityCloseBtn');
     if (closeBtn) step('关闭弹窗不抛异常', () => closeBtn.dispatch('click'));
     await sleep(40);
     check('关闭弹窗后加练状态清空', elementsById.get('utilityBody').children.length === 0,
         String(elementsById.get('utilityBody').children.length));
+    check('删除后知识点卡片上的徽标消失',
+        !textOf(elementsById.get('knowledgeList')).includes('AI 题 1'),
+        textOf(elementsById.get('knowledgeList')).slice(0, 160));
 
     // ⑯ 默认课程（assessmentEnabled: true + 每个任务 assessmentRequired: true）：
     //     勾选任务直接进 AI 验收，验收通过必须走生成回流（POST /api/review/generate）；
