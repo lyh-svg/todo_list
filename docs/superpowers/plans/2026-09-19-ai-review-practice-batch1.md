@@ -414,6 +414,10 @@ class AiQuestionStorageTests(unittest.TestCase):
     def test_context_carries_point_prompts_and_recent_history(self) -> None:
         review_storage.apply_grade(POINT["code"], "concept", 2, today="2026-09-19",
                                    answer="我答错了")
+        # 注意：`weak` 不是"答过一次 2 分"就会有 —— 现有语义要求 lapses≥WEAK_LAPSES(2)
+        # 或显式 mark_weak（见 review_storage.mark_weak 的说明）。这里显式标弱，
+        # 才能同时覆盖"最近作答"与"薄弱标记"两条上下文来源。
+        review_storage.mark_weak([POINT["code"]])
         context = review_storage.ai_question_context(POINT["code"])
         self.assertEqual(context["title"], POINT["title"])
         self.assertEqual(context["module"], "函数")
@@ -1168,7 +1172,7 @@ Expected: 全部 FAIL（`/api/review/ai-collect` 返回 404 `接口不存在`）
 python3 -m unittest tests.test_review_http -v
 ```
 
-Expected: 全部 `ok`（新类 6 个用例 + 原有用例不回归）
+Expected: 全部 `ok`（新类 5 个用例 + 原有用例不回归）
 
 - [ ] **Step 5: 提交**
 
