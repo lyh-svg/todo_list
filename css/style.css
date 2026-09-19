@@ -2406,6 +2406,28 @@ body.modal-open { overflow: hidden; }
     color: #2f855a;
     font-size: 13px;
 }
+
+.ai-question-library {
+    margin-top: 12px;
+    border-top: 1px solid #e6ecf5;
+    padding-top: 10px;
+}
+
+.ai-question-item {
+    border: 1px solid #e6ecf5;
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 8px;
+}
+
+.ai-question-title {
+    margin-bottom: 6px;
+}
+
+.knowledge-item .ai-badge {
+    margin-left: 6px;
+    cursor: pointer;
+}
 /* ===== 摘要清单: 大弹窗 + 网格卡片 ===== */
 .utility-modal .utility-dialog.utility-wide { width: min(96vw, 1120px); max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column; }
 .utility-modal .utility-dialog.utility-wide .utility-body { overflow-y: auto; flex: 1; }

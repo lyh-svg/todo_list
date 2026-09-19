@@ -3283,6 +3283,16 @@ let knowledgePoints = [];
         document.body.classList.remove('modal-open');
     }
 
+    // 知识点页的 AI 加练把状态机寄生在 utilityBody 里：关窗（× / Esc）必须先把加练状态清掉，
+    // 否则会留下一个指向已卸载节点的旧状态。加练不在弹窗里时行为与 closeUtilityModal 完全一致。
+    function closeUtilityModalOrPractice() {
+        if (aiPractice && aiPractice.surface === 'modal') {
+            discardAiPractice();
+            return;
+        }
+        closeUtilityModal();
+    }
+
     async function loadMemos(query = '') {
         const suffix = query ? `?q=${encodeURIComponent(query)}` : '';
         const response = await apiFetch(`/api/memos${suffix}`, { cache: 'no-store' });
@@ -6509,6 +6519,86 @@ let knowledgePoints = [];
         }
     }
 
+    // 收藏题清单：知识点页每张卡片的徽标与弹窗里的列表共用同一份缓存。
+    let aiQuestions = [];
+    let aiQuestionsByCode = {};
+
+    function aiQuestionsFor(code) {
+        return aiQuestionsByCode[code] || [];
+    }
+
+    async function loadAiQuestions(force = false) {
+        if (aiQuestionsLoaded && !force) return aiQuestions;
+        try {
+            const response = await apiFetch('/api/review/ai-questions', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取 AI 题失败');
+            aiQuestions = Array.isArray(payload.items) ? payload.items : [];
+        } catch (error) {
+            aiQuestions = [];
+        }
+        aiQuestionsByCode = {};
+        aiQuestions.forEach(entry => {
+            (aiQuestionsByCode[entry.code] = aiQuestionsByCode[entry.code] || []).push(entry);
+        });
+        aiQuestionsLoaded = true;
+        return aiQuestions;
+    }
+
+    function openAiPracticeModal(code, title) {
+        showUtilityModal('AI 加练', title || '现场出题');
+        const container = utilityBody;
+        aiPractice = null;
+        startAiPractice(code, container, title);
+    }
+
+    async function deleteAiQuestion(questionId, code, title) {
+        try {
+            const response = await apiFetch(`/api/review/ai-question?id=${encodeURIComponent(questionId)}`,
+                { method: 'DELETE' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '删除失败');
+            aiQuestionsLoaded = false;
+            await loadAiQuestions(true);
+            openAiPracticeModal(code, title);
+            showToast('已删除这道 AI 题');
+        } catch (error) {
+            showToast(error.message || '删除失败，请重试');
+        }
+    }
+
+    function renderAiQuestionLibrary(code, title) {
+        const container = utilityBody;
+        const items = aiQuestionsFor(code);
+        const box = document.createElement('div');
+        box.className = 'ai-question-library';
+        const heading = document.createElement('h4');
+        heading.textContent = `我的 AI 题（${items.length}）`;
+        box.appendChild(heading);
+        if (items.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'utility-empty';
+            empty.textContent = '这个知识点还没有收藏的 AI 题；点上面的「AI 出题」现场来一道。';
+            box.appendChild(empty);
+        }
+        items.forEach(entry => {
+            const card = document.createElement('div');
+            card.className = 'ai-question-item';
+            const head = document.createElement('div');
+            head.className = 'ai-question-title';
+            head.textContent = `[${AI_TYPE_LABELS[entry.questionType] || entry.questionType}] ${entry.prompt}`;
+            const actions = document.createElement('div');
+            actions.className = 'review-ai-actions';
+            actions.append(
+                aiPracticeButton('关闭', 'utility-secondary-btn', () => { closeUtilityModal(); }, false),
+                aiPracticeButton('删除', 'utility-secondary-btn',
+                    () => { deleteAiQuestion(entry.id, code, title); }, false));
+            card.append(head, actions);
+            box.appendChild(card);
+        });
+        container.appendChild(box);
+    }
+
     function renderReviewQuestion() {
         const item = reviewSessionState.items[reviewSessionState.index];
         if (!item) { finishReviewSession(); return; }
@@ -6883,6 +6973,7 @@ let knowledgePoints = [];
                 knowledgePoints = [];
             }
         }
+        await loadAiQuestions();
         populateModuleFilter(knowledgeModuleFilter, knowledgeModuleNames());
         renderKnowledgeList();
     }
@@ -6917,7 +7008,28 @@ let knowledgePoints = [];
             practice.className = 'utility-secondary-btn';
             practice.textContent = '立即练一次';
             practice.addEventListener('click', () => { practicePoint(point.code); });
-            card.append(title, meta, practice);
+            const aiButton = document.createElement('button');
+            aiButton.type = 'button';
+            aiButton.className = 'utility-secondary-btn';
+            aiButton.textContent = 'AI 出题';
+            aiButton.addEventListener('click', () => {
+                showUtilityModal('AI 加练', point.title);
+                renderAiQuestionLibrary(point.code, point.title);
+                startAiPractice(point.code, utilityBody, point.title);
+            });
+            const saved = aiQuestionsFor(point.code);
+            if (saved.length > 0) {
+                const badge = document.createElement('span');
+                badge.className = 'ai-badge';
+                badge.textContent = `AI 题 ${saved.length}`;
+                badge.addEventListener('click', () => {
+                    showUtilityModal('AI 加练', point.title);
+                    renderAiQuestionLibrary(point.code, point.title);
+                });
+                card.append(title, meta, practice, aiButton, badge);
+            } else {
+                card.append(title, meta, practice, aiButton);
+            }
             knowledgeList.appendChild(card);
         });
     }
@@ -9490,7 +9602,7 @@ let knowledgePoints = [];
         assessmentCloseBtn.addEventListener('click', closeAssessment);
         assessmentCancelBtn.addEventListener('click', closeAssessment);
         assessmentModal.querySelector('[data-close-assessment]').addEventListener('click', closeAssessment);
-        utilityCloseBtn.addEventListener('click', closeUtilityModal);
+        utilityCloseBtn.addEventListener('click', closeUtilityModalOrPractice);
         utilityModal.querySelector('[data-close-utility]').addEventListener('click', closeUtilityModal);
         openMemoBtn.addEventListener('click', openMemoTool);
         if (extraQuestionBtn) extraQuestionBtn.addEventListener('click', toggleExtraAsk);
@@ -9510,7 +9622,7 @@ let knowledgePoints = [];
         });
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape' && !assessmentModal.hidden) closeAssessment();
-            if (event.key === 'Escape' && !utilityModal.hidden) closeUtilityModal();
+            if (event.key === 'Escape' && !utilityModal.hidden) closeUtilityModalOrPractice();
         });
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {

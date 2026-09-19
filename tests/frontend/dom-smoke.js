@@ -1447,6 +1447,28 @@ function step(name, fn) {
         JSON.stringify({ practiceHidden: elementsById.get('reviewAiPractice').hidden,
             revealHidden: elementsById.get('reviewRevealBtn').hidden }));
 
+    // ⑱ 知识点页：AI 出题入口 + 已收藏徽标 + 删除
+    aiQuestionsFixture = [{ id: 'ai-q-1', code: 'py.a.b', questionType: 'predict',
+        prompt: '（AI 出的）写出两次调用的输出', questionCode: '', focus: '默认参数',
+        createdAt: '2026-09-19T10:00:00' }];
+    elementsById.get('openKnowledgeBtn').dispatch('click');
+    await sleep(80);
+    const knowledgeText = textOf(elementsById.get('knowledgeList'));
+    check('知识点卡片出现「AI 出题」与已收藏徽标',
+        knowledgeText.includes('AI 出题') && knowledgeText.includes('AI 题 1'),
+        knowledgeText.slice(0, 200));
+    const aiButton = findAll(elementsById.get('knowledgeList'), el => el.textContent === 'AI 出题')[0];
+    if (aiButton) step('点击知识点页「AI 出题」不抛异常', () => aiButton.dispatch('click'));
+    await sleep(80);
+    check('知识点页出题走弹窗且渲染出题面',
+        textOf(elementsById.get('utilityBody')).includes('（AI 出的）写出两次调用的输出'),
+        textOf(elementsById.get('utilityBody')).slice(0, 200));
+    const closeBtn = elementsById.get('utilityCloseBtn');
+    if (closeBtn) step('关闭弹窗不抛异常', () => closeBtn.dispatch('click'));
+    await sleep(40);
+    check('关闭弹窗后加练状态清空', elementsById.get('utilityBody').children.length === 0,
+        String(elementsById.get('utilityBody').children.length));
+
     // ⑯ 默认课程（assessmentEnabled: true + 每个任务 assessmentRequired: true）：
     //     勾选任务直接进 AI 验收，验收通过必须走生成回流（POST /api/review/generate）；
     //     验收失败必须带 remedial:true + gap 生成补漏题。
