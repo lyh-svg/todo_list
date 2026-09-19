@@ -199,6 +199,45 @@ class ReviewHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(finished["ok"])
 
+    def test_review_reveal_and_answer_carry_question_ref(self) -> None:
+        saved = review_storage.collect_ai_question(
+            MUTABLE_DEFAULT, "concept", "AI 现场概念题", "", "考察点",
+            {"answer": ["要点"], "explain": "解释", "reference": "def f(): return 1"})
+        status, payload = self.call("/api/review/reveal", "POST", {
+            "code": MUTABLE_DEFAULT, "type": "concept", "questionRef": saved["id"]})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["source"], "ai")
+        self.assertEqual(payload["questionRef"], saved["id"])
+        status, payload = self.call("/api/review/answer", "POST", {
+            "code": MUTABLE_DEFAULT, "type": "concept", "grade": 4, "today": TODAY,
+            "answer": "我的答案", "questionRef": saved["id"]})
+        self.assertEqual(status, 200, payload)
+        with storage.open_state_database() as connection:
+            row = connection.execute(
+                "SELECT question_ref FROM review_attempts WHERE answer='我的答案'").fetchone()
+        self.assertEqual(row["question_ref"], saved["id"])
+        review_storage.delete_ai_question(saved["id"])
+
+    def test_ai_grade_uses_the_ai_question_reference(self) -> None:
+        saved = review_storage.collect_ai_question(
+            MUTABLE_DEFAULT, "concept", "AI 现场概念题", "", "考察点",
+            {"explain": "AI 解释", "reference": "def f(): return 1"})
+        captured = {}
+
+        def fake_grade(*, code, question_type, answer, reference):
+            captured["reference"] = reference
+            return {"correct": True, "missing": [], "wrongAt": "", "hint": ""}
+
+        with mock.patch.object(ai_service, "is_configured", return_value=True), \
+                mock.patch.object(ai_service, "grade_review_answer", side_effect=fake_grade):
+            status, payload = self.call("/api/review/ai-grade", "POST", {
+                "code": MUTABLE_DEFAULT, "type": "concept", "answer": "我的答案",
+                "questionRef": saved["id"]})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(captured["reference"]["reference"], "def f(): return 1",
+                         "AI 题必须拿它自己的参考解去判分，不能拿固定题的")
+        review_storage.delete_ai_question(saved["id"])
+
     def _content_point(self, code: str) -> dict:
         data = json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
         return next(point for point in data["points"] if point["code"] == code)

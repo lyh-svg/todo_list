@@ -771,13 +771,15 @@ class TodoHandler(SimpleHTTPRequestHandler):
             elif path == "/api/review/reveal":
                 code = str(payload.get("code") or "").strip()
                 kind = str(payload.get("type") or "").strip()
+                question_ref = str(payload.get("questionRef") or "").strip()
                 if not code or kind not in review_content.QUESTION_TYPES:
                     raise ValueError("知识点或题型不正确")
-                data = review_storage.reveal(code, kind)
+                data = review_storage.reveal(code, kind, question_ref)
                 self.send_json(200, data)
             elif path == "/api/review/answer":
                 code = str(payload.get("code") or "").strip()
                 kind = str(payload.get("type") or "").strip()
+                question_ref = str(payload.get("questionRef") or "").strip()
                 today = optional_iso_date(str(payload.get("today") or ""))
                 if not today:
                     raise ValueError("today 必须是 YYYY-MM-DD")
@@ -791,7 +793,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     duration_ms=int(payload.get("durationMs") or 0),
                     session_id=str(payload.get("sessionId") or ""),
                     task_id=str(payload.get("taskId") or ""),
-                    project_id=str(payload.get("projectId") or ""))
+                    project_id=str(payload.get("projectId") or ""),
+                    question_ref=question_ref)
                 self.send_json(200, {"ok": True, "schedule": schedule})
             elif path == "/api/review/session":
                 action = str(payload.get("action") or "")
@@ -863,6 +866,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
             elif path == "/api/review/ai-grade":
                 code = str(payload.get("code") or "").strip()
                 kind = str(payload.get("type") or "").strip()
+                question_ref = str(payload.get("questionRef") or "").strip()
                 if not code or kind not in review_content.QUESTION_TYPES:
                     raise ValueError("知识点或题型不正确")
                 if not ai_service.is_configured():
@@ -870,7 +874,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     return
                 verdict = ai_service.grade_review_answer(
                     code=code, question_type=kind, answer=str(payload.get("answer") or ""),
-                    reference=review_storage.reveal(code, kind))
+                    reference=review_storage.reveal(code, kind, question_ref))
                 self.send_json(200, {"ok": True, "verdict": verdict})
             elif path == "/api/review/ai-question":
                 code = str(payload.get("code") or "").strip()
