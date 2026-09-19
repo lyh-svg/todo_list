@@ -912,6 +912,64 @@ status, headers, data = call("/api/settings", method="POST", body={"settings": {
 check("批次5 修改设置", status == 200 and json.loads(data)["settings"]["trashRetentionDays"] == 30, data[:160])
 status, headers, data = call("/api/settings", method="POST", body={"settings": {"trashRetentionDays": 0}})
 check_json_error("批次5 非法设置 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
+
+# --- AI 加练：出题（无答案）→ 批改（判分 + 示范解法）→ 收藏 → 列表 → 删除 ---
+import os as _os
+import sqlite3 as _sqlite3
+
+def review_table_counts():
+    connection = _sqlite3.connect(_os.environ["TODO_SQLITE_FILE"])
+    try:
+        return (connection.execute("SELECT COUNT(*) FROM review_attempts").fetchone()[0],
+                connection.execute("SELECT COUNT(*) FROM review_states").fetchone()[0])
+    finally:
+        connection.close()
+
+target_code = "py.mutability.default-arg"
+before_counts = review_table_counts()
+status, _, data = call("/api/review/ai-question", method="POST", body={"code": target_code})
+question = json.loads(data).get("question") if status == 200 else {}
+check("AI 加练 出题 200（mock）", status == 200 and question.get("prompt"), f"status={status} body={data[:160]}")
+check("AI 加练 出题不带参考答案", "reference" not in question, str(question)[:160])
+check("AI 加练 出题题型合法",
+      question.get("questionType") in ("concept", "predict", "debug", "code_task"), str(question)[:160])
+
+status, _, data = call("/api/review/ai-answer", method="POST", body={
+    "code": target_code, "questionType": question.get("questionType"),
+    "prompt": question.get("prompt"), "questionCode": question.get("code") or "",
+    "focus": question.get("focus") or "", "answer": ""})
+verdict = json.loads(data).get("verdict") if status == 200 else {}
+reference = json.loads(data).get("reference") if status == 200 else {}
+check("AI 加练 空作答也能批改（200 + verdict）", status == 200 and verdict, f"status={status} body={data[:200]}")
+check("AI 加练 空作答必须给示范解法", bool(reference.get("reference")), str(reference)[:200])
+check("AI 加练 空作答判为未通过", verdict.get("correct") is False, str(verdict)[:160])
+
+status, _, data = call("/api/review/ai-collect", method="POST", body={
+    "code": target_code, "questionType": question.get("questionType"),
+    "prompt": question.get("prompt"), "questionCode": question.get("code") or "",
+    "focus": question.get("focus") or "", "reference": reference})
+saved_id = (json.loads(data).get("question") or {}).get("id") if status == 200 else ""
+check("AI 加练 收藏 200", status == 200 and bool(saved_id), f"status={status} body={data[:200]}")
+
+status, _, data = call("/api/review/ai-questions?code=" + urllib.parse.quote(target_code))
+items = json.loads(data).get("items") if status == 200 else []
+check("AI 加练 列表含刚收藏的题且不吐参考答案",
+      status == 200 and any(item["id"] == saved_id for item in items)
+      and all("reference" not in item for item in items), f"status={status} body={data[:200]}")
+
+after_counts = review_table_counts()
+check("临时加练零留痕：attempts/states 行数不变", before_counts == after_counts,
+      f"{before_counts} -> {after_counts}")
+
+status, _, data = call("/api/review/ai-question?id=" + urllib.parse.quote(saved_id), method="DELETE")
+check("AI 加练 删除 200 且返回该点剩余列表",
+      status == 200 and json.loads(data)["items"] == [], f"status={status} body={data[:200]}")
+status, _, data = call("/api/review/ai-question?id=" + urllib.parse.quote(saved_id), method="DELETE")
+check("AI 加练 重复删除 → 404", status == 404, f"status={status}")
+status, headers, data = call("/api/review/ai-collect", method="POST", body={
+    "code": target_code, "questionType": "essay", "prompt": "x", "reference": {"explain": "y"}})
+check_json_error("AI 加练 非法题型 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
+
 print(f"\n   通过 {len(passed)} 项，失败 {len(failed)} 项")
 if failed:
     print("   失败项: " + ", ".join(failed))
