@@ -1343,10 +1343,13 @@ def main() -> None:
     if not summary_storage.check_integrity():
         raise RuntimeError("摘要清单 SQLite 完整性检查失败")
     SESSION_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handler = partial(TodoHandler, directory=str(APP_DIR))
+    # 先 bind 成功再写 token 文件。反过来的话，两个实例几乎同时启动时，抢不到端口的那一个
+    # 会在退出前把活实例的 token 覆盖成死进程的 token，启动脚本读到它 → 浏览器全量 401，
+    # 而且没有任何自愈路径（只能手工删 token 文件重开）。
+    server = ThreadingHTTPServer((HOST, PORT), handler)
     SESSION_TOKEN_FILE.write_text(SESSION_TOKEN, encoding="utf-8")
     SESSION_TOKEN_FILE.chmod(0o600)
-    handler = partial(TodoHandler, directory=str(APP_DIR))
-    server = ThreadingHTTPServer((HOST, PORT), handler)
     threading.Thread(target=idle_shutdown_monitor, args=(server,), daemon=True).start()
     print(f"Todo AI running at http://{HOST}:{PORT}/?token={SESSION_TOKEN}")
     if not read_settings().get("DEEPSEEK_API_KEY"):

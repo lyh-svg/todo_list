@@ -253,6 +253,20 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertIn("error", payload)
 
+    def test_workbench_tolerates_corrupt_node_json(self) -> None:
+        """B4：任务行的 tags/links/repeat 坏掉不能让整个工作台 500（一个坏任务拖垮所有项目）。"""
+        with storage.open_state_database() as connection:
+            connection.execute(
+                "UPDATE nodes SET tags='{坏', links='[[[', repeat='daily', due_date=? WHERE node_id='p1-i'",
+                (TODAY,))
+        status, payload = self.json_call("GET", f"/api/workbench?today={TODAY}")
+        self.assertEqual(status, 200)
+        entries = [entry for entry in payload["groups"]["today"] if entry["nodeId"] == "p1-i"]
+        self.assertEqual(len(entries), 1, "坏数据行不能从分组里消失")
+        self.assertEqual(entries[0]["tags"], [])
+        self.assertEqual(entries[0]["links"], [])
+        self.assertIsNone(entries[0]["repeat"])
+
     def test_memo_database_download_reports_failure_as_json_500(self) -> None:
         original = None
         with sqlite3.connect(memo_storage.MEMO_DATABASE_FILE) as connection:

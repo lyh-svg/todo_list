@@ -148,6 +148,60 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
          "test_deleted_and_recreated_file_is_bootstrapped_again"],
     ),
     (
+        "setNodeCompleted 的判空必须在解引用之前",
+        "js/app.js",
+        crlf("        if (!node) return { spawned: null, project: null };\n"
+             "        // 记住原状态：只有\"未完成 → 完成\"这一次才生成下一次周期任务。\n"
+             "        // 否则对已完成的周期任务反复点（分组复选框会把整棵子树再标一遍）会指数级复制。\n"
+             "        const wasCompleted = Boolean(node.completed);\n"
+             "        node.completed = Boolean(completed);\n"
+             "        node.completedAt = node.completed ? new Date().toISOString() : null;\n"
+             "        // 容器（周/单元）到这里就收工：它自己的完成标记必须照写（分组复选框与空单元的显示都靠它），\n"
+             "        // 但周期任务与复习安排只对任务生效。\n"
+             "        if (node.type !== 'item') return { spawned: null, project: null };\n"),
+        crlf("        const wasCompleted = Boolean(node.completed);\n"
+             "        node.completed = Boolean(completed);\n"
+             "        node.completedAt = node.completed ? new Date().toISOString() : null;\n"
+             "        if (!node || node.type !== 'item') return { spawned: null, project: null };\n"),
+        ["node", "tests/frontend/verify-node-completed.js"],
+    ),
+    (
+        "直播文本必须追加而不是重写 textContent",
+        "js/app.js",
+        crlf("                appendAssessmentLiveText(token);\n"
+             "                scheduleLiveScroll();\n"),
+        crlf("                assessmentLiveBody.textContent += token;\n"
+             "                assessmentLiveBody.scrollTop = assessmentLiveBody.scrollHeight;\n"),
+        ["node", "tests/frontend/verify-live-text.js"],
+    ),
+    (
+        "直播扫描器必须丢掉已解析前缀（不能整段累积）",
+        "ai_service.py",
+        crlf("        if self.i:\n"),
+        crlf("        if False:\n"),
+        [sys.executable, "-m", "unittest", "tests.test_ai_reply_scanner."
+         "ReplyScannerComplexityTests.test_consumed_prefix_is_dropped"],
+    ),
+    (
+        "活动历史必须顺手裁剪（不能无界增长）",
+        "storage.py",
+        crlf('        conn.execute(\n'
+             '            "DELETE FROM activity_log WHERE id <= (SELECT MAX(id) FROM activity_log) - ?",\n'
+             '            (ACTIVITY_KEEP_ROWS,),\n'
+             '        )\n'),
+        "",
+        [sys.executable, "-m", "unittest", "tests.test_growth_bounds."
+         "ActivityLogBoundsTests.test_activity_log_is_trimmed_to_keep_rows"],
+    ),
+    (
+        "legacy .sqlite3 备份也要走保留策略",
+        "backup_service.py",
+        crlf('    for path in list(BACKUP_DIR.glob("*.zip")) + list(BACKUP_DIR.glob("*.sqlite3")):\n'),
+        crlf('    for path in BACKUP_DIR.glob("*.zip"):\n'),
+        [sys.executable, "-m", "unittest", "tests.test_growth_bounds."
+         "BackupRetentionBoundsTests.test_legacy_sqlite3_backups_are_pruned"],
+    ),
+    (
         "备份校验必须流式读（不能把整个库读进内存）",
         "backup_service.py",
         crlf("            actual, size = sha256_of_zip_member(archive, file_name)\n"),
@@ -316,6 +370,51 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
         [sys.executable, "-m", "unittest",
          "tests.test_write_amplification.WriteAmplificationTests."
          "test_unchanged_rewrite_issues_no_row_writes"],
+    ),
+    (
+        "并发启动：抢不到端口的实例不能覆盖活实例的 token 文件（否则脚本读到死进程的 token → 全量 401）",
+        "local_server.py",
+        crlf('    server = ThreadingHTTPServer((HOST, PORT), handler)\n'
+             '    SESSION_TOKEN_FILE.write_text(SESSION_TOKEN, encoding="utf-8")\n'
+             '    SESSION_TOKEN_FILE.chmod(0o600)\n'),
+        crlf('    SESSION_TOKEN_FILE.write_text(SESSION_TOKEN, encoding="utf-8")\n'
+             '    SESSION_TOKEN_FILE.chmod(0o600)\n'
+             '    server = ThreadingHTTPServer((HOST, PORT), handler)\n'),
+        [sys.executable, "-m", "unittest", "tests.test_startup_token"],
+    ),
+    (
+        "工作台：一行坏 JSON 不能把整个 /api/workbench 打成 500",
+        "storage.py",
+        '            "tags": _parse_json_or_default(row["tags"], [], list),',
+        '            "tags": json.loads(row["tags"]) if row["tags"] else [],',
+        [sys.executable, "-m", "unittest", "tests.test_tolerant_json_columns"],
+    ),
+    (
+        "JSON 列容错解析：合法 JSON 但类型不对（字符串/对象）也要回退，不能塞给前端",
+        "storage.py",
+        crlf("    if expected_type is not None and not isinstance(parsed, expected_type):\n"
+             "        return default\n"),
+        "",
+        [sys.executable, "-m", "unittest",
+         "tests.test_tolerant_json_columns.TolerantJsonColumnTests.test_wrong_json_type_falls_back_to_empty"],
+    ),
+    (
+        "周期任务生成：目标不在树里时不能把副本挂到项目根（“没找到”不等于“顶层节点”）",
+        "storage.py",
+        crlf("        found, parent_id = locate_parent(tree, str(node.get(\"id\")))\n"
+             "        if not found:\n"),
+        crlf("        found, parent_id = True, locate_parent(tree, str(node.get(\"id\")))[1]\n"
+             "        if not found:\n"),
+        [sys.executable, "-m", "unittest", "tests.test_repeat_tasks.RepeatStorageTests"],
+    ),
+    (
+        "恢复项目：position 已被占用时必须排到最后，不能和现存项目撞号",
+        "storage.py",
+        crlf('                if connection.execute("SELECT 1 FROM projects WHERE position=?",\n'
+             '                                      (position,)).fetchone():\n'),
+        crlf("                if False:\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_task_management.TrashRestoreTests.test_restore_project_avoids_position_collision"],
     ),
 ]
 

@@ -194,35 +194,57 @@ def mock_call_deepseek() -> dict[str, Any]:
 
 
 class ReplyScanner:
-    """Incrementally extracts the value of the first top-level "reply" key."""
+    """Incrementally extracts the value of the first top-level "reply" key.
+
+    直播文本是"边收边显"的热路径：旧实现每个分块都要在**整段** text 上 find/索引，
+    且 `self.value += ch` 逐字符拼大字符串 —— 按 4 字符一块推 10 万字符要 329 ms。
+    现在原文与正文都按段攒起来（最后 join 一次），`_buffer` 只保留还没解析完的尾巴。
+    """
 
     def __init__(self) -> None:
-        self.text = ""
-        self.value = ""
+        self._chunks: list[str] = []
+        self._value: list[str] = []
+        self._buffer = ""
         self.yielded = 0
         self.state = "seek_key"
         self.i = 0
         self.esc_hex = ""
         self._simple = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}
 
+    @property
+    def text(self) -> str:
+        """完整原文（流结束后由调用方读一次，交给最终的 JSON 解析）。"""
+        return "".join(self._chunks)
+
+    @property
+    def value(self) -> str:
+        """已解析出的 reply 正文。"""
+        return "".join(self._value)
+
     def push(self, chunk: str) -> str:
-        self.text += chunk
+        self._chunks.append(chunk)
+        self._buffer += chunk
         self._run()
-        visible = self.value[self.yielded:]
-        self.yielded = len(self.value)
+        if self.i:
+            # 解析过的前缀直接丢掉：find()/索引只在没解析完的尾巴上做，
+            # 长回复不会因为"已解析内容越来越长"而越来越慢。
+            self._buffer = self._buffer[self.i:]
+            self.i = 0
+        visible = "".join(self._value[self.yielded:])
+        self.yielded = len(self._value)
         return visible
 
     def _run(self) -> None:
         while True:
             if self.state == "seek_key":
-                idx = self.text.find('"reply"', self.i)
+                idx = self._buffer.find('"reply"', self.i)
                 if idx < 0:
                     break
                 self.i = idx + len('"reply"')
                 self.state = "seek_colon"
                 continue
             if self.state == "seek_colon":
-                idx = self.text.find(":", self.i)
+                idx = self._buffer.find(":", self.i)
                 if idx < 0:
                     break
                 self.i = idx + 1
@@ -230,11 +252,11 @@ class ReplyScanner:
                 continue
             if self.state == "seek_quote":
                 k = self.i
-                while k < len(self.text) and self.text[k] in " \t\r\n":
+                while k < len(self._buffer) and self._buffer[k] in " \t\r\n":
                     k += 1
-                if k >= len(self.text):
+                if k >= len(self._buffer):
                     break
-                if self.text[k] == '"':
+                if self._buffer[k] == '"':
                     self.i = k + 1
                     self.state = "value"
                     continue
@@ -242,30 +264,30 @@ class ReplyScanner:
                 self.state = "seek_key"
                 continue
             if self.state == "u_hex":
-                while self.i < len(self.text) and len(self.esc_hex) < 4:
-                    ch = self.text[self.i]
+                while self.i < len(self._buffer) and len(self.esc_hex) < 4:
+                    ch = self._buffer[self.i]
                     self.i += 1
                     if ch in "0123456789abcdefABCDEF":
                         self.esc_hex += ch
                 if len(self.esc_hex) == 4:
-                    self.value += chr(int(self.esc_hex, 16))
+                    self._value.append(chr(int(self.esc_hex, 16)))
                     self.esc_hex = ""
                     self.state = "value"
                     continue
                 break
             if self.state == "value":
-                while self.i < len(self.text):
-                    ch = self.text[self.i]
+                while self.i < len(self._buffer):
+                    ch = self._buffer[self.i]
                     self.i += 1
                     if ch == "\\":
-                        if self.i < len(self.text):
-                            nxt = self.text[self.i]
+                        if self.i < len(self._buffer):
+                            nxt = self._buffer[self.i]
                             self.i += 1
                             if nxt == "u":
                                 self.state = "u_hex"
                                 self.esc_hex = ""
                                 break
-                            self.value += self._simple.get(nxt, nxt)
+                            self._value.append(self._simple.get(nxt, nxt))
                         else:
                             # 分块边界正好落在反斜杠之后：不能把这个反斜杠吃掉，
                             # 否则下一块的 "n"/"\"" 会被当成普通字符，直播文本缺一个换行/引号。
@@ -276,7 +298,7 @@ class ReplyScanner:
                     if ch == '"':
                         self.state = "done"
                         break
-                    self.value += ch
+                    self._value.append(ch)
                 if self.state == "value":
                     break
                 if self.state == "u_hex":

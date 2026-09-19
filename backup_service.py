@@ -40,6 +40,8 @@ DATABASE_FILES: dict[str, Path] = {
 BACKUP_DIR = Path(storage_service.BACKUP_DIR)
 KEEP_ALL_DAYS = 7
 KEEP_DAILY_DAYS = 30
+# .daily-YYYYMMDD marker 也按天留：超过这个天数的旧 marker 一并清掉。
+DAILY_MARKER_KEEP_DAYS = 90
 KEEP_WEEKLY_DAYS = 90
 
 
@@ -331,7 +333,9 @@ def prune_backups(now: datetime | None = None) -> dict[str, int]:
     """保留策略：≤7 天全留；8~30 天每天留最新一份；31~90 天每周留最新一份；更早删除。"""
     moment = now or _now()
     entries = []
-    for path in BACKUP_DIR.glob("*.zip"):
+    # 旧格式的单库备份（before-import-*.sqlite3 / before-migrate-*.sqlite3）也走同一套保留策略：
+    # 以前只 glob *.zip，这些整库副本会一直堆在 data/backups 里。
+    for path in list(BACKUP_DIR.glob("*.zip")) + list(BACKUP_DIR.glob("*.sqlite3")):
         if path.name.startswith("."):
             continue
         try:
@@ -370,7 +374,22 @@ def prune_backups(now: datetime | None = None) -> dict[str, int]:
             continue
         path.unlink(missing_ok=True)
         removed += 1
-    return {"kept": kept, "removed": removed}
+    markers = _prune_daily_markers(moment)
+    return {"kept": kept, "removed": removed, "markersRemoved": markers}
+
+
+def _prune_daily_markers(moment: datetime) -> int:
+    """清掉过期的 .daily-YYYYMMDD marker（一天一个文件，不清理也是一处慢性泄漏）。"""
+    removed = 0
+    for marker in BACKUP_DIR.glob(".daily-*"):
+        try:
+            created = datetime.strptime(marker.name.removeprefix(".daily-"), "%Y%m%d")
+        except (OSError, ValueError):
+            continue          # 认不出日期的不动它（保守）
+        if (moment - created).days > DAILY_MARKER_KEEP_DAYS:
+            marker.unlink(missing_ok=True)
+            removed += 1
+    return removed
 
 
 def create_daily_snapshot() -> str | None:

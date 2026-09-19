@@ -128,6 +128,47 @@ class RepeatStorageTests(unittest.TestCase):
         self.assertEqual(spawned["repeat"], {"freq": "daily", "interval": 1})
         self.assertNotEqual(spawned["id"], done["id"])
 
+    def test_spawn_skips_node_missing_from_tree(self) -> None:
+        """B5：mark 里的节点已经不在树里（过期/并发删除）时必须跳过，不能挂到项目根。
+
+        locate_parent 以前只返回 parent_id，None 同时意味着"顶层节点"和"没找到"；
+        没找到时 find_parent(tree, None) 命中项目根列表 → 幽灵任务的副本凭空出现在根层。
+        """
+        storage.replace_projects([make_project([item("i1", "还在的任务", dueDate=TODAY)])])
+        project = storage.read_project("p1")[0]
+        ghost = item("gone", "幽灵周期任务", dueDate=TODAY, repeat={"freq": "daily"})
+        spawned = storage._spawn_next_occurrences(project, [ghost])
+        self.assertEqual(spawned, 0, "目标不在树里就不能生成下一次")
+        self.assertEqual(len(project["tree"]), 1, "副本不能挂到项目根")
+        self.assertEqual([node["id"] for node in project["tree"]], ["p1-w"])
+
+    def test_spawn_still_puts_top_level_next_occurrence_at_root(self) -> None:
+        """守卫：顶层周期任务的"下一次"本来就该挂在项目根，别把合法路径一起掐掉。"""
+        storage.replace_projects([make_project([])])
+        project = storage.read_project("p1")[0]
+        top = item("top", "顶层周期任务", dueDate=TODAY, repeat={"freq": "daily"})
+        project["tree"].append(top)
+        spawned = storage._spawn_next_occurrences(project, [top])
+        self.assertEqual(spawned, 1)
+        self.assertEqual([node["text"] for node in project["tree"]],
+                         ["第1周", "顶层周期任务", "顶层周期任务"])
+        self.assertEqual(project["tree"][-1]["completed"], False)
+        self.assertNotEqual(project["tree"][-1]["id"], "top")
+
+    def test_batch_complete_ignores_stale_node_ids(self) -> None:
+        """走公开 API：批量请求里混入"早就删掉"的节点 id，也不能在项目根留下垃圾。"""
+        storage.replace_projects([make_project([
+            item("i1", "每天背单词", dueDate=TODAY, repeat={"freq": "daily"}),
+        ])])
+        result = storage.batch_update_nodes([
+            {"projectId": "p1", "nodeId": "i1"},
+            {"projectId": "p1", "nodeId": "早就删了"},
+        ], "complete")
+        self.assertEqual(result["spawned"], 1, "只有真实存在的那一条该生成下一次")
+        project = storage.read_project("p1")[0]
+        self.assertEqual(len(project["tree"]), 1, "项目根层不能多出东西")
+        self.assertEqual(len(project["tree"][0]["children"][0]["children"]), 2)
+
     def test_non_recurring_complete_does_not_spawn(self) -> None:
         storage.replace_projects([make_project([item("i1", "一次性任务")])])
         result = storage.batch_update_nodes([{"projectId": "p1", "nodeId": "i1"}], "complete")

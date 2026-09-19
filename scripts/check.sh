@@ -91,7 +91,7 @@ step "8) 反向验证：把产品改回旧行为，测试必须失败"
 if [ "$MODE" = "quick" ]; then
     printf '   - quick 模式跳过\n'
 else
-    run "verify-tests-catch.py（34 条）" python3 scripts/verify-tests-catch.py
+    run "verify-tests-catch.py（44 条）" python3 scripts/verify-tests-catch.py
 fi
 
 step "9) 行尾约定（代码文件必须 CRLF，*.sh 用 LF）"

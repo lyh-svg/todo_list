@@ -36,6 +36,8 @@ SCRIPTS = [
     "verify-save-paths.js",
     "verify-render-delegation.js",
     "verify-review-counts.js",
+    "verify-live-text.js",
+    "verify-node-completed.js",
     "dom-smoke.js",
 ]
 

@@ -37,6 +37,8 @@ MIN_TRASH_RETENTION_DAYS = 1
 MAX_TRASH_RETENTION_DAYS = 365
 MAX_AUTO_ARCHIVE_DAYS = 3650
 ORPHAN_BOX_TITLE = "孤立任务箱"                    # 父节点被删掉时，恢复到这里
+# 活动历史只是「最近发生了什么」的追溯窗：写新记录时顺手裁到这么多条，避免无界增长。
+ACTIVITY_KEEP_ROWS = 2000
 ACTIVITY_LIMIT_MAX = 500
 SCHEMA_VERSION = 8
 # 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
@@ -168,6 +170,24 @@ def review_columns(value: Any) -> tuple[str, int, str]:
             if entries:
                 review_log = _json(entries)
     return review_due, review_learning, review_log
+
+
+def _parse_json_or_default(raw: Any, default: Any, expected_type: type | None = None) -> Any:
+    """JSON 列容错解析：坏 JSON 或类型不对都回退默认值，绝不让一行坏数据打垮聚合接口。
+
+    读项目（`_read_project_from_connection`）与工作台共用这一层。以前工作台对
+    tags/links/repeat 直接 json.loads，任意一行坏掉就让整个 /api/workbench 500
+    （今天/逾期/收集箱全部打不开）。
+    """
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return default
+    if expected_type is not None and not isinstance(parsed, expected_type):
+        return default
+    return parsed
 
 
 def clean_repeat(value: Any) -> dict[str, Any] | None:
@@ -957,36 +977,20 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
             node["dueDate"] = str(node_row["due_date"] or "")
             if int(node_row["estimate_minutes"] or 0) > 0:
                 node["estimateMinutes"] = int(node_row["estimate_minutes"])
-            tags_raw = str(node_row["tags"] or "")
-            if tags_raw:
-                try:
-                    parsed_tags = json.loads(tags_raw)
-                except (TypeError, json.JSONDecodeError):
-                    parsed_tags = None
-                if isinstance(parsed_tags, list) and parsed_tags:
-                    node["tags"] = [str(item)[:MAX_TAG_CHARS] for item in parsed_tags[:MAX_TAGS]]
+            parsed_tags = _parse_json_or_default(node_row["tags"], None, list)
+            if parsed_tags:
+                node["tags"] = [str(item)[:MAX_TAG_CHARS] for item in parsed_tags[:MAX_TAGS]]
             if node_row["note"]:
                 node["note"] = str(node_row["note"])
-            repeat_raw = str(node_row["repeat"] or "")
-            if repeat_raw:
-                try:
-                    parsed_repeat = json.loads(repeat_raw)
-                except (TypeError, json.JSONDecodeError):
-                    parsed_repeat = None
-                cleaned_repeat = clean_repeat(parsed_repeat)
-                if cleaned_repeat:
-                    node["repeat"] = cleaned_repeat
-            links_raw = str(node_row["links"] or "")
-            if links_raw:
-                try:
-                    parsed_links = json.loads(links_raw)
-                except (TypeError, json.JSONDecodeError):
-                    parsed_links = None
-                if isinstance(parsed_links, list) and parsed_links:
-                    node["links"] = [
-                        {"label": str(entry.get("label") or "")[:80], "url": str(entry.get("url") or "")[:MAX_LINK_CHARS]}
-                        for entry in parsed_links[:MAX_LINKS] if isinstance(entry, dict)
-                    ]
+            cleaned_repeat = clean_repeat(_parse_json_or_default(node_row["repeat"], None, dict))
+            if cleaned_repeat:
+                node["repeat"] = cleaned_repeat
+            parsed_links = _parse_json_or_default(node_row["links"], None, list)
+            if parsed_links:
+                node["links"] = [
+                    {"label": str(entry.get("label") or "")[:80], "url": str(entry.get("url") or "")[:MAX_LINK_CHARS]}
+                    for entry in parsed_links[:MAX_LINKS] if isinstance(entry, dict)
+                ]
         if node_type == "item" and (node_row["review_due"] or node_row["review_log"]
                                     or node_row["review_learning"]):
             review_due = str(node_row["review_due"] or "")
@@ -1260,6 +1264,12 @@ def log_activity(kind: str, summary: str, *, project_id: Any = "", project_name:
             "INSERT INTO activity_log(kind,project_id,project_name,summary,detail,undoable,at) "
             "VALUES(?,?,?,?,?,?,?)",
             (payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6]),
+        )
+        # 顺手裁剪（同一个事务里，业务回滚时裁剪也回滚）：
+        # 排序/复制/批量/删除都会写一行活动，只有手动清空能减的话会一直涨。
+        conn.execute(
+            "DELETE FROM activity_log WHERE id <= (SELECT MAX(id) FROM activity_log) - ?",
+            (ACTIVITY_KEEP_ROWS,),
         )
 
     if connection is not None:
@@ -1548,7 +1558,16 @@ def restore_trash_item(trash_id: Any) -> dict[str, Any]:
                 if current:
                     raise StateConflictError("同名项目已经存在，请先删除现有项目")
                 revision = int(row["revision"] or 0) or 1
-                _upsert_project(connection, project, int(row["position"]), revision, _now())
+                position = int(row["position"] or 0)
+                if connection.execute("SELECT 1 FROM projects WHERE position=?",
+                                      (position,)).fetchone():
+                    # 删除前的位置已经被别人占了（删掉最后一个项目后新建的项目会重新拿到 0）。
+                    # 撞号后 ORDER BY position,project_id 只能按 id 排，列表顺序看起来是随机的，
+                    # 拖拽也跟着错乱；所以这里排到列表最后，并在响应里用 restoredTo="end" 说明。
+                    position = int(connection.execute(
+                        "SELECT COALESCE(MAX(position),-1)+1 FROM projects").fetchone()[0])
+                    restored_to = "end"
+                _upsert_project(connection, project, position, revision, _now())
                 log_activity("restore-project", f"恢复项目「{_project_title(project)}」",
                              project_id=project_id, project_name=_project_title(project),
                              connection=connection)
@@ -2915,14 +2934,21 @@ def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[
                 return found
         return None
 
-    def locate_parent_id(nodes: list[dict[str, Any]], target_id: str, parent_id: str | None = None) -> str | None:
+    def locate_parent(nodes: list[dict[str, Any]], target_id: str,
+                      parent_id: str | None = None) -> tuple[bool, str | None]:
+        """(是否找到, 父节点 id)。父 id 为 None 表示"找到了，它是顶层节点"。
+
+        以前只返回 parent_id，于是 None 同时意味着"顶层节点"和"没找到"：没找到时下面的
+        find_parent(tree, None) 会命中项目根列表，幽灵节点（过期/被删的 mark）的副本就被
+        静默挂到项目根。这里必须让两种情况可区分。
+        """
         for node in nodes or []:
             if str(node.get("id")) == str(target_id):
-                return parent_id
-            found = locate_parent_id(node.get("children") or [], target_id, str(node.get("id")))
-            if found is not None:
-                return found
-        return None
+                return True, parent_id
+            found, result_parent = locate_parent(node.get("children") or [], target_id, str(node.get("id")))
+            if found:
+                return True, result_parent
+        return False, None
 
     spawned = 0
     tree = project.setdefault("tree", [])
@@ -2933,7 +2959,11 @@ def _spawn_next_occurrences(project: dict[str, Any], completed_nodes: list[dict[
         next_due = next_repeat_due(rule, clean_due_date(node.get("dueDate")) or date.today().isoformat())
         if not next_due:
             continue
-        parent_id = locate_parent_id(tree, str(node.get("id")))
+        found, parent_id = locate_parent(tree, str(node.get("id")))
+        if not found:
+            # 目标已经不在树里（过期 mark / 并发删除或移动）：跳过。绝不能退化成
+            # find_parent(tree, None) —— 那等于把"没找到"当成"顶层节点"，副本会挂到项目根。
+            continue
         siblings = find_parent(tree, parent_id)
         if siblings is None:
             continue
@@ -3758,11 +3788,11 @@ def workbench(today: str | None = None, since: str | None = None) -> dict[str, A
             "priority": str(row["priority"] or ""),
             "dueDate": str(row["due_date"] or ""),
             "estimateMinutes": int(row["estimate_minutes"] or 0),
-            "tags": json.loads(row["tags"]) if row["tags"] else [],
+            "tags": _parse_json_or_default(row["tags"], [], list),
             # 徽标（备注 / 链接 / 周期）需要这三个字段，否则工作台的行看起来"没设过"。
             "note": str(row["note"] or ""),
-            "links": json.loads(row["links"]) if row["links"] else [],
-            "repeat": json.loads(row["repeat"]) if row["repeat"] else None,
+            "links": _parse_json_or_default(row["links"], [], list),
+            "repeat": _parse_json_or_default(row["repeat"], None, dict),
             "path": (locations.get((project_id, str(row["node_id"]))) or {}).get("path", ""),
             "ancestorIds": (locations.get((project_id, str(row["node_id"]))) or {}).get("ancestorIds", []),
         }

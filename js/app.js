@@ -293,12 +293,17 @@ let knowledgePoints = [];
     }
 
     function setNodeCompleted(node, completed) {
+        // 判空必须放在第一行：以前它写在三处 node.X 读写之后，node 为 null 时上面早就抛了，
+        // 守卫只是看着像防御，实际是死代码。
+        if (!node) return { spawned: null, project: null };
         // 记住原状态：只有"未完成 → 完成"这一次才生成下一次周期任务。
         // 否则对已完成的周期任务反复点（分组复选框会把整棵子树再标一遍）会指数级复制。
         const wasCompleted = Boolean(node.completed);
         node.completed = Boolean(completed);
         node.completedAt = node.completed ? new Date().toISOString() : null;
-        if (!node || node.type !== 'item') return { spawned: null, project: null };
+        // 容器（周/单元）到这里就收工：它自己的完成标记必须照写（分组复选框与空单元的显示都靠它），
+        // 但周期任务与复习安排只对任务生效。
+        if (node.type !== 'item') return { spawned: null, project: null };
         const project = owningProjectOfNode(node);
         let spawned = null;
         if (node.completed && !wasCompleted && node.repeat) {
@@ -2407,6 +2412,25 @@ let knowledgePoints = [];
         assessmentSubmitBtn.textContent = questions ? '提交本题' : '提交';
     }
 
+    // ---------- 直播文本（P12）：追加文本节点，不重写 textContent ----------
+    // 旧写法是每来一个 token 就 `textContent += token`：整段文本被重新写一遍
+    // （浏览器重建文本节点 + 重新布局），并且每个 token 都同步读 scrollHeight / 写 scrollTop
+    // （再强制一次布局）。现在只追加一个文本节点，滚动用 rAF 合并到每帧一次。
+    let liveScrollFrame = null;
+
+    function appendAssessmentLiveText(token) {
+        if (!assessmentLiveBody || !token) return;
+        assessmentLiveBody.appendChild(document.createTextNode(token));
+    }
+
+    function scheduleLiveScroll() {
+        if (liveScrollFrame !== null || !assessmentLiveBody) return;
+        liveScrollFrame = window.requestAnimationFrame(() => {
+            liveScrollFrame = null;
+            assessmentLiveBody.scrollTop = assessmentLiveBody.scrollHeight;
+        });
+    }
+
     function setQuickDisabled(disabled) {
         const els = [copyQuestionBtn, summaryQuestionBtn, extraQuestionBtn,
             assessmentTemplateConclusionBtn, assessmentTemplateExplainBtn,
@@ -2976,8 +3000,8 @@ let knowledgePoints = [];
                 stream: true
             };
             const payload = await streamEvaluate(evaluatePayload, (token) => {
-                assessmentLiveBody.textContent += token;
-                assessmentLiveBody.scrollTop = assessmentLiveBody.scrollHeight;
+                appendAssessmentLiveText(token);
+                scheduleLiveScroll();
             }, controller.signal);
             showAssessmentLive(false);
             const result = {

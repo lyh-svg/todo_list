@@ -331,6 +331,43 @@ class TrashRestoreTests(ResetMixin, unittest.TestCase):
         self.assertEqual(result["restoredTo"], "original")
         self.assertEqual(texts(find(tree(), "p1-d1")["children"]), ["任务1", "任务2"])
 
+    def test_restore_project_avoids_position_collision(self) -> None:
+        """B6：恢复项目的 position 已被占用时排到最后，不能和现存项目撞号。
+
+        删掉最后一个项目后新建的项目会重新拿到 position=0，此时恢复旧项目就撞号；
+        ORDER BY position,project_id 撞号后只能按 id 排，列表顺序看起来是随机的。
+        """
+        storage.replace_projects([make_project("p1"), make_project("p2")], pre_backup=False)
+        for project_id in ("p1", "p2"):
+            storage.delete_project(project_id, storage.read_project(project_id)[1])
+        storage.write_project(make_project("p3"), None)          # 空表 → position 0
+        trash_id = next(entry["id"] for entry in storage.list_trash_items()
+                        if entry["title"] == "项目p1")
+        result = storage.restore_trash_item(trash_id)
+        self.assertEqual(result["restoredTo"], "end", "位置被占用时要在响应里说明")
+        with storage.open_state_database() as connection:
+            rows = connection.execute(
+                "SELECT project_id,position FROM projects ORDER BY position,project_id").fetchall()
+        order = [str(row["project_id"]) for row in rows]
+        positions = [int(row["position"]) for row in rows]
+        self.assertEqual(len(positions), len(set(positions)), f"项目 position 撞号了：{positions}")
+        self.assertEqual(order, ["p3", "p1"], "恢复的项目应该排到最后")
+        self.assertEqual([summary["id"] for summary in storage.read_project_summaries()], ["p3", "p1"])
+
+    def test_restore_project_keeps_free_position(self) -> None:
+        """守卫：位置没被占用时仍然沿用删除前的位置（不能一律扔到最后）。"""
+        storage.replace_projects([make_project("p1"), make_project("p2")], pre_backup=False)
+        storage.delete_project("p1", storage.read_project("p1")[1])
+        trash_id = next(entry["id"] for entry in storage.list_trash_items()
+                        if entry["title"] == "项目p1")
+        result = storage.restore_trash_item(trash_id)
+        self.assertEqual(result["restoredTo"], "original")
+        with storage.open_state_database() as connection:
+            rows = connection.execute(
+                "SELECT project_id,position FROM projects ORDER BY position,project_id").fetchall()
+        self.assertEqual([(str(row["project_id"]), int(row["position"])) for row in rows],
+                         [("p1", 0), ("p2", 1)])
+
     def test_orphan_box_when_parent_is_gone(self) -> None:
         """父节点已不存在时恢复到"孤立任务箱"，而不是拒绝恢复。"""
         trash_id = self._trash_node("p1-i1", "p1-d1", 0, "任务1")
