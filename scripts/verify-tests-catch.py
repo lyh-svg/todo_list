@@ -601,6 +601,39 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
         [sys.executable, "-m", "unittest",
          "tests.test_startup_token.StartupTokenTests.test_sigterm_shuts_down_cleanly"],
     ),
+    (
+        "收藏 AI 题时必须连同示范解一起落库（否则收藏后无从复习）",
+        "review_storage.py",
+        crlf('        "focus": focus, "reference": reference or {},\n'
+             "    })\n"
+             "    errors = review_content.validate_ai_question(question, require_reference=True)\n"),
+        crlf('        "focus": focus, "reference": {},\n'
+             "    })\n"
+             "    errors = review_content.validate_ai_question(question)\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_review_ai_questions.AiQuestionStorageTests.test_read_and_delete_question"],
+    ),
+    (
+        "出题上下文必须带现有题面与最近作答（否则 AI 只在瞎猜）",
+        "review_storage.py",
+        crlf('        "existingPrompts": prompts,\n'),
+        crlf('        "existingPrompts": {},\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_review_ai_questions.AiQuestionStorageTests"
+         ".test_context_carries_point_prompts_and_recent_history"],
+    ),
+    (
+        "AI 题结构不合规必须变成可读 502（不能静默吞掉）",
+        "local_server.py",
+        crlf("                except RuntimeError as error:\n"
+             '                    self.send_json(502, {"error": f"AI 出题失败：{error}"})\n'
+             "                    return\n"),
+        crlf("                except RuntimeError:\n"
+             '                    self.send_json(200, {"ok": True, "question": {}})\n'
+             "                    return\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_review_http.ReviewAiQuestionHttpTests.test_ai_failure_becomes_502_with_readable_error"],
+    ),
 ]
 
 
