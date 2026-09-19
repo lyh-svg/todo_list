@@ -131,3 +131,34 @@ QUESTION_PROMPT = """\
 
 只返回 JSON 对象：{"questions":["题目1","题目2","题目3"],"focus":"考察点"}
 """
+
+REVIEW_AI_QUESTION_PROMPT = """\
+你是带练教练。学习者正在复习一个 Python 知识点，请就**这一个点**现场出一道新题，逼出因果理解。
+
+出题要求：
+1. 只考这个知识点本身，不要跨到别的主题；题目不要与"现有题面"重复（它们已经做过）。
+2. 优先给真实的、可运行的代码片段（含陷阱/边界），让学习者预测输出、解释机制、定位 bug 或写实现。
+3. 若给了"最近作答"，针对他答错/含糊的地方出题；没给就按知识点本身出。
+4. 代码一律放进以 python 标注的 markdown 代码围栏，严格保留 4 空格缩进，禁止压成一行。
+5. 难度贴合该知识点的层级：基础=能跑通并说清机制，实用=能处理边界，进阶=能设计验证或改错。
+6. **不要给出答案、不要给提示、不要给参考实现** —— 学习者要先自己答。
+
+只返回 JSON 对象：{"questionType":"concept|predict|debug|code_task 之一","prompt":"题面","code":"要预测/排查的代码，不需要代码时给空串","focus":"考察点一句话"}
+"""
+
+REVIEW_AI_ANSWER_PROMPT = """\
+你是批改教练。学习者刚做了一道现场出的题，请批改并给出示范解法。
+
+批改要求：
+1. 先判对错：`correct` 只有在核心机制都说到/做到时才是 true；沾边不算对。
+2. `missing` 列出缺少的关键点（每条一句话）；`wrongAt` 指出答错的具体位置（没有就给空串）；
+   `hint` 给一句怎么补（不要说教）。
+3. 必须给示范解法：`reference.reference` 是可运行的参考实现或完整解题步骤（放 python 围栏、4 空格缩进）；
+   `reference.answer` 给要点清单；`reference.expected` 给期望输出（有输出才给）；
+   `reference.explain` 讲清为什么；如果是找错题，再给 `reference.rootCause` 与 `reference.fix`。
+4. 学习者的作答可能是空的或写着"我不会"：这时 `correct=false`、`missing` 说明没作答，
+   **照样给出完整示范解法**，让他能照着学。
+5. 不要重复题目、不要输出与 JSON 无关的文字。
+
+只返回 JSON 对象：{"verdict":{"correct":true|false,"summary":"一句总评","missing":[],"wrongAt":"","hint":""},"focus":"考察点一句话","reference":{"answer":[],"expected":[],"explain":"","rootCause":"","fix":"","reference":"","pitfalls":[]}}
+"""

@@ -15,6 +15,8 @@ import review_content
 from prompts import (
     PROJECT_PLAN_PROMPT,
     QUESTION_PROMPT,
+    REVIEW_AI_ANSWER_PROMPT,
+    REVIEW_AI_QUESTION_PROMPT,
     REVIEW_GRADE_PROMPT,
     REVIEW_POINTS_PROMPT,
     REVIEW_REMEDIAL_PROMPT,
@@ -790,6 +792,117 @@ def grade_review_answer(*, code: str, question_type: str, answer: str, reference
             "missing": string_list(parsed.get("missing")),
             "wrongAt": str(parsed.get("wrongAt") or "")[:1000],
             "hint": str(parsed.get("hint") or "")[:1000]}
+
+
+def _mock_ai_question(context: dict[str, Any], question_type: str) -> dict[str, Any]:
+    kind = question_type if question_type in review_content.QUESTION_TYPES else "predict"
+    title = str(context.get("title") or "当前知识点")
+    return {"questionType": kind,
+            "prompt": f"（模拟出题）针对「{title}」写出下面代码两次调用的输出，并说明原因",
+            "code": "def collect(item, items=[]):\n    items.append(item)\n    return items\n\n"
+                    "print(collect(1))\nprint(collect(2))",
+            "focus": "可变默认参数在定义时求值一次"}
+
+
+def _mock_ai_verdict(question: dict[str, Any], answer: str) -> dict[str, Any]:
+    answered = bool(str(answer).strip())
+    return {
+        "verdict": {
+            "correct": answered,
+            "summary": "（模拟批改）核心机制说清了" if answered else "（模拟批改）这次没有作答",
+            "missing": [] if answered else ["没有写出内容"],
+            "wrongAt": "",
+            "hint": "对照示范解法看：默认值在函数定义时创建一次，之后所有调用共享它",
+        },
+        "focus": str(question.get("focus") or "可变默认参数在定义时求值一次"),
+        "reference": {
+            "answer": ["默认参数在函数定义时求值一次", "可变默认值会被所有调用共享"],
+            "expected": ["[1]", "[1, 2]"],
+            "explain": "两次调用复用同一个列表对象，所以第二次看到上一次的结果",
+            "rootCause": "", "fix": "",
+            "reference": "def collect(item, items=None):\n    items = [] if items is None else items\n"
+                         "    items.append(item)\n    return items",
+            "pitfalls": ["把默认值当成每次新建", "在调用侧共享同一个列表"],
+        },
+    }
+
+
+def generate_ai_question(*, context: dict[str, Any], question_type: str = "") -> dict[str, Any]:
+    """现场出一道新题（**只出题面**）。结构不合格抛可读 RuntimeError，绝不吐半成品。"""
+    if _mock_enabled():
+        return _mock_ai_question(context, question_type)
+    settings = read_settings()
+    user_payload = {
+        "知识点": str(context.get("title") or ""),
+        "模块": str(context.get("module") or ""),
+        "层级": str(context.get("level") or ""),
+        "易错点": context.get("pitfalls") or [],
+        "现有题面（风格参考，请勿重复）": context.get("existingPrompts") or {},
+        "最近作答": context.get("history") or [],
+        "薄弱": bool(context.get("weak")),
+        "指定题型": question_type or "由你决定",
+    }
+    request_body = {
+        "model": model_aliases(settings).get("flash", "deepseek-chat"),
+        "temperature": 0.6,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": REVIEW_AI_QUESTION_PROMPT},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+    }
+    parsed = _post_json(settings, request_body)
+    question = review_content.normalize_ai_question(parsed)
+    errors = review_content.validate_ai_question(question)
+    if errors:
+        raise RuntimeError("AI 出的题不合规：" + "；".join(errors[:3]))
+    return {"questionType": question["questionType"], "prompt": question["prompt"],
+            "code": question["code"], "focus": question["focus"]}
+
+
+def review_ai_answer(*, context: dict[str, Any], question: dict[str, Any],
+                     answer: str) -> dict[str, Any]:
+    """批改 AI 题的作答：返回 {verdict, focus, reference}；作答可以是空的（照样给示范解法）。"""
+    if _mock_enabled():
+        return _mock_ai_verdict(question, answer)
+    settings = read_settings()
+    user_payload = {
+        "知识点": str(context.get("title") or ""),
+        "模块": str(context.get("module") or ""),
+        "层级": str(context.get("level") or ""),
+        "题面": str(question.get("prompt") or ""),
+        "题面代码": str(question.get("code") or ""),
+        "考察点": str(question.get("focus") or ""),
+        "我的作答": str(answer or "")[:8000],
+    }
+    request_body = {
+        "model": model_aliases(settings).get("flash", "deepseek-chat"),
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": REVIEW_AI_ANSWER_PROMPT},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+    }
+    parsed = _post_json(settings, request_body)
+    raw_verdict = parsed.get("verdict") if isinstance(parsed.get("verdict"), dict) else {}
+    normalized = review_content.normalize_ai_question({
+        "questionType": question.get("questionType"), "prompt": question.get("prompt"),
+        "code": question.get("code"), "focus": parsed.get("focus") or question.get("focus"),
+        "reference": parsed.get("reference"),
+    })
+    errors = review_content.validate_ai_question(normalized, require_reference=True)
+    if errors:
+        raise RuntimeError("AI 批改结果不合规：" + "；".join(errors[:3]))
+    return {
+        "verdict": {"correct": raw_verdict.get("correct") is True,
+                    "summary": str(raw_verdict.get("summary") or "")[:1000],
+                    "missing": string_list(raw_verdict.get("missing")),
+                    "wrongAt": str(raw_verdict.get("wrongAt") or "")[:1000],
+                    "hint": str(raw_verdict.get("hint") or "")[:1000]},
+        "focus": normalized["focus"],
+        "reference": normalized["reference"],
+    }
 
 
 def call_question(payload: dict[str, Any]) -> dict[str, Any]:
