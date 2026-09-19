@@ -322,6 +322,11 @@ const previewBodies = [];
 let aiGradeUnavailable = false;
 // null 表示用默认的「还有缺漏」verdict；测试用它切换 correct:true / 空 verdict 两个分支。
 let aiGradeVerdict = null;
+// AI 加练：请求体留证 + 收藏列表夹具（知识点页徽标用）。
+const reviewAiQuestionBodies = [];
+const reviewAiAnswerBodies = [];
+const reviewAiCollectBodies = [];
+let aiQuestionsFixture = [];
 // 记录生成回流的请求体：验收失败必须带 remedial:true + gap，验收通过则不带。
 const reviewGenerateBodies = [];
 // 记录生成回流每次请求的 options：断言 keepalive:true（关页/刷新不丢请求）。
@@ -478,6 +483,37 @@ async function fetchStub(url, options = {}) {
         } });
     }
     if (path === '/api/review/session') return reply(200, { ok: true, sessionId: 's-review-1' });
+    // AI 加练：出题（无答案）→ 批改（判分 + 示范解法）→ 收藏。
+    if (path === '/api/review/ai-question') {
+        if (options.body) {
+            try { reviewAiQuestionBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
+        }
+        return reply(200, { ok: true, question: {
+            questionType: 'predict', prompt: '（AI 出的）写出两次调用的输出',
+            code: 'def f(items=[]):\n    items.append(1)\n    return items',
+            focus: '默认参数在定义时求值一次' } });
+    }
+    if (path === '/api/review/ai-answer') {
+        if (options.body) {
+            try { reviewAiAnswerBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
+        }
+        return reply(200, { ok: true,
+            verdict: { correct: false, summary: '机制说反了', missing: ['定义时求值一次'],
+                wrongAt: '把共享说成每次新建', hint: '想想默认值何时创建' },
+            focus: '默认参数在定义时求值一次',
+            reference: { answer: ['定义时求值一次'], expected: ['[1]', '[1, 2]'],
+                explain: '两次调用共享同一个列表', rootCause: '', fix: '',
+                reference: 'def f(items=None):\n    items = [] if items is None else items',
+                pitfalls: ['把默认值当成每次新建'] } });
+    }
+    if (path === '/api/review/ai-collect') {
+        if (options.body) {
+            try { reviewAiCollectBodies.push(JSON.parse(options.body)); } catch (error) { fetchLog.push('BAD-BODY'); }
+        }
+        return reply(200, { ok: true, question: { id: 'ai-q-1', code: 'py.a.b',
+            questionType: 'predict', createdAt: '2026-09-19T10:00:00', duplicated: false } });
+    }
+    if (path === '/api/review/ai-questions') return reply(200, { items: aiQuestionsFixture });
     // 生成回流：第一次生成有新增（inserted 2），已挂过点的任务 inserted 0（前端应静默）。
     if (path === '/api/review/generate') {
         let request = {};
@@ -1362,6 +1398,54 @@ function step(name, fn) {
     check('立即练一次的会话用的是这一题的题面',
         textOf(elementsById.get('reviewQuestionPrompt')).includes('写出下面代码的输出'),
         textOf(elementsById.get('reviewQuestionPrompt')).slice(0, 160));
+
+    // ⑰ AI 加练：出题 → 批改 → 收藏（临时加练不写复习状态，前端也不该隐藏"放弃"）。
+    // 插在这里是因为此刻复习会话正停在第 1 题（py.a.b），卡片入口需要当前题才能出题。
+    const aiQuestionBefore = fetchLog.length;
+    elementsById.get('reviewAiQuestionBtn').dispatch('click');
+    await sleep(60);
+    check('AI 出题发出了 /api/review/ai-question 且带 code',
+        fetchLog.slice(aiQuestionBefore).includes('POST /api/review/ai-question')
+        && reviewAiQuestionBodies.slice(-1)[0]?.code === 'py.a.b',
+        JSON.stringify({ log: fetchLog.slice(-3), body: reviewAiQuestionBodies.slice(-1)[0] }));
+    const practiceText = textOf(elementsById.get('reviewAiPractice'));
+    check('加练模式显示 AI 题面与考察点，并藏起固定题的「看答案」',
+        practiceText.includes('（AI 出的）写出两次调用的输出')
+        && practiceText.includes('默认参数在定义时求值一次')
+        && elementsById.get('reviewRevealBtn').hidden === true
+        && elementsById.get('reviewAiPractice').hidden === false,
+        practiceText.slice(0, 200));
+    const aiTextarea = findAll(elementsById.get('reviewAiPractice'), el => el._tag === 'textarea')[0];
+    if (aiTextarea) {
+        aiTextarea.value = '默认参数在函数定义时求值一次';
+        // 桩里直接赋 value 不会冒泡 input 事件（同上面"填写回忆内容"的既有写法）：
+        // 不派发的话前端状态里 answer 仍是空串，下面的请求体断言会失真。
+        aiTextarea.dispatch('input');
+    }
+    const submitBtn = findAll(elementsById.get('reviewAiPractice'), el => el.textContent === '提交给 AI 批改')[0];
+    if (submitBtn) step('点击「提交给 AI 批改」不抛异常', () => submitBtn.dispatch('click'));
+    await sleep(80);
+    const verdictText = textOf(elementsById.get('reviewAiPractice'));
+    check('批改结果渲染判分要点与示范解法',
+        verdictText.includes('机制说反了') && verdictText.includes('示范解法')
+        && verdictText.includes('定义时求值一次')
+        && reviewAiAnswerBodies.slice(-1)[0]?.answer === '默认参数在函数定义时求值一次',
+        JSON.stringify({ text: verdictText.slice(0, 200), body: reviewAiAnswerBodies.slice(-1)[0] }));
+    const collectBtn = findAll(elementsById.get('reviewAiPractice'), el => el.textContent === '收进题库')[0];
+    if (collectBtn) step('点击「收进题库」不抛异常', () => collectBtn.dispatch('click'));
+    await sleep(80);
+    check('收藏把题面 + 示范解法一起提交',
+        reviewAiCollectBodies.slice(-1)[0]?.reference?.reference.includes('items is None')
+        && textOf(elementsById.get('reviewAiPractice')).includes('已收藏'),
+        JSON.stringify(reviewAiCollectBodies.slice(-1)[0]).slice(0, 240));
+    const discardBtn = findAll(elementsById.get('reviewAiPractice'), el => el.textContent === '放弃加练')[0];
+    if (discardBtn) step('点击「放弃加练」不抛异常', () => discardBtn.dispatch('click'));
+    await sleep(60);
+    check('放弃加练后回到固定题（看答案回来、加练块收起）',
+        elementsById.get('reviewAiPractice').hidden === true
+        && elementsById.get('reviewRevealBtn').hidden === false,
+        JSON.stringify({ practiceHidden: elementsById.get('reviewAiPractice').hidden,
+            revealHidden: elementsById.get('reviewRevealBtn').hidden }));
 
     // ⑯ 默认课程（assessmentEnabled: true + 每个任务 assessmentRequired: true）：
     //     勾选任务直接进 AI 验收，验收通过必须走生成回流（POST /api/review/generate）；

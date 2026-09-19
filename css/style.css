@@ -2359,6 +2359,53 @@ body.modal-open { overflow: hidden; }
 .review-ai-verdict { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
   background: #f7f9fc; color: #536176; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .review-ai-verdict > div + div { margin-top: 4px; }
+/* AI 现场出题（加练）：徽标 + 两个入口（复习卡片内联 / 知识点页弹窗）共用的动态渲染块。 */
+.ai-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #eef4ff;
+    color: #2b6cb0;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.review-ai-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.review-ai-focus {
+    color: #657287;
+    font-size: 13px;
+}
+
+.review-ai-practice {
+    border: 1px dashed #cdd8ea;
+    border-radius: 10px;
+    padding: 12px;
+    margin: 12px 0;
+    background: #fbfdff;
+}
+
+.review-ai-answer {
+    width: 100%;
+    margin: 8px 0;
+}
+
+.review-ai-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.review-ai-collected {
+    color: #2f855a;
+    font-size: 13px;
+}
 /* ===== 摘要清单: 大弹窗 + 网格卡片 ===== */
 .utility-modal .utility-dialog.utility-wide { width: min(96vw, 1120px); max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column; }
 .utility-modal .utility-dialog.utility-wide .utility-body { overflow-y: auto; flex: 1; }

@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>项目管理器 · 文件夹式清单</title>
-<link rel="stylesheet" href="css/style.css?v=36" />
+<link rel="stylesheet" href="css/style.css?v=37" />
 </head>
 <body>
 <div class="app" id="app">
@@ -225,7 +225,9 @@
 <textarea id="reviewAnswerInput" rows="6" placeholder="先自己回忆或写出代码，再看答案"></textarea>
 <div class="review-actions-row">
 <button type="button" id="reviewRevealBtn" class="utility-primary-btn">看答案</button>
+<button type="button" id="reviewAiQuestionBtn" class="utility-secondary-btn">AI 出道新题</button>
 </div>
+<div class="review-ai-practice" id="reviewAiPractice" hidden></div>
 <div class="review-answer" id="reviewAnswerPanel" hidden></div>
 <div class="review-ai-grade" id="reviewAiGradeRow" hidden>
 <button type="button" id="reviewAiGradeBtn" class="utility-secondary-btn">AI 判分（可选）</button>
@@ -368,6 +370,6 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 
 <script src="js/api-client.js?v=1"></script>
 <script src="js/study-tools.js?v=1"></script>
-<script src="js/app.js?v=58"></script>
+<script src="js/app.js?v=59"></script>
 </body>
 </html>

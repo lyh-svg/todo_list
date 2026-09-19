@@ -54,6 +54,9 @@ const reviewAiGradeRow = document.getElementById('reviewAiGradeRow');
 const reviewAiGradeBtn = document.getElementById('reviewAiGradeBtn');
 const reviewAiGradeResult = document.getElementById('reviewAiGradeResult');
 const reviewSessionSummary = document.getElementById('reviewSessionSummary');
+// AI 现场出题（加练）：复习卡片里的入口与加练块容器；知识点页复用同一套状态机。
+const reviewAiQuestionBtn = document.getElementById('reviewAiQuestionBtn');
+const reviewAiPractice = document.getElementById('reviewAiPractice');
 // 第七批 Task 12：知识点库（按模块/层级筛选 + 立即练一次）
 const knowledgeView = document.getElementById('knowledgeView');
 const knowledgeList = document.getElementById('knowledgeList');
@@ -6253,6 +6256,259 @@ let knowledgePoints = [];
         return block;
     }
 
+    // ---------- AI 现场出题（临时加练 + 收藏） ----------
+    // 状态机：generating → ready(题面) → grading → graded(判分+示范解法) → collected。
+    // 临时加练零留痕：不写 attempts、不改 due、不动题型轮换；只有「收进题库」才落库。
+    let aiPractice = null;
+    // 收藏题的本地缓存：知识点页徽标/弹窗共用；收藏/删除后就地作废。
+    let aiQuestionsLoaded = false;
+    const AI_TYPE_LABELS = { concept: '概念题', predict: '输出预测', debug: '找错', code_task: '写实现' };
+
+    function renderAiVerdict(container, verdict, reference) {
+        container.replaceChildren();
+        const head = document.createElement('h4');
+        head.textContent = verdict.correct ? 'AI 批改：答对了' : 'AI 批改：还需要补';
+        container.appendChild(head);
+        const summary = document.createElement('div');
+        summary.textContent = verdict.summary || '（AI 没有补充说明）';
+        container.appendChild(summary);
+        (verdict.missing || []).forEach(line => {
+            const item = document.createElement('div');
+            item.className = 'expected-answer';
+            item.textContent = `缺：${line}`;
+            container.appendChild(item);
+        });
+        if (verdict.wrongAt) {
+            const wrong = document.createElement('div');
+            wrong.className = 'expected-answer';
+            wrong.textContent = `错在：${verdict.wrongAt}`;
+            container.appendChild(wrong);
+        }
+        if (verdict.hint) {
+            const hint = document.createElement('div');
+            hint.textContent = `提示：${verdict.hint}`;
+            container.appendChild(hint);
+        }
+        const demoTitle = document.createElement('h4');
+        demoTitle.textContent = '示范解法';
+        container.appendChild(demoTitle);
+        const demo = reviewBodyBlock(reference.reference);
+        if (demo) container.appendChild(demo);
+        (reference.answer || []).forEach(line => {
+            const item = document.createElement('div');
+            item.className = 'expected-answer';
+            item.textContent = String(line);
+            container.appendChild(item);
+        });
+        (reference.expected || []).forEach(line => {
+            const item = document.createElement('div');
+            item.className = 'expected-answer';
+            item.textContent = `期望输出：${line}`;
+            container.appendChild(item);
+        });
+        if (reference.explain) {
+            const explain = document.createElement('div');
+            explain.textContent = `解释：${reference.explain}`;
+            container.appendChild(explain);
+        }
+        if (reference.rootCause) {
+            const cause = document.createElement('div');
+            cause.textContent = `根因：${reference.rootCause}（修法：${reference.fix || ''}）`;
+            container.appendChild(cause);
+        }
+        (reference.pitfalls || []).forEach(line => {
+            const item = document.createElement('div');
+            item.className = 'expected-answer';
+            item.textContent = `易错：${line}`;
+            container.appendChild(item);
+        });
+    }
+
+    function aiPracticeButton(text, className, onClick, disabled) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = className;
+        button.textContent = text;
+        button.disabled = Boolean(disabled);
+        button.addEventListener('click', onClick);
+        return button;
+    }
+
+    function renderAiPractice() {
+        const state = aiPractice;
+        if (!state || !state.container) return;
+        const container = state.container;
+        container.hidden = false;
+        container.replaceChildren();
+        const head = document.createElement('div');
+        head.className = 'review-ai-head';
+        const badge = document.createElement('span');
+        badge.className = 'ai-badge';
+        badge.textContent = state.question
+            ? `AI 加练 · ${AI_TYPE_LABELS[state.question.questionType] || state.question.questionType}`
+            : 'AI 加练 · 正在出题…';
+        head.appendChild(badge);
+        if (state.question && state.question.focus) {
+            const focus = document.createElement('span');
+            focus.className = 'review-ai-focus';
+            focus.textContent = state.question.focus;
+            head.appendChild(focus);
+        }
+        container.appendChild(head);
+        if (!state.question) {
+            const loading = document.createElement('div');
+            loading.textContent = 'AI 正在出题…';
+            container.appendChild(loading);
+        } else {
+            const prompt = document.createElement('div');
+            prompt.textContent = state.question.prompt || '（这道题没有题面）';
+            container.appendChild(prompt);
+            const body = reviewBodyBlock(state.question.code);
+            if (body) container.appendChild(body);
+            const answer = document.createElement('textarea');
+            answer.rows = 6;
+            answer.className = 'review-ai-answer';
+            answer.placeholder = '先自己写，再看 AI 怎么批改';
+            answer.value = state.answer || '';
+            answer.addEventListener('input', () => { state.answer = answer.value; });
+            container.appendChild(answer);
+            if (state.reference) {
+                const verdictBox = document.createElement('div');
+                verdictBox.className = 'review-ai-verdict';
+                renderAiVerdict(verdictBox, state.verdict || {}, state.reference);
+                container.appendChild(verdictBox);
+            }
+        }
+        const actions = document.createElement('div');
+        actions.className = 'review-ai-actions';
+        if (state.question && !state.reference) {
+            actions.appendChild(aiPracticeButton(state.busy ? 'AI 正在批改…' : '提交给 AI 批改',
+                'utility-primary-btn', () => { submitAiPracticeAnswer(); }, state.busy));
+        }
+        if (state.reference && !state.collected) {
+            actions.appendChild(aiPracticeButton('收进题库', 'utility-secondary-btn',
+                () => { collectAiPracticeQuestion(); }, state.busy));
+        }
+        if (state.reference && state.collected) {
+            const collected = document.createElement('span');
+            collected.className = 'review-ai-collected';
+            collected.textContent = '已收藏（可在知识点页管理）';
+            actions.appendChild(collected);
+        }
+        if (state.reference) {
+            actions.appendChild(aiPracticeButton('再来一题', 'utility-secondary-btn',
+                () => { retryAiPractice(); }, state.busy));
+        }
+        actions.appendChild(aiPracticeButton('放弃加练', 'utility-secondary-btn',
+            () => { discardAiPractice(); }, false));
+        container.appendChild(actions);
+    }
+
+    function aiPracticeTarget(container) {
+        // 复习卡片里加练期间把固定题那一套藏起来；弹窗（知识点页）没有这些元素。
+        if (container === reviewAiPractice) {
+            reviewQuestionPrompt.hidden = true;
+            reviewAnswerInput.hidden = true;
+            reviewRevealBtn.hidden = true;
+            reviewAiQuestionBtn.hidden = true;
+            reviewAnswerPanel.hidden = true;
+            reviewAiGradeRow.hidden = true;
+            reviewGradeButtons.hidden = true;
+        }
+    }
+
+    function aiPracticeRestoreCard() {
+        reviewQuestionPrompt.hidden = false;
+        reviewAnswerInput.hidden = false;
+        reviewRevealBtn.hidden = false;
+        reviewAiQuestionBtn.hidden = false;
+        reviewAiPractice.hidden = true;
+        reviewAiPractice.replaceChildren();
+        renderReviewQuestion();
+    }
+
+    async function startAiPractice(code, container, title) {
+        if (aiPractice && aiPractice.busy) return;
+        aiPractice = { surface: container === reviewAiPractice ? 'card' : 'modal', code: code,
+            title: title || '', question: null, verdict: null, reference: null,
+            collected: false, busy: true, answer: '', container: container };
+        aiPracticeTarget(container);
+        renderAiPractice();
+        let payload = null;
+        try {
+            payload = await callApi('/api/review/ai-question', 'POST', { code: code });
+        } catch (error) {
+            payload = null;
+            showToast(error.message || 'AI 出题失败，请重试');
+        }
+        if (!aiPractice || aiPractice.code !== code) return;
+        if (!payload || !payload.question) {
+            discardAiPractice();
+            return;
+        }
+        aiPractice.question = payload.question;
+        aiPractice.busy = false;
+        renderAiPractice();
+    }
+
+    async function submitAiPracticeAnswer() {
+        const state = aiPractice;
+        if (!state || !state.question || state.busy) return;
+        state.busy = true;
+        renderAiPractice();
+        try {
+            const payload = await callApi('/api/review/ai-answer', 'POST', {
+                code: state.code, questionType: state.question.questionType,
+                prompt: state.question.prompt, questionCode: state.question.code || '',
+                focus: state.question.focus || '', answer: state.answer || '' });
+            state.verdict = payload.verdict || {};
+            state.reference = payload.reference || null;
+        } catch (error) {
+            showToast(error.message || 'AI 批改失败，请重试');
+        }
+        state.busy = false;
+        renderAiPractice();
+    }
+
+    async function collectAiPracticeQuestion() {
+        const state = aiPractice;
+        if (!state || !state.reference || state.busy) return;
+        state.busy = true;
+        renderAiPractice();
+        try {
+            await callApi('/api/review/ai-collect', 'POST', {
+                code: state.code, questionType: state.question.questionType,
+                prompt: state.question.prompt, questionCode: state.question.code || '',
+                focus: state.question.focus || '', reference: state.reference });
+            state.collected = true;
+            aiQuestionsLoaded = false;   // 知识点页徽标下次打开重新拉
+            showToast('已收进题库，以后和固定题一起复习');
+        } catch (error) {
+            showToast(error.message || '收藏失败，请重试');
+        }
+        state.busy = false;
+        renderAiPractice();
+    }
+
+    function retryAiPractice() {
+        const state = aiPractice;
+        if (!state) return;
+        startAiPractice(state.code, state.container, state.title);
+    }
+
+    function discardAiPractice() {
+        const state = aiPractice;
+        aiPractice = null;
+        if (!state) return;
+        if (state.surface === 'card') {
+            aiPracticeRestoreCard();
+        } else {
+            state.container.replaceChildren();
+            state.container.hidden = true;
+            closeUtilityModal();
+        }
+    }
+
     function renderReviewQuestion() {
         const item = reviewSessionState.items[reviewSessionState.index];
         if (!item) { finishReviewSession(); return; }
@@ -6363,7 +6619,9 @@ let knowledgePoints = [];
 
     // 把 /api/review/ai-grade 的 verdict 渲染成可读文本。后端在 AI 调用失败时会返回空对象，
     // 这里必须给一句明确说明，而不是渲染出一个像"判错了"的空面板。
-    function renderAiVerdict(verdict) {
+    // 注意：这是"固定题 AI 判分"专用的单容器渲染；现场加练那套共用渲染器是上面的
+    // renderAiVerdict(container, verdict, reference)，两者签名/用途不同，不要合并。
+    function renderReviewAiGradeVerdict(verdict) {
         const data = verdict && typeof verdict === 'object' ? verdict : {};
         const missing = Array.isArray(data.missing) ? data.missing : [];
         const hasDetail = missing.length > 0 || Boolean(data.wrongAt) || Boolean(data.hint);
@@ -6409,7 +6667,7 @@ let knowledgePoints = [];
             const payload = await callApi('/api/review/ai-grade', 'POST', {
                 code: item.code, type: item.questionType, answer: answer,
             });
-            renderAiVerdict(payload && payload.verdict);
+            renderReviewAiGradeVerdict(payload && payload.verdict);
         } catch (error) {
             const message = String((error && error.message) || '');
             showToast(message.includes('未配置')
@@ -9444,6 +9702,11 @@ let knowledgePoints = [];
         });
         reviewSessionExitBtn.addEventListener('click', () => { saveReviewDraft(); saveReviewSession(); showReviewQueue(); });
         reviewRevealBtn.addEventListener('click', revealReviewAnswer);
+        reviewAiQuestionBtn.addEventListener('click', () => {
+            const item = reviewSessionState.items[reviewSessionState.index];
+            if (!item) return;
+            startAiPractice(item.code, reviewAiPractice, item.title);
+        });
         reviewAnswerInput.addEventListener('input', () => {
             clearTimeout(reviewDraftTimer);
             reviewDraftTimer = setTimeout(saveReviewDraft, 500);
