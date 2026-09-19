@@ -32,7 +32,6 @@
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
     background: #e8edf5;
-    background-image: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTIwIiBoZWlnaHQ9IjEwODAiIHZpZXdCb3g9IjAgMCAxOTIwIDEwODAiPjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iYmciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNlNmViZjgiLz48c3RvcCBvZmZzZXQ9IjUwJSIgc3RvcC1jb2xvcj0iI2YyZjVmYiIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI2U4ZWNmNyIvPjwvbGluZWFyR3JhZGllbnQ+PHJhZGlhbEdyYWRpZW50IGlkPSJnMSIgY3g9IjIwJSIgY3k9IjIwJSIgcj0iNTAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjZDZlMGZmIiBzdG9wLW9wYWNpdHk9IjAuNyIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI2Q2ZTBmZiIgc3RvcC1vcGFjaXR5PSIwIi8+PC9yYWRpYWxHcmFkaWVudD48cmFkaWFsR3JhZGllbnQgaWQ9ImcyIiBjeD0iODUlIiBjeT0iNzUlIiByPSI2MCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNlNGQ5ZmYiIHN0b3Atb3BhY2l0eT0iMC41Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjZTRkOWZmIiBzdG9wLW9wYWNpdHk9IjAiLz48L3JhZGlhbEdyYWRpZW50PjxyYWRpYWxHcmFkaWVudCBpZD0iZzMiIGN4PSI1MCUiIGN5PSI1MCUiIHI9IjcwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2RmZjBmZiIgc3RvcC1vcGFjaXR5PSIwLjQiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNkZmYwZmYiIHN0b3Atb3BhY2l0eT0iMCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSIxOTIwIiBoZWlnaHQ9IjEwODAiIGZpbGw9InVybCgjYmcpIi8+PHJlY3Qgd2lkdGg9IjE5MjAiIGhlaWdodD0iMTA4MCIgZmlsbD0idXJsKCNnMSkiLz48cmVjdCB3aWR0aD0iMTkyMCIgaGVpZ2h0PSIxMDgwIiBmaWxsPSJ1cmwoI2cyKSIvPjxyZWN0IHdpZHRoPSIxOTIwIiBoZWlnaHQ9IjEwODAiIGZpbGw9InVybCgjZzMpIi8+PGcgZmlsbD0iIzVjN2NmYSIgb3BhY2l0eT0iMC4wOCI+PGNpcmNsZSBjeD0iMzAwIiBjeT0iMjAwIiByPSI0Ii8+PGNpcmNsZSBjeD0iNjAwIiBjeT0iNDAwIiByPSIzIi8+PGNpcmNsZSBjeD0iOTAwIiBjeT0iMjUwIiByPSI1Ii8+PGNpcmNsZSBjeD0iMTMwMCIgY3k9IjUwMCIgcj0iMyIvPjxjaXJjbGUgY3g9IjE2MDAiIGN5PSIzMDAiIHI9IjQiLz48Y2lyY2xlIGN4PSI0MDAiIGN5PSI4MDAiIHI9IjMiLz48Y2lyY2xlIGN4PSIxMDAwIiBjeT0iODUwIiByPSI0Ii8+PGNpcmNsZSBjeD0iMTcwMCIgY3k9IjcwMCIgcj0iMyIvPjxjaXJjbGUgY3g9IjE0MDAiIGN5PSI5MDAiIHI9IjQiLz48Y2lyY2xlIGN4PSIyMDAiIGN5PSI1NTAiIHI9IjMiLz48L2c+PC9zdmc+');
     background-repeat: no-repeat;
     background-position: center center;
     background-size: cover;
@@ -315,8 +314,6 @@ body {
 }
 .project-card {
     background: rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
     padding: 18px 20px;
@@ -422,8 +419,6 @@ body {
     color: #a0a8c0;
     font-size: 15px;
     background: rgba(255, 255, 255, 0.85);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
 }
@@ -580,8 +575,6 @@ body {
     transition: all 0.2s;
     flex-shrink: 0;
     -webkit-tap-highlight-color: transparent;
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
 }
 .back-btn:hover {
     background: var(--primary-hover);
@@ -647,8 +640,6 @@ body {
 }
 .detail-card {
     background: rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
     padding: 20px 18px 14px;
@@ -983,8 +974,6 @@ body {
     position: absolute;
     inset: 0;
     background: rgba(232, 237, 245, 0.72);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
 }
 .assessment-dialog {
     position: relative;
@@ -996,8 +985,6 @@ body {
     border-radius: var(--radius);
     background: rgba(255, 255, 255, 0.94);
     box-shadow: var(--shadow-lg);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
 }
 .assessment-header {
     display: flex;
@@ -1538,7 +1525,6 @@ select:focus-visible {
 * { letter-spacing: 0; }
 body {
     background-color: var(--bg);
-    background-image: none;
     padding: 28px 16px 60px;
 }
 body.modal-open { overflow: hidden; }
