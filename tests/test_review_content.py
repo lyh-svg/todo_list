@@ -132,6 +132,40 @@ class ReviewContentTests(unittest.TestCase):
         duplicated = sorted({code for code in codes if codes.count(code) > 1})
         self.assertEqual(duplicated, [], f"跨文件 code 不能重复：{duplicated}")
 
+    def test_normalize_ai_question_shapes_reference(self) -> None:
+        normalized = review_content.normalize_ai_question({
+            "questionType": "predict", "prompt": "  写出输出  ",
+            "code": "print(1)", "focus": "默认参数", "ignoreMe": "丢掉",
+            "reference": {"expected": ["1", "  "], "explain": " 因为定义时求值 ",
+                          "unknown": "丢掉"},
+        })
+        self.assertEqual(normalized["questionType"], "predict")
+        self.assertEqual(normalized["prompt"], "写出输出")
+        self.assertEqual(normalized["focus"], "默认参数")
+        self.assertNotIn("ignoreMe", normalized)
+        self.assertEqual(normalized["reference"]["expected"], ["1"])
+        self.assertEqual(normalized["reference"]["explain"], "因为定义时求值")
+        self.assertNotIn("unknown", normalized["reference"])
+
+    def test_normalize_ai_question_tolerates_garbage(self) -> None:
+        normalized = review_content.normalize_ai_question("不是对象")
+        self.assertEqual(normalized["prompt"], "")
+        self.assertEqual(normalized["reference"]["answer"], [])
+
+    def test_validate_ai_question_requires_type_and_prompt(self) -> None:
+        errors = review_content.validate_ai_question(
+            {"questionType": "essay", "prompt": ""})
+        self.assertTrue(any("题型" in error for error in errors), errors)
+        self.assertTrue(any("prompt" in error for error in errors), errors)
+
+    def test_validate_ai_question_requires_reference_when_collecting(self) -> None:
+        question = {"questionType": "concept", "prompt": "讲讲机制", "reference": {}}
+        self.assertEqual(review_content.validate_ai_question(question), [])
+        errors = review_content.validate_ai_question(question, require_reference=True)
+        self.assertTrue(any("参考解" in error for error in errors), errors)
+        question["reference"] = {"reference": "def f():\n    return 1"}
+        self.assertEqual(review_content.validate_ai_question(question, require_reference=True), [])
+
 
 if __name__ == "__main__":
     unittest.main()

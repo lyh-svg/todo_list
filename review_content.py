@@ -152,6 +152,51 @@ def normalize_points(value: Any) -> list[dict[str, Any]]:
     return points
 
 
+def normalize_ai_question(value: Any) -> dict[str, Any]:
+    """清洗 AI 现场出的题：题面 + （作答后才有）参考解。
+
+    与固定题的关系：`reference` 的键刻意与 `review_storage.reveal()` 返回的字段同名，
+    收藏之后前端「看答案」面板不用改就能渲染。
+    """
+    source = value if isinstance(value, dict) else {}
+    raw_reference = source.get("reference") if isinstance(source.get("reference"), dict) else {}
+    return {
+        "questionType": _text(source.get("questionType")),
+        "prompt": _text(source.get("prompt"))[:4000],
+        "code": _text(source.get("code"))[:4000],
+        "focus": _text(source.get("focus"))[:300],
+        "reference": {
+            "answer": _text_list(raw_reference.get("answer"))[:12],
+            "expected": _text_list(raw_reference.get("expected"))[:12],
+            "explain": _text(raw_reference.get("explain"))[:2000],
+            "rootCause": _text(raw_reference.get("rootCause"))[:2000],
+            "fix": _text(raw_reference.get("fix"))[:2000],
+            "reference": _text(raw_reference.get("reference"))[:4000],
+            "pitfalls": _text_list(raw_reference.get("pitfalls"))[:12],
+        },
+    }
+
+
+def validate_ai_question(question: Any, *, require_reference: bool = False) -> list[str]:
+    """AI 题的闸门：题型必须是四种之一、题面必须有 prompt；收藏时参考解至少一项有内容。"""
+    errors: list[str] = []
+    if not isinstance(question, dict):
+        return ["AI 题必须是对象"]
+    if _text(question.get("questionType")) not in QUESTION_TYPES:
+        errors.append("题型必须是 " + "/".join(QUESTION_TYPES) + " 之一")
+    if not _text(question.get("prompt")):
+        errors.append("缺少题面 prompt")
+    if require_reference:
+        reference = question.get("reference") if isinstance(question.get("reference"), dict) else {}
+        filled = any(
+            _text(reference.get(key)) or _text_list(reference.get(key))
+            for key in ("reference", "answer", "expected", "explain")
+        )
+        if not filled:
+            errors.append("参考解至少要有示范解/要点/期望输出/解释之一")
+    return errors
+
+
 def load_content_file(path: str | Path) -> dict[str, Any]:
     file_path = Path(path)
     try:
