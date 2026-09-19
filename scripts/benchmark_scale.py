@@ -31,6 +31,27 @@ sys.path.insert(0, str(APP_DIR))
 
 TODAY = date.today().isoformat()
 
+REAL_DATA_DIR = (APP_DIR / "data").resolve()
+WORK = Path(tempfile.mkdtemp(prefix="todo-bench-"))
+os.environ["TODO_SQLITE_FILE"] = str(WORK / "todo.sqlite3")
+os.environ["TODO_SQLITE_BACKUP_DIR"] = str(WORK / "backups")
+os.environ["TODO_MEMO_SQLITE_FILE"] = str(WORK / "memo.sqlite3")
+os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(WORK / "summary.sqlite3")
+
+
+def assert_temp_databases() -> None:
+    """硬性拒绝把基准数据写进仓库 data/。
+
+    事故（2026-09-19）：这几个环境变量原本只在 main() 里设置，于是"import 这个模块、
+    直接调 build_project() 自己量一把"就会在**没有任何环境变量**的情况下 import storage，
+    落到真实 data/todo.sqlite3 上（实测把 10220 个节点的基线项目写进了用户的库）。
+    现在环境变量在模块级就设好，并且把这一层断言放在真正写库的入口上。
+    """
+    for env_name in ("TODO_SQLITE_FILE", "TODO_MEMO_SQLITE_FILE", "TODO_SUMMARY_SQLITE_FILE"):
+        path = Path(os.environ[env_name]).resolve()
+        if path == REAL_DATA_DIR or REAL_DATA_DIR in path.parents:
+            raise SystemExit(f"基准拒绝写入真实数据目录：{path}")
+
 
 def build_project(project_id: str, total: int) -> dict:
     """把 total 个任务铺成 周 → 单元 → 任务，带元数据、部分完成与复习。"""
@@ -86,6 +107,7 @@ def timed(func, repeat: int) -> float:
 
 def run_size(total: int, repeat: int) -> dict[str, object]:
     import storage  # noqa: PLC0415  必须在环境变量之后导入
+    assert_temp_databases()
 
     db = Path(storage.DATABASE_FILE)
     for suffix in ("", "-wal", "-shm"):
@@ -166,11 +188,8 @@ def main() -> int:
     args = parser.parse_args()
     sizes = [int(part) for part in args.sizes.split(",") if part.strip()]
 
-    work = Path(tempfile.mkdtemp(prefix="todo-bench-"))
-    os.environ["TODO_SQLITE_FILE"] = str(work / "todo.sqlite3")
-    os.environ["TODO_SQLITE_BACKUP_DIR"] = str(work / "backups")
-    os.environ["TODO_MEMO_SQLITE_FILE"] = str(work / "memo.sqlite3")
-    os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(work / "summary.sqlite3")
+    work = WORK          # 临时库在模块导入时就设好了（见 assert_temp_databases 的事故说明）
+    assert_temp_databases()
 
     results = []
     try:

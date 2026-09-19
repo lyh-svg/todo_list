@@ -39,6 +39,9 @@ MAX_AUTO_ARCHIVE_DAYS = 3650
 ORPHAN_BOX_TITLE = "孤立任务箱"                    # 父节点被删掉时，恢复到这里
 # 活动历史只是「最近发生了什么」的追溯窗：写新记录时顺手裁到这么多条，避免无界增长。
 ACTIVITY_KEEP_ROWS = 2000
+# 活动历史 detail 里最多记这么多个 nodeId（其余只留数量）：批量选 500 个节点时，
+# 原来把 500 个 id（每个 36 字符）整串写进 detail，一行活动就 ~20KB。
+ACTIVITY_NODE_IDS_MAX = 100
 ACTIVITY_LIMIT_MAX = 500
 SCHEMA_VERSION = 8
 # 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
@@ -1277,6 +1280,20 @@ def log_activity(kind: str, summary: str, *, project_id: Any = "", project_name:
         return
     with _database_lock, open_state_database() as own:
         _write(own)
+
+
+def activity_node_ids(node_ids: Any) -> dict[str, Any]:
+    """活动历史里的 nodeIds 明细：最多留 ACTIVITY_NODE_IDS_MAX 个 + 总数 + 是否截断。
+
+    活动历史是"最近发生了什么"的追溯窗（ACTIVITY_KEEP_ROWS 只裁行数，不裁行大小），
+    所以明细也要一起收口：全量 id 只对排查有用，数量才是常态要看的。
+    """
+    items = [str(item) for item in (node_ids or [])]
+    return {
+        "nodeIds": items[:ACTIVITY_NODE_IDS_MAX],
+        "nodeCount": len(items),
+        "nodeIdsTruncated": len(items) > ACTIVITY_NODE_IDS_MAX,
+    }
 
 
 def list_activity(limit: int = 50) -> list[dict[str, Any]]:
@@ -3062,7 +3079,7 @@ def batch_update_nodes(targets: Any, action: str, value: Any = None) -> dict[str
                     "batch", f"批量{_BATCH_ACTION_NAMES.get(action, action)} {applied} 项",
                     project_id=project_id, project_name=_project_title(project),
                     detail={"action": action, "changed": applied, "spawned": spawned,
-                            "nodeIds": sorted(node_ids)},
+                            **activity_node_ids(sorted(node_ids))},
                     undoable=action not in {"complete"},
                     connection=connection,
                 )
@@ -3619,7 +3636,7 @@ def patch_project_nodes(project_id: Any, expected_revision: Any, ops: Any) -> di
             if deleted:
                 log_activity("delete", f"删除节点 {len(deleted)} 处", project_id=project_key,
                              project_name=str(base["name"]),
-                             detail={"nodeIds": deleted}, connection=connection)
+                             detail=activity_node_ids(deleted), connection=connection)
     return {"projectId": project_key, "revision": revision, "summary": summary,
             "updated": updated, "appended": appended, "deleted": deleted}
 

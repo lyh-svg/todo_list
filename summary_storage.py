@@ -38,6 +38,11 @@ class _ManagedConnection(sqlite3.Connection):
 _summary_lock = threading.RLock()
 
 
+def summary_lock() -> threading.RLock:
+    """给其他模块用的公开锁入口（对齐 storage.state_lock 的先例）。"""
+    return _summary_lock
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 

@@ -354,7 +354,10 @@ class TodoHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/backup/download":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-            supplied = self.headers.get("X-Todo-Session", "") or query.get("token", [""])[0]
+            # 只认请求头：以前允许 ?token= 是因为"浏览器直接点链接带不了自定义头"，
+            # 但那样 token 会留在浏览器历史和服务端日志里。前端现在改成 fetch + Blob
+            # （与备忘录库导出同一套写法），URL 里不再需要 token。
+            supplied = self.headers.get("X-Todo-Session", "")
             if not hmac.compare_digest(supplied, SESSION_TOKEN):
                 self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
                 return
@@ -370,9 +373,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.send_file(backup, content_type, name)
             return
         if path == "/api/export":
-            # 与 /api/backup/download 同理：浏览器直接下载带不了自定义头，允许查询串 token。
+            # 与 /api/backup/download 同理：只认请求头，token 不进 URL。
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-            supplied = self.headers.get("X-Todo-Session", "") or query.get("token", [""])[0]
+            supplied = self.headers.get("X-Todo-Session", "")
             if not hmac.compare_digest(supplied, SESSION_TOKEN):
                 self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
                 return
@@ -937,6 +940,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 created = [{"code": point["code"], "title": point["title"]} for point in points[:5]]
                 inserted = unchanged = 0
                 used_ai = False
+                generated = []
                 if (remedial or len(created) < wanted) and ai_service.is_configured():
                     generated = ai_service.generate_review_points(
                         task_id=task_id, project_id=str(payload.get("projectId") or ""),
@@ -950,8 +954,11 @@ class TodoHandler(SimpleHTTPRequestHandler):
                                         "origin": "ai"} for point in generated)
                         used_ai = True
                 if remedial:
-                    review_storage.mark_weak(
-                        [point["code"] for point in review_storage.points_for_task(task_id)])
+                    # 只查一次 points_for_task：导入前那一批 + 本次真的生成/导入的补漏题，
+                    # 就是"该任务的全部相关知识点"。以前为了标弱在导入之后又查了一遍库：
+                    # 白白多一次查询，而且两次读取之间夹着写入，标弱集合和展示集合容易走偏。
+                    review_storage.mark_weak([point["code"] for point in points]
+                                             + [point["code"] for point in generated])
                 self.send_json(200, {"ok": True, "inserted": inserted, "unchanged": unchanged,
                                      "created": created[:5], "usedAi": used_ai})
             elif path == "/api/review/ai-grade":

@@ -37,6 +37,10 @@ SCRIPTS = [
     "verify-render-delegation.js",
     "verify-review-counts.js",
     "verify-live-text.js",
+    "verify-rich-text.js",
+    "verify-memo-close.js",
+    "verify-undo-persist.js",
+    "verify-xss-surface.js",
     "verify-node-completed.js",
     "dom-smoke.js",
 ]

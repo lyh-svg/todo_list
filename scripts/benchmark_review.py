@@ -42,6 +42,18 @@ os.environ["TODO_SUMMARY_SQLITE_FILE"] = str(WORK / "summary.sqlite3")
 import review_storage  # noqa: E402
 import storage  # noqa: E402
 
+
+def assert_temp_databases() -> None:
+    """硬性拒绝把基准数据写进仓库 data/（同 benchmark_scale 的事故说明）。"""
+    real = (APP_DIR / "data").resolve()
+    for env_name in ("TODO_SQLITE_FILE", "TODO_MEMO_SQLITE_FILE", "TODO_SUMMARY_SQLITE_FILE"):
+        path = Path(os.environ[env_name]).resolve()
+        if path == real or real in path.parents:
+            raise SystemExit(f"基准拒绝写入真实数据目录：{path}")
+
+
+assert_temp_databases()
+
 TODAY = "2026-09-16"
 ROUNDS = 5
 DEFAULT_TASKS = [10000, 223]

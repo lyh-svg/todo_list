@@ -267,6 +267,33 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual(entries[0]["links"], [])
         self.assertIsNone(entries[0]["repeat"])
 
+    def test_downloads_only_accept_header_token(self) -> None:
+        """item 3：/api/export 与 /api/backup/download 只认请求头，token 不再进 URL。
+
+        以前允许 ?token=（浏览器直接点链接带不了自定义头），代价是 token 留在浏览器历史
+        和服务端日志里；前端已改成 fetch + Blob，所以查询串这条路要彻底关掉。
+        """
+        status, _ = self.call("GET", f"/api/export?token={local_server.SESSION_TOKEN}", token=False)
+        self.assertEqual(status, 401, "查询串 token 不能再被接受")
+
+        created = self.json_call("POST", "/api/backup",
+                                 json.dumps({"action": "create"}).encode("utf-8"),
+                                 {"Content-Type": "application/json"})
+        self.assertEqual(created[0], 200)
+        name = created[1]["name"]
+        status, _ = self.call("GET",
+                              f"/api/backup/download?name={name}&token={local_server.SESSION_TOKEN}",
+                              token=False)
+        self.assertEqual(status, 401, "查询串 token 不能再被接受")
+
+        status, body = self.call("GET", "/api/export?format=json")
+        self.assertEqual(status, 200)
+        self.assertIn(b"schemaVersion", body)
+
+        status, body = self.call("GET", f"/api/backup/download?name={name}")
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith(b"PK"), "带请求头必须能正常下载 zip")
+
     def test_memo_database_download_reports_failure_as_json_500(self) -> None:
         original = None
         with sqlite3.connect(memo_storage.MEMO_DATABASE_FILE) as connection:

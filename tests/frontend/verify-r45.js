@@ -18,7 +18,10 @@ check('R4 ⑧ 校验和不过时禁用恢复', src.includes('restore.disabled = 
 check('R4 ⑧ 恢复确认说明覆盖范围', src.includes('覆盖${scope}？'));
 check('R4 ⑧ 重命名兼容 .zip', src.includes("name.replace(/\\.(sqlite3|zip)$/, '')"));
 check('R4 ⑧ 创建的是完整备份', src.includes('create_full_backup') === false && src.includes("action: 'create'"));
-check('R4 ⑧ 导出仍然是 JSON（与备份分开）', src.includes("link.href = `${getAssessmentApiUrl('/api/export')}?token="));
+check('R4 ⑧ 导出仍然是 JSON（与备份分开）', src.includes("await apiFetch(`/api/export?format="));
+check('R4 ⑧ 导出/备份下载不再把 token 放进 URL（改走请求头 + Blob）',
+    !src.includes('?token=') && src.includes('function saveBlobAs(blob, fileName)')
+    && src.includes("apiFetch(`/api/backup/download?name="));
 // R4 快照
 check('R4 ⑨ 有 createSnapshot 辅助', src.includes('async function createSnapshot(reason)'));
 check('R4 ⑨ 清空已完成前先快照', src.includes("await createSnapshot('before-clear-completed');"));

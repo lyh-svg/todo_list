@@ -120,11 +120,12 @@ def call(path, method="GET", body=None, token=TOKEN, header_token=True):
 status, _, _ = call("/api/export", token=None, header_token=False)
 check("① /api/export 无 token 且无 header → 401", status == 401, f"status={status}")
 
-status, _, _ = call("/api/export")
+status, headers, body = call("/api/export")
 check("① /api/export 仅带 header（不带 query token）→ 200", status == 200, f"status={status}")
 
-status, headers, body = call(f"/api/export?token={TOKEN}", header_token=False)
-check("① /api/export?token= → 200", status == 200, f"status={status}")
+query_status, _, _ = call(f"/api/export?token={TOKEN}", header_token=False)
+# token 只认请求头：查询串会留在浏览器历史与服务端日志里（前端已改成 fetch + Blob）。
+check("① /api/export?token= → 401（下载只认请求头）", query_status == 401, f"status={query_status}")
 disposition = headers.get("Content-Disposition", "")
 check("① 带 attachment 且文件名是 .json", "attachment" in disposition and disposition.endswith('.json"'), disposition)
 
@@ -177,7 +178,7 @@ status, _, body = call("/api/backup", method="POST", body={"action": "create"})
 payload = json.loads(body)
 check("③ 创建数据库备份 → 200 + 完整备份 zip", status == 200 and payload.get("name", "").endswith(".zip"), body[:200])
 backup_name = payload.get("name", "")
-status, _, blob = call(f"/api/backup/download?name={backup_name}&token={TOKEN}", header_token=False)
+status, _, blob = call(f"/api/backup/download?name={backup_name}")
 check("③ 下载选中的备份 → 200 且是 zip（统一备份）",
       status == 200 and blob.startswith(b"PK"), f"status={status} head={blob[:16]!r}")
 
@@ -372,7 +373,7 @@ check("R4 ⑧ 恢复预览：校验和通过 + 三个库统计正确",
       and len(preview["files"]) == 3, json.dumps(preview)[:220])
 check("R4 ⑧ 预览含 schema 版本与生成时间", bool(preview["createdAt"]) and preview["appSchemaVersion"] is not None, json.dumps(preview)[:160])
 
-status, ctype, data = raw("GET", "/api/backup/download?name=%s&token=%s" % (R4_BACKUP, TOKEN))
+status, ctype, data = raw("GET", "/api/backup/download?name=%s" % R4_BACKUP)
 check("R4 ⑧ 下载完整备份是 zip", status == 200 and data[:2] == b"PK", f"{status} {data[:8]!r}")
 
 status, headers, data = call("/api/backup/inspect?name=" + urllib.parse.quote("不存在的备份.zip"))
@@ -808,16 +809,16 @@ status, headers, data = call("/api/templates", method="POST",
 check("批次5 把项目存成模板", status == 200 and json.loads(data)["template"]["name"] == "批次5模板", data[:160])
 
 # 导出三种格式
-status, headers, data = call("/api/export?token=" + TOKEN + "&format=md")
+status, headers, data = call("/api/export?format=md")
 text = data.decode("utf-8") if status == 200 else ""
 check("批次5 导出 Markdown", status == 200 and "# 学习计划导出" in text and "- [x]" in text, text[:120])
-status, headers, data = call("/api/export?token=" + TOKEN + "&format=csv")
+status, headers, data = call("/api/export?format=csv")
 csv_text = data.decode("utf-8") if status == 200 else ""
 check("批次5 导出 CSV（带 BOM 与表头）",
       status == 200 and csv_text.startswith("\ufeff") and "项目,周,单元,任务" in csv_text, csv_text[:120])
-status, headers, data = call("/api/export?token=" + TOKEN + "&format=json")
+status, headers, data = call("/api/export?format=json")
 check("批次5 JSON 导出仍可用", status == 200 and json.loads(data)["schemaVersion"] == 2, data[:120])
-status, headers, data = call("/api/export?token=" + TOKEN + "&format=docx")
+status, headers, data = call("/api/export?format=docx")
 check_json_error("批次5 不支持的导出格式 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
 
 # 导入预览与三种模式

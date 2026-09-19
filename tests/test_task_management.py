@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import json
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -422,6 +423,37 @@ class TrashRestoreTests(ResetMixin, unittest.TestCase):
         self.assertEqual(result["kind"], "project")
         self.assertIsNotNone(storage.read_project("p1"))
         self.assertEqual(len(storage.read_project("p1")[0]["tree"]), 2)
+
+
+class ActivityDetailSizeTests(ResetMixin, unittest.TestCase):
+    def test_batch_activity_node_ids_are_capped(self) -> None:
+        """item 4：批量操作的 detail 不再整串塞 500 个 nodeId（一行活动约 20KB）。"""
+        ids = [f"n{index:04d}" for index in range(500)]
+        project = make_project("p1")
+        children = project["tree"][0]["children"][0]["children"]
+        for node_id in ids:
+            children.append(item(node_id, f"任务{node_id}"))
+        storage.replace_projects([project], pre_backup=False)
+        result = storage.batch_update_nodes(
+            [{"projectId": "p1", "nodeId": node_id} for node_id in ids], "complete")
+        self.assertEqual(result["changed"], 500)
+        entry = next(row for row in storage.list_activity(10) if row["kind"] == "batch")
+        detail = entry["detail"]
+        self.assertEqual(detail["nodeCount"], 500)
+        self.assertTrue(detail["nodeIdsTruncated"])
+        self.assertEqual(len(detail["nodeIds"]), storage.ACTIVITY_NODE_IDS_MAX)
+        self.assertLessEqual(len(json.dumps(detail, ensure_ascii=False)),
+                             storage.ACTIVITY_NODE_IDS_MAX * 40 + 200, "detail 必须是有限大小")
+
+    def test_small_batch_keeps_full_ids_without_truncation_flag(self) -> None:
+        result = storage.batch_update_nodes(
+            [{"projectId": "p1", "nodeId": "p1-i1"}, {"projectId": "p1", "nodeId": "p1-i3"}],
+            "complete")
+        self.assertEqual(result["changed"], 2)
+        detail = next(row for row in storage.list_activity(10) if row["kind"] == "batch")["detail"]
+        self.assertEqual(sorted(detail["nodeIds"]), ["p1-i1", "p1-i3"])
+        self.assertEqual(detail["nodeCount"], 2)
+        self.assertFalse(detail["nodeIdsTruncated"])
 
 
 class ActivityTests(ResetMixin, unittest.TestCase):

@@ -416,6 +416,97 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
         [sys.executable, "-m", "unittest",
          "tests.test_task_management.TrashRestoreTests.test_restore_project_avoids_position_collision"],
     ),
+    (
+        "代码块语言标签只转义一次（lang 取自已转义的文本，不能再 escape）",
+        "js/app.js",
+        "            if (lang) html += '<span class=\"rich-lang\">' + lang + '</span>';",
+        "            if (lang) html += '<span class=\"rich-lang\">' + escapeHtmlText(lang) + '</span>';",
+        ["node", "tests/frontend/verify-rich-text.js"],
+    ),
+    (
+        "remedial 分支只能查一次 points_for_task（标弱集合与展示集合同源）",
+        "local_server.py",
+        crlf('                    review_storage.mark_weak([point["code"] for point in points]\n'
+             '                                             + [point["code"] for point in generated])\n'),
+        crlf('                    review_storage.mark_weak(\n'
+             '                        [point["code"] for point in review_storage.points_for_task(task_id)])\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_review_generate.ReviewGenerateHttpTests.test_generate_remedial_queries_points_once"],
+    ),
+    (
+        "三库锁必须显式点名（getattr 猜锁名拿不到锁时会静默少挡一把）",
+        "backup_service.py",
+        crlf("    for lock in (storage_service.state_lock(), memo_storage.memo_lock(),\n"
+             "                 summary_storage.summary_lock()):\n"
+             "        stack.enter_context(lock)\n"),
+        crlf("    for module in (storage_service, memo_storage, summary_storage):\n"
+             "        lock = (getattr(module, \"_database_lock\", None)\n"
+             "                or getattr(module, \"_memo_lock\", None)\n"
+             "                or getattr(module, \"_summary_lock\", None))\n"
+             "        if lock is not None:\n"
+             "            stack.enter_context(lock)\n"),
+        [sys.executable, "-m", "unittest", "tests.test_backup_locks"],
+    ),
+    (
+        "关窗兜底保存只认 pendingMemoId（不能 fallback 到 currentMemo）",
+        "js/app.js",
+        "            const memo = memoState.memos.find(item => item.id === memoState.pendingMemoId);",
+        "            const memo = memoState.memos.find(item => item.id === memoState.pendingMemoId) || currentMemo();",
+        ["node", "tests/frontend/verify-memo-close.js"],
+    ),
+    (
+        "撤销栈持久化：写入量被 MAX_UNDO_BYTES 约束 + 每步只序列化一次",
+        "js/app.js",
+        crlf("    function recentUndoSteps(stack) {\n"
+             "        const kept = [];\n"
+             "        let bytes = 0;\n"
+             "        for (let index = stack.length - 1; index >= 0; index -= 1) {\n"
+             "            const size = undoStepSize(stack[index]);\n"
+             "            if (bytes + size > MAX_UNDO_BYTES) break;\n"
+             "            kept.unshift(stack[index]);\n"
+             "            bytes += size;\n"
+             "        }\n"
+             "        return kept;\n"
+             "    }\n"),
+        crlf("    function recentUndoSteps(stack) {\n"
+             "        const payload = JSON.stringify(stack);\n"
+             "        return payload.length > MAX_UNDO_BYTES ? stack.slice(-3) : stack;\n"
+             "    }\n"),
+        ["node", "tests/frontend/verify-undo-persist.js"],
+    ),
+    (
+        "活动历史 detail 的 nodeIds 明细必须收口（500 个 id 一行 ~20KB）",
+        "storage.py",
+        crlf('                            **activity_node_ids(sorted(node_ids))},\n'),
+        crlf('                            "nodeIds": sorted(node_ids)},\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_task_management.ActivityDetailSizeTests"],
+    ),
+    (
+        "下载接口只认请求头（token 不能再经查询串进浏览器历史/日志）",
+        "local_server.py",
+        crlf('            # 只认请求头：以前允许 ?token= 是因为"浏览器直接点链接带不了自定义头"，\n'
+             '            # 但那样 token 会留在浏览器历史和服务端日志里。前端现在改成 fetch + Blob\n'
+             '            # （与备忘录库导出同一套写法），URL 里不再需要 token。\n'
+             '            supplied = self.headers.get("X-Todo-Session", "")\n'),
+        crlf('            supplied = self.headers.get("X-Todo-Session", "") or query.get("token", [""])[0]\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_http_layer.HttpLayerTests.test_downloads_only_accept_header_token"],
+    ),
+    (
+        "前端下载不再把 token 拼进 URL（改走请求头 + Blob）",
+        "js/app.js",
+        crlf("                await apiFetch(`/api/export?format=${encodeURIComponent(format)}`, { cache: 'no-store' }),\n"),
+        crlf("                await apiFetch(`/api/export?token=${encodeURIComponent(sessionToken)}&format=${encodeURIComponent(format)}`, { cache: 'no-store' }),\n"),
+        ["node", "tests/frontend/verify-r45.js"],
+    ),
+    (
+        "XSS 面：非空 innerHTML 必须全部经过 richToHtml",
+        "js/app.js",
+        "            content.innerHTML = richToHtml(message.content);",
+        "            content.innerHTML = message.content;",
+        ["node", "tests/frontend/verify-xss-surface.js"],
+    ),
 ]
 
 

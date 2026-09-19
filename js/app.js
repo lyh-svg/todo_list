@@ -2836,7 +2836,9 @@ let knowledgePoints = [];
             }
             var code = rest.slice(cursor, close);
             html += '<pre class="rich-code"><code>';
-            if (lang) html += '<span class="rich-lang">' + escapeHtmlText(lang) + '</span>';
+            // lang 取自 esc（整段文本已经整体转义过一次），这里再转义一次会把 & 和 ' 变成
+            // &amp;amp; / &amp;#39;，语言名里带 & 或 ' 的（c++、c&）在界面上直接露馅。
+            if (lang) html += '<span class="rich-lang">' + lang + '</span>';
             html += code + '</code></pre>';
             rest = rest.slice(close + 3);
         }
@@ -3231,6 +3233,25 @@ let knowledgePoints = [];
         return projects.filter(projectMatchesFilter);
     }
 
+    // 下载服务端文件统一走"带会话头的 fetch + Blob"（备忘录库导出本来就是这么做的）。
+    // 浏览器直接点链接带不了自定义头，以前只能把 SESSION_TOKEN 放进查询串 ——
+    // 那样 token 会留在浏览器历史和服务端日志里。现在 URL 里不再有 token。
+    function saveBlobAs(blob, fileName) {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = fileName;
+        link.click();
+        URL.revokeObjectURL(link.href);
+    }
+
+    async function downloadResponse(response, fileName, failureText) {
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.error || failureText);
+        }
+        saveBlobAs(await response.blob(), fileName);
+    }
+
     async function exportBackup(format = 'json') {
         // 导出的是服务端库里的完整项目，先把手上的改动落库，避免导出旧数据。
         try {
@@ -3244,25 +3265,27 @@ let knowledgePoints = [];
             markdown: { ext: 'md', label: 'Markdown 文档' },
             csv: { ext: 'csv', label: 'CSV 表格' },
         }[format] || { ext: 'json', label: 'JSON 备份' };
-        const link = document.createElement('a');
-        link.href = `${getAssessmentApiUrl('/api/export')}?token=${encodeURIComponent(sessionToken)}`
-            + `&format=${encodeURIComponent(format)}`;
-        link.download = `todo-projects-${todayStr()}.${meta.ext}`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
         showToast(`正在下载${meta.label}`);
+        try {
+            await downloadResponse(
+                await apiFetch(`/api/export?format=${encodeURIComponent(format)}`, { cache: 'no-store' }),
+                `todo-projects-${todayStr()}.${meta.ext}`, '导出失败，请重试');
+        } catch (error) {
+            showToast(error.message || '导出失败，请重试');
+        }
     }
 
-    function downloadDatabaseBackup() {
+    async function downloadDatabaseBackup() {
         const name = databaseBackupSelect.value;
         if (!name) return;
-        const link = document.createElement('a');
-        link.href = `${getAssessmentApiUrl('/api/backup/download')}?name=${encodeURIComponent(name)}&token=${encodeURIComponent(sessionToken)}`;
-        link.download = name;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
+        try {
+            await downloadResponse(
+                await apiFetch(`/api/backup/download?name=${encodeURIComponent(name)}`, { cache: 'no-store' }),
+                name, '下载备份失败，请重试');
+        } catch (error) {
+            showToast(error.message || '下载备份失败，请重试');
+            return;
+        }
         showToast(`正在下载数据库备份：${name}`);
     }
 
@@ -3533,7 +3556,10 @@ let knowledgePoints = [];
         if (memoState.saveTimer) {
             clearTimeout(memoState.saveTimer);
             memoState.saveTimer = null;
-            const memo = memoState.memos.find(item => item.id === memoState.pendingMemoId) || currentMemo();
+            // 只认 pendingMemoId：查不到说明这条备忘录已经不在列表里（被删/被换），
+            // 直接丢弃。以前会兜底到 currentMemo()，用户刚好切到另一条时保存目标就变成了它
+            // （内容不会串——persistMemo 以 snapshot.id 为准——但该丢弃的时候不该去写别的备忘录）。
+            const memo = memoState.memos.find(item => item.id === memoState.pendingMemoId);
             memoState.pendingMemoId = null;
             if (memo) {
                 persistMemo(memo).catch(error => console.error('关闭备忘录时保存失败', error));
@@ -3899,14 +3925,9 @@ let knowledgePoints = [];
 
     async function downloadMemoDatabase() {
         try {
-            const response = await apiFetch('/api/memos/database-download', { cache: 'no-store' });
-            if (!response.ok) throw new Error('导出备忘录数据库失败');
-            const blob = await response.blob();
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = 'memo.sqlite3';
-            link.click();
-            URL.revokeObjectURL(link.href);
+            await downloadResponse(
+                await apiFetch('/api/memos/database-download', { cache: 'no-store' }),
+                'memo.sqlite3', '导出备忘录数据库失败');
             showToast('已导出独立备忘录数据库');
         } catch (error) {
             showToast(error.message || '导出备忘录数据库失败，请重试');
@@ -4514,7 +4535,11 @@ let knowledgePoints = [];
 
     const UNDO_STORAGE_KEY = 'todo_list_undo_v1';
     const MAX_UNDO_STEPS = 20;
-    const MAX_UNDO_BYTES = 200 * 1024;   // localStorage 单步太大就不持久化，避免写爆
+    const MAX_UNDO_BYTES = 200 * 1024;   // 单次写进 localStorage 的字节上限（配额约 5MB，超了会抛）
+    // 每步的序列化大小只算一次（WeakMap 缓存）：批量 node-fields 步骤可能带几百个节点的
+    // before/after 快照，重复整栈 stringify 全是主线程白掉帧。
+    const undoStepBytes = new WeakMap();
+    let undoPersistScheduled = false;
     let undoStack = [];
     let redoStack = [];
     let historyBusy = false;
@@ -4591,19 +4616,56 @@ let knowledgePoints = [];
         renderUndoButtons();
     }
 
-    function persistUndoStack() {
+    function undoStepSize(step) {
+        if (undoStepBytes.has(step)) return undoStepBytes.get(step);
+        let size;
         try {
-            const payload = JSON.stringify({ undo: undoStack, redo: redoStack });
-            if (payload.length > MAX_UNDO_BYTES) {
-                // 太大（例如整棵子树的克隆）就只保留最近几步
-                localStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify({
-                    undo: undoStack.slice(-3), redo: redoStack.slice(-3)
-                }));
-            } else {
-                localStorage.setItem(UNDO_STORAGE_KEY, payload);
-            }
+            size = JSON.stringify(step).length;
+        } catch (error) {
+            size = MAX_UNDO_BYTES + 1;   // 环状引用等：当成"塞不下"，但不让它挡住其它步骤
+        }
+        undoStepBytes.set(step, size);
+        return size;
+    }
+
+    // 从最近一步往回拿，累计不超过 MAX_UNDO_BYTES（单步就超限则一个都不写）。
+    // 旧实现是"先把整个栈 stringify 一遍，超限了再把最近 3 步 stringify 一遍"：
+    // 实测 300 节点 × 2000 字草稿的批量步骤（3 步约 15MB）要 82ms + 153ms，全在主线程上；
+    // 而且"最近 3 步"根本挡不住单步超大——15MB 写进 localStorage 会被配额直接拒绝
+    // （异常被 catch 掉，撤销历史从此静默不再落盘）。
+    function recentUndoSteps(stack) {
+        const kept = [];
+        let bytes = 0;
+        for (let index = stack.length - 1; index >= 0; index -= 1) {
+            const size = undoStepSize(stack[index]);
+            if (bytes + size > MAX_UNDO_BYTES) break;
+            kept.unshift(stack[index]);
+            bytes += size;
+        }
+        return kept;
+    }
+
+    function persistUndoStack() {
+        undoPersistScheduled = false;
+        try {
+            localStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify({
+                undo: recentUndoSteps(undoStack),
+                redo: recentUndoSteps(redoStack),
+            }));
         } catch (error) {
             console.warn('撤销记录无法持久化', error);
+        }
+    }
+
+    // 合并同一轮里的多次变更：一次操作里可能连着改几次栈（批量、撤销、重做），没必要
+    // 每次都同步序列化 + 写盘。真关页时由 pagehide 兜底 flush，不丢历史。
+    function scheduleUndoPersist() {
+        if (undoPersistScheduled) return;
+        undoPersistScheduled = true;
+        if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(() => persistUndoStack(), { timeout: 500 });
+        } else {
+            window.setTimeout(() => persistUndoStack(), 0);
         }
     }
 
@@ -4629,7 +4691,7 @@ let knowledgePoints = [];
         undoStack.push(step);
         while (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
         redoStack = [];
-        persistUndoStack();
+        scheduleUndoPersist();
         renderUndoButtons();
     }
 
@@ -4931,7 +4993,7 @@ let knowledgePoints = [];
             return;
         }
         redoStack.push(step);
-        persistUndoStack();
+        scheduleUndoPersist();
         renderUndoButtons();
         await refreshAfterHistoryChange(step);
         historyBusy = false;
@@ -4956,7 +5018,7 @@ let knowledgePoints = [];
             return;
         }
         undoStack.push(step);
-        persistUndoStack();
+        scheduleUndoPersist();
         renderUndoButtons();
         await refreshAfterHistoryChange(step);
         historyBusy = false;
@@ -9930,6 +9992,7 @@ let knowledgePoints = [];
         window.addEventListener('pagehide', () => {
             persistAssessmentDraft();
             if (saveTimer) flushProjectsSave();
+            if (undoPersistScheduled) persistUndoStack();   // 关页/刷新前把排队的撤销历史落盘
         });
         projectSearchInput.addEventListener('input', () => {
             projectFilters.query = projectSearchInput.value;

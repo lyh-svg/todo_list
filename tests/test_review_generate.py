@@ -395,6 +395,34 @@ class ReviewGenerateHttpTests(unittest.TestCase):
         self.assertEqual(again["inserted"], 0)
         self.assertTrue(again["created"])
 
+    def test_generate_remedial_queries_points_once(self) -> None:
+        """B8：同一个请求里 points_for_task 只能查一遍，且标弱集合与展示集合同源。
+
+        旧代码在 remedial 分支又查了一遍，只为拿 code 列表去标弱：纯浪费，而且两次查询之间
+        若有并发写入，标弱集合会和返回给用户的 created 集合对不上。
+        """
+        original = review_storage.points_for_task
+        expected = [point["code"] for point in original(SEED_TASK_ID)]
+        self.assertTrue(expected, "种子任务应该有预规划知识点，否则这个用例没有意义")
+        calls: list[str] = []
+
+        def counting(task_id: str):
+            calls.append(str(task_id))
+            return original(task_id)
+
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": ""}, clear=False), \
+                mock.patch.object(review_storage, "points_for_task", counting), \
+                mock.patch.object(review_storage, "mark_weak", wraps=review_storage.mark_weak) as mark:
+            status, payload = self.call("/api/review/generate",
+                                        {"taskId": SEED_TASK_ID, "projectId": SEED_PROJECT_ID,
+                                         "taskText": "可变默认参数", "count": 1,
+                                         "gap": "说不清求值时机", "remedial": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(calls, [SEED_TASK_ID], f"同一请求查了 {len(calls)} 次 points_for_task")
+        self.assertTrue(mark.called, "remedial 必须标弱")
+        self.assertEqual(mark.call_args[0][0], expected, "标弱集合必须和展示集合同源")
+        self.assertEqual([entry["code"] for entry in payload["created"]], expected[:5])
+
     def test_generate_remedial_marks_weak_and_reports_inserted(self) -> None:
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "TODO_AI_MOCK": "1"}, clear=False):
             status, payload = self.call("/api/review/generate",

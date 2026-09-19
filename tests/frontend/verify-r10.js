@@ -52,11 +52,13 @@ check('复制：选项包含子任务/完成状态/AI 历史/复习',
 check('复制：调 /api/node/duplicate', /\/api\/node\/duplicate/.test(src));
 
 // ④⑤ 撤销 / 重做 + 持久化
+// 持久化的"形状"由 verify-undo-persist.js 行为级覆盖（写入量上限、每步只序列化一次、
+// 正常小栈往返）。这里只断言存在性：常量、读取、写入，且负载里两个栈都在。
 check('撤销：有 undo/redo 两步栈与 localStorage 持久化',
     src.includes('UNDO_STORAGE_KEY')
     && src.includes('localStorage.getItem(UNDO_STORAGE_KEY')
     && src.includes('function persistUndoStack')
-    && src.includes('JSON.stringify({ undo: undoStack, redo: redoStack })'));
+    && /localStorage\.setItem\(UNDO_STORAGE_KEY,[\s\S]{0,300}undoStack[\s\S]{0,200}redoStack/.test(src));
 check('撤销：Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y 快捷键',
     /function handleHistoryShortcut[\s\S]{0,900}key === 'z' && event\.shiftKey[\s\S]{0,200}performRedo\(\)[\s\S]{0,300}performUndo\(\)/.test(src));
 check('撤销：输入框里不劫持快捷键',

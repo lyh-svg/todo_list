@@ -245,12 +245,13 @@ def _all_database_locks() -> ExitStack:
     旧 inode 上，静默丢数据（.restore-*/.rollback-* 这些固定名临时文件也会互相覆盖）。
     """
     stack = ExitStack()
-    for module in (storage_service, memo_storage, summary_storage):
-        lock = (getattr(module, "_database_lock", None)
-                or getattr(module, "_memo_lock", None)
-                or getattr(module, "_summary_lock", None))
-        if lock is not None:
-            stack.enter_context(lock)
+    # 三把锁都显式点名（storage 早就有 state_lock()，这里给另两个库补了同样的公开入口）。
+    # 以前是拿 getattr 链在三个模块里"碰运气"找锁：模块只要改名/新增内部锁，这里就会静默
+    # 拿到 None 或拿错锁（`if lock is not None` 直接跳过），恢复期间的并发写照样提交到被
+    # os.replace 换掉的旧 inode 上 —— 护栏形同虚设且没有任何告警。
+    for lock in (storage_service.state_lock(), memo_storage.memo_lock(),
+                 summary_storage.summary_lock()):
+        stack.enter_context(lock)
     return stack
 
 

@@ -91,7 +91,7 @@ step "8) 反向验证：把产品改回旧行为，测试必须失败"
 if [ "$MODE" = "quick" ]; then
     printf '   - quick 模式跳过\n'
 else
-    run "verify-tests-catch.py（44 条）" python3 scripts/verify-tests-catch.py
+    run "verify-tests-catch.py（53 条）" python3 scripts/verify-tests-catch.py
 fi
 
 step "9) 行尾约定（代码文件必须 CRLF，*.sh 用 LF）"
@@ -108,7 +108,21 @@ while IFS= read -r file; do
         crlf_bad=1
     fi
 done < <({ git ls-files '*.py' '*.js' '*.css' '*.html' '*.md'; git ls-files --others --exclude-standard '*.py' '*.js' '*.css' '*.html' '*.md'; } | sort -u)
-[ "$crlf_bad" = "0" ] && ok "行尾全部符合约定" || bad "行尾检查失败"
+# *.sh 必须是 LF：以前 *.sh 在上面被直接 continue 跳过，"*.sh 用 LF"只写在标题里没真的检查，
+# 于是一次脚本编辑把 tests/e2e-verify.sh 写成 CRLF，直到 e2e 步骤才以
+# "$'\r': command not found" 的形式炸出来。
+sh_bad=0
+while IFS= read -r file; do
+    if [ "$(grep -c $'\r' "$file" || true)" != "0" ]; then
+        printf '   ✘ %s 含 CR（*.sh 必须是 LF）\n' "$file"
+        sh_bad=1
+    fi
+done < <(git ls-files '*.sh')
+if [ "$crlf_bad" = "0" ] && [ "$sh_bad" = "0" ]; then
+    ok "行尾全部符合约定"
+else
+    bad "行尾检查失败"
+fi
 
 printf '\n'
 if [ "$FAILED" = "0" ]; then

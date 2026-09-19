@@ -45,6 +45,15 @@ class _ManagedConnection(sqlite3.Connection):
 _memo_lock = threading.RLock()
 
 
+def memo_lock() -> threading.RLock:
+    """给其他模块用的公开锁入口（对齐 storage.state_lock 的先例）。
+
+    备份恢复要整文件替换备忘录库，必须能明确拿到这把锁；以前靠 backup_service 用
+    getattr 链去猜锁名，改名就会静默拿不到锁。
+    """
+    return _memo_lock
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
