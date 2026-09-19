@@ -19,8 +19,8 @@ REVIEW_TABLES = ("review_points", "review_point_tasks", "review_states",
 
 
 class ReviewMigrationTests(unittest.TestCase):
-    def test_schema_version_is_10(self) -> None:
-        self.assertEqual(storage.SCHEMA_VERSION, 10)
+    def test_schema_version_is_11(self) -> None:
+        self.assertEqual(storage.SCHEMA_VERSION, 11)
 
     def test_v8_database_drops_removed_tables(self) -> None:
         """v9 迁移注销三个已取消功能的空表（背景图 / 筛选视图 / 自定义模板）。"""
@@ -100,6 +100,30 @@ class ReviewMigrationTests(unittest.TestCase):
         self.assertIn("review_ai_questions", tables)
         self.assertIn("idx_review_ai_questions_code", indexes)
         self.assertEqual(storage.read_project("p-ai")[0], before, "迁移不得改动项目数据")
+        self.assertTrue(storage.check_database_integrity())
+
+    def test_v10_database_gains_question_ref_column(self) -> None:
+        """v10 -> v11：给 review_attempts 加"题身份"列；历史行默认 ''（=固定题），数据不动。"""
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            connection.execute(
+                "INSERT INTO review_attempts(id,code,task_id,project_id,question_type,grade,answer,"
+                "ai_verdict,reviewed_on,duration_ms,session_id,created_at) "
+                "VALUES('old-attempt','py.old.point','','','concept',4,'旧作答','','2026-09-19',0,'','2026-09-19T10:00:00')")
+        # 伪装成"升级前的 v10 库"：把列删掉再退版本号
+        with storage.open_state_database() as connection:
+            connection.execute("ALTER TABLE review_attempts DROP COLUMN question_ref")
+            connection.execute("PRAGMA user_version=10")
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(review_attempts)")}
+            row = connection.execute(
+                "SELECT answer,question_ref FROM review_attempts WHERE id='old-attempt'").fetchone()
+        self.assertEqual(version, storage.SCHEMA_VERSION)
+        self.assertIn("question_ref", columns)
+        self.assertEqual(row["answer"], "旧作答", "迁移不得丢历史作答")
+        self.assertEqual(row["question_ref"], "", "历史行的题身份必须是固定题（''）")
         self.assertTrue(storage.check_database_integrity())
 
 

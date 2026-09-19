@@ -42,7 +42,7 @@ ACTIVITY_KEEP_ROWS = 2000
 # 原来把 500 个 id（每个 36 字符）整串写进 detail，一行活动就 ~20KB。
 ACTIVITY_NODE_IDS_MAX = 100
 ACTIVITY_LIMIT_MAX = 500
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 # 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
 PRIORITIES = ("", "high", "mid", "low")
 MAX_TAGS = 20
@@ -470,6 +470,7 @@ def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Pat
             task_id TEXT NOT NULL DEFAULT '',
             project_id TEXT NOT NULL DEFAULT '',
             question_type TEXT NOT NULL,
+            question_ref TEXT NOT NULL DEFAULT '',
             grade INTEGER NOT NULL,
             answer TEXT NOT NULL DEFAULT '',
             ai_verdict TEXT NOT NULL DEFAULT '',
@@ -524,6 +525,11 @@ def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Pat
     ):
         if column not in node_columns:
             connection.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")
+    attempt_columns = {row[1] for row in connection.execute("PRAGMA table_info(review_attempts)")}
+    if "question_ref" not in attempt_columns:
+        # v10 -> v11：题身份。默认 '' = 固定题，历史行语义天然正确，不需要回填。
+        connection.execute(
+            "ALTER TABLE review_attempts ADD COLUMN question_ref TEXT NOT NULL DEFAULT ''")
     project_columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     if "review_enabled" not in project_columns:
         connection.execute("ALTER TABLE projects ADD COLUMN review_enabled INTEGER")
@@ -1072,6 +1078,8 @@ def ensure_schema() -> None:
             # v8 -> v9：删掉三个已取消功能留下的空表（背景图 / 筛选视图 / 自定义模板）。
             # v9 -> v10：新增 review_ai_questions（AI 加练收藏库）。纯增量 DDL、幂等、不回填，
             # 由 open_state_database 的 bootstrap 建表 + 版本号跃迁触发；旧表旧行一律不动。
+            # v10 -> v11：给 review_attempts 加 question_ref（''=固定题，非空=收藏的 AI 题）。
+            # 纯增量 ADD COLUMN + 默认值，无回填；老库由 bootstrap 的补列段补齐。
             _drop_removed_tables()
             with _database_lock:
                 with open_state_database() as connection:
