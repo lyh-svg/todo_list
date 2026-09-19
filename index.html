@@ -3,33 +3,64 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>项目管理器 · 文件夹式清单</title>
-<link rel="stylesheet" href="css/style.css?v=37" />
+<title>复习清单</title>
+<link rel="stylesheet" href="css/style.css?v=38" />
 </head>
 <body>
+<svg class="icon-sprite" aria-hidden="true" focusable="false">
+<symbol id="i-check" viewBox="0 0 16 16"><path d="M3.5 8.6l3 3 6-7.2"/></symbol>
+<symbol id="i-list" viewBox="0 0 16 16"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></symbol>
+<symbol id="i-clock" viewBox="0 0 16 16"><path d="M8 2.75a5.25 5.25 0 1 1 0 10.5 5.25 5.25 0 0 1 0-10.5zM8 5.5v2.7l1.9 1.4"/></symbol>
+<symbol id="i-search" viewBox="0 0 16 16"><path d="M7.2 2.75a4.45 4.45 0 1 1 0 8.9 4.45 4.45 0 0 1 0-8.9zM10.5 10.5l3 3"/></symbol>
+<symbol id="i-trash" viewBox="0 0 16 16"><path d="M3.2 4.8h9.6M6.2 4.8V3.2h3.6v1.6M4.6 4.8l.7 8.4h5.4l.7-8.4M6.8 7v3.8M9.2 7v3.8"/></symbol>
+<symbol id="i-target" viewBox="0 0 16 16"><path d="M8 2.75a5.25 5.25 0 1 1 0 10.5 5.25 5.25 0 0 1 0-10.5zM8 6.4a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2z"/></symbol>
+<symbol id="i-shuffle" viewBox="0 0 16 16"><path d="M3 4.8h2.6l4.8 6.4H13M3 11.2h2.6l1.3-1.7M11 3l2 1.8-2 1.8M11 9.4l2 1.8-2 1.8"/></symbol>
+<symbol id="i-bars" viewBox="0 0 16 16"><path d="M4 13V8.4M8 13V3.6M12 13V6.8"/></symbol>
+<symbol id="i-download" viewBox="0 0 16 16"><path d="M8 3v7.4M4.8 7.6L8 10.8l3.2-3.2M3.4 13.2h9.2"/></symbol>
+<symbol id="i-upload" viewBox="0 0 16 16"><path d="M8 10.8V3.4M4.8 6.6L8 3.4l3.2 3.2M3.4 13.2h9.2"/></symbol>
+<symbol id="i-rotate" viewBox="0 0 16 16"><path d="M4.4 6.6A4.6 4.6 0 1 1 8 12.6M4.4 3.4v3.2h3.2"/></symbol>
+<symbol id="i-note" viewBox="0 0 16 16"><path d="M4 2.6h5.4L12 5.2v8.2H4zM9.4 2.6v2.6H12M6.2 8h4.2M6.2 10.4h3"/></symbol>
+<symbol id="i-undo" viewBox="0 0 16 16"><path d="M4 8h5.6a2.4 2.4 0 0 1 0 4.8H7.2M6.4 5.6L4 8l2.4 2.4"/></symbol>
+<symbol id="i-redo" viewBox="0 0 16 16"><path d="M12 8H6.4a2.4 2.4 0 0 0 0 4.8h2.4M9.6 5.6L12 8l-2.4 2.4"/></symbol>
+<symbol id="i-copy" viewBox="0 0 16 16"><path d="M6.2 6.2h5.6v5.6H6.2zM4.2 9.8V4.2h5.6"/></symbol>
+<symbol id="i-archive" viewBox="0 0 16 16"><path d="M3 5.4h10v7.2H3zM3 5.4l1-2h8l1 2M6.4 8.4h3.2"/></symbol>
+<symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 4v8M4 8h8"/></symbol>
+<symbol id="i-pencil" viewBox="0 0 16 16"><path d="M4 12l.9-2.9 5.6-5.6 2 2-5.6 5.6z"/></symbol>
+<symbol id="i-x" viewBox="0 0 16 16"><path d="M4.6 4.6l6.8 6.8M11.4 4.6l-6.8 6.8"/></symbol>
+<symbol id="i-move" viewBox="0 0 16 16"><path d="M3 6h10M10.6 3.6L13 6l-2.4 2.4M13 10H3M5.4 7.6L3 10l2.4 2.4"/></symbol>
+<symbol id="i-chevron" viewBox="0 0 16 16"><path d="M6.4 4.6L9.8 8l-3.4 3.4"/></symbol>
+<symbol id="i-arrow-right" viewBox="0 0 16 16"><path d="M3.4 8h9.2M9.4 4.8L12.6 8l-3.2 3.2"/></symbol>
+<symbol id="i-arrow-left" viewBox="0 0 16 16"><path d="M12.6 8H3.4M6.6 4.8L3.4 8l3.2 3.2"/></symbol>
+<symbol id="i-dots" viewBox="0 0 16 16"><path d="M4.6 8h.01M8 8h.01M11.4 8h.01"/></symbol>
+</svg>
 <div class="app" id="app">
 <div class="save-status" id="saveStatus" role="status" aria-live="polite">已保存</div>
 <div class="view active" id="projectsView">
 <div class="projects-header">
-<h1><span class="brand-mark" aria-hidden="true">✓</span>复习清单</h1>
+<h1><span class="brand-mark" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>复习清单</h1>
 <div class="study-shortcuts" aria-label="学习快捷工具">
-<button class="shortcut-btn" id="openWorkbenchBtn" type="button"><span aria-hidden="true">☀</span>今日工作台</button>
-<button class="shortcut-btn" id="openRecentBtn" type="button"><span aria-hidden="true">⟲</span>最近</button>
-<button class="shortcut-btn" id="globalSearchBtn" type="button"><span aria-hidden="true">⌕</span>全局搜索</button>
-<button class="shortcut-btn" id="openTrashBtn" type="button"><span aria-hidden="true">🗑</span>回收站</button>
-<button class="shortcut-btn" data-study-action="focus" type="button"><span aria-hidden="true">◎</span>今日聚焦</button>
-<button class="shortcut-btn" data-study-action="random" type="button"><span aria-hidden="true">⌁</span>随机复习</button>
-<button class="shortcut-btn" data-study-action="stats" type="button"><span aria-hidden="true">▥</span>进度统计</button>
+<button class="shortcut-btn" id="openWorkbenchBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>今日工作台</button>
+<button class="shortcut-btn" id="openRecentBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>最近</button>
+<button class="shortcut-btn" id="globalSearchBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>全局搜索</button>
+<button class="shortcut-btn" id="openTrashBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>回收站</button>
+<button class="shortcut-btn" data-study-action="focus" type="button"><svg class="icon" aria-hidden="true"><use href="#i-target"/></svg>今日聚焦</button>
+<button class="shortcut-btn" data-study-action="random" type="button"><svg class="icon" aria-hidden="true"><use href="#i-shuffle"/></svg>随机复习</button>
+<button class="shortcut-btn" data-study-action="stats" type="button"><svg class="icon" aria-hidden="true"><use href="#i-bars"/></svg>进度统计</button>
 </div>
 </div>
+<div class="today-band">
 <button type="button" class="review-pill" id="reviewQueueBtn" title="打开复习队列（今天到期 + 逾期）">
-<span class="review-pill-icon" aria-hidden="true">◷</span>
+<svg class="icon review-pill-icon" aria-hidden="true"><use href="#i-clock"/></svg>
 <span class="review-pill-label">今日待复习</span>
 <span class="review-pill-count" id="reviewQueueCount">0</span>
 </button>
+<span class="today-date" id="todayDateLabel"></span>
+<button type="button" class="today-start" id="homeStartReviewBtn">开始今日复习</button>
+</div>
+<div class="today-preview" id="todayPreview" hidden></div>
 <div class="project-tools">
 <div class="search-field">
-<span aria-hidden="true">⌕</span>
+<svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
 <input type="search" id="projectSearchInput" placeholder="搜索项目" autocomplete="off" />
 </div>
 <select id="projectStatusFilter" aria-label="筛选项目状态">
@@ -57,15 +88,15 @@
 <button id="createProjectBtn">新建项目</button>
 </div>
 <details class="more-tools" id="moreTools">
-<summary><span aria-hidden="true">⋯</span>更多工具</summary>
+<summary><svg class="icon" aria-hidden="true"><use href="#i-dots"/></svg>更多工具</summary>
 <div class="more-tools-content">
 <section class="tool-group" aria-labelledby="dataToolsTitle">
 <h2 id="dataToolsTitle">数据管理</h2>
 <div class="backup-actions tool-button-row">
-<button id="exportBtn" type="button"><span aria-hidden="true">↓</span>导出 JSON</button>
-<button id="exportMarkdownBtn" type="button"><span aria-hidden="true">↓</span>导出 Markdown</button>
-<button id="exportCsvBtn" type="button"><span aria-hidden="true">↓</span>导出 CSV</button>
-<label class="import-btn"><span aria-hidden="true">↑</span>导入 JSON
+<button id="exportBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出 JSON</button>
+<button id="exportMarkdownBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出 Markdown</button>
+<button id="exportCsvBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出 CSV</button>
+<label class="import-btn"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入 JSON
 <input type="file" id="importInput" accept="application/json,.json" />
 </label>
 </div>
@@ -76,8 +107,8 @@
 <select id="databaseBackupSelect" aria-label="数据库备份" hidden></select>
 </div>
 <div class="backup-actions backup-row-actions">
-<button id="downloadDatabaseBackupBtn" type="button"><span aria-hidden="true">↓</span>下载</button>
-<button id="restoreDatabaseBackupBtn" type="button"><span aria-hidden="true">↺</span>恢复</button>
+<button id="downloadDatabaseBackupBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>下载</button>
+<button id="restoreDatabaseBackupBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-rotate"/></svg>恢复</button>
 </div>
 </div>
 </section>
@@ -110,40 +141,41 @@
 </section>
 <section class="tool-group memo-tools" aria-labelledby="memoToolsTitle">
 <h2 id="memoToolsTitle">个人记录</h2>
-<button class="memo-open-btn" id="openMemoBtn" type="button"><span aria-hidden="true">▤</span>打开备忘录</button>
+<button class="memo-open-btn" id="openMemoBtn" type="button"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg>打开备忘录</button>
 </section>
 </div>
 </details>
+<div class="section-head"><h2>项目</h2><span class="section-count" id="projectCount"></span></div>
 <div class="project-grid" id="projectGrid"></div>
 <div class="empty-projects" id="emptyProjects">正在加载项目…</div>
 </div>
 <div class="view" id="detailView">
 <div class="detail-header">
-<button class="back-btn" id="backBtn" aria-label="返回">←</button>
+<button class="back-btn" id="backBtn" aria-label="返回"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg></button>
 <h2 id="detailTitle" title="点击编辑项目名称"></h2>
 <span class="detail-date" id="detailDate"></span>
 <label class="detail-ai-toggle" title="项目级设置：开启后本项目所有任务都需要 AI 验收">
 <input type="checkbox" id="projectAssessmentToggle" />
 <span>AI 验收</span>
 </label>
-<button class="shortcut-btn" id="undoBtn" type="button" title="撤销上一步（Ctrl+Z）"><span aria-hidden="true">↶</span><span class="shortcut-label">撤销</span></button>
-<button class="shortcut-btn" id="redoBtn" type="button" title="重做（Ctrl+Shift+Z）"><span aria-hidden="true">↷</span><span class="shortcut-label">重做</span></button>
-<button class="shortcut-btn" id="duplicateProjectBtn" type="button" title="复制整个项目，可选择是否保留完成状态 / AI 历史 / 复习安排"><span aria-hidden="true">⧉</span><span class="shortcut-label">复制项目</span></button>
-<button class="shortcut-btn" id="projectArchiveBtn" type="button" title="归档后默认列表不再显示该项目"><span aria-hidden="true">▣</span>归档</button>
+<button class="shortcut-btn" id="undoBtn" type="button" title="撤销上一步（Ctrl+Z）"><svg class="icon" aria-hidden="true"><use href="#i-undo"/></svg><span class="shortcut-label">撤销</span></button>
+<button class="shortcut-btn" id="redoBtn" type="button" title="重做（Ctrl+Shift+Z）"><svg class="icon" aria-hidden="true"><use href="#i-redo"/></svg><span class="shortcut-label">重做</span></button>
+<button class="shortcut-btn" id="duplicateProjectBtn" type="button" title="复制整个项目，可选择是否保留完成状态 / AI 历史 / 复习安排"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span class="shortcut-label">复制项目</span></button>
+<button class="shortcut-btn" id="projectArchiveBtn" type="button" title="归档后默认列表不再显示该项目"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>归档</button>
 <label class="detail-ai-toggle" title="开启后：本项目内完成任务会自动进入到期复习队列">
 <input type="checkbox" id="projectReviewToggle" />
 <span>间隔复习</span>
 </label>
 <div class="study-shortcuts detail-shortcuts" aria-label="当前项目快捷工具">
-<button class="shortcut-btn" data-study-action="focus" type="button" title="今日聚焦"><span aria-hidden="true">◎</span><span class="shortcut-label">今日聚焦</span></button>
-<button class="shortcut-btn" data-study-action="random" type="button" title="随机复习"><span aria-hidden="true">⌁</span><span class="shortcut-label">随机复习</span></button>
-<button class="shortcut-btn" data-study-action="stats" type="button" title="进度统计"><span aria-hidden="true">▥</span><span class="shortcut-label">进度统计</span></button>
+<button class="shortcut-btn" data-study-action="focus" type="button" title="今日聚焦"><svg class="icon" aria-hidden="true"><use href="#i-target"/></svg><span class="shortcut-label">今日聚焦</span></button>
+<button class="shortcut-btn" data-study-action="random" type="button" title="随机复习"><svg class="icon" aria-hidden="true"><use href="#i-shuffle"/></svg><span class="shortcut-label">随机复习</span></button>
+<button class="shortcut-btn" data-study-action="stats" type="button" title="进度统计"><svg class="icon" aria-hidden="true"><use href="#i-bars"/></svg><span class="shortcut-label">进度统计</span></button>
 </div>
 </div>
 <div class="detail-card">
 <div class="detail-tools">
 <div class="search-field">
-<span aria-hidden="true">⌕</span>
+<svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
 <input type="search" id="nodeSearchInput" placeholder="搜索周、学习单元或任务" autocomplete="off" />
 </div>
 <select id="nodeStatusFilter" aria-label="筛选内容状态">
@@ -170,7 +202,7 @@
 </div>
 <div class="detail-input-area">
 <input type="text" id="newNodeInput" placeholder="输入新的一周主题，如：第9周：Web API 实践" />
-<button id="addWeekBtn"><span aria-hidden="true">＋</span>添加周</button>
+<button id="addWeekBtn"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>添加周</button>
 </div>
 <ul class="tree" id="treeRoot"></ul>
 <div class="empty-tree-tip" id="emptyTreeTip">还没有内容，添加第一周开始吧</div>
@@ -186,10 +218,9 @@
 </div>
 </div>
 </div>
-</div>
 <div class="view" id="reviewView">
 <div class="review-header">
-<button class="back-btn" id="reviewBackBtn" type="button" aria-label="返回">←</button>
+<button class="back-btn" id="reviewBackBtn" type="button" aria-label="返回"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg></button>
 <div class="review-heading">
 <h2>复习队列</h2>
 <span class="review-subline" id="reviewSubline"></span>
@@ -218,6 +249,7 @@
 <div class="review-session-head">
 <button type="button" id="reviewSessionExitBtn" class="utility-secondary-btn">退 出</button>
 <span class="review-subline" id="reviewSessionProgress"></span>
+<div class="session-ticks" id="reviewSessionTicks" aria-hidden="true"></div>
 </div>
 <div class="review-card" id="reviewQuestionCard">
 <div class="review-meta" id="reviewQuestionMeta"></div>
@@ -259,7 +291,7 @@
 </div>
 <div class="view" id="workbenchView">
 <div class="review-header">
-<button class="back-btn" id="workbenchBackBtn" type="button" aria-label="返回">←</button>
+<button class="back-btn" id="workbenchBackBtn" type="button" aria-label="返回"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg></button>
 <div class="review-heading">
 <h2>今日工作台</h2>
 <span class="review-subline" id="workbenchSubline"></span>
@@ -271,6 +303,7 @@
 </div>
 </div>
 <div class="review-body" id="workbenchBody"></div>
+</div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite">
 <span id="toastMessage"></span>
@@ -356,7 +389,7 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 </div>
 <div class="assessment-result" id="assessmentResult" hidden></div>
 <div class="assessment-live" id="assessmentLive" hidden>
-<div class="assessment-live-label">验收中 · 实时回复</div>
+<div class="assessment-live-label">验收中　实时回复</div>
 <div class="assessment-live-body" id="assessmentLiveBody"></div>
 </div>
 <footer class="assessment-footer">
@@ -370,6 +403,6 @@ placeholder="写出当前题的答案、预测结果和原因。按 Tab 插入 4
 
 <script src="js/api-client.js?v=1"></script>
 <script src="js/study-tools.js?v=1"></script>
-<script src="js/app.js?v=60"></script>
+<script src="js/app.js?v=61"></script>
 </body>
 </html>

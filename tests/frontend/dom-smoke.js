@@ -177,6 +177,8 @@ const documentStub = {
     readyState: 'complete', hidden: false, title: '测试',
     body: makeEl('body'), documentElement: makeEl('html'),
     createElement: tag => makeEl(tag),
+    // 图标走 SVG 命名空间（真实浏览器必须用 createElementNS 才能画出 svg/use），桩同样支持
+    createElementNS: (namespace, tag) => makeEl(tag),
     createDocumentFragment: () => { const f = makeEl('#fragment'); f._isFragment = true; return f; },
     getElementById: id => elementsById.get(id) || null,
     querySelector: () => null,
@@ -756,8 +758,10 @@ function step(name, fn) {
 
     // 懒渲染：一层一层展开（周 → 单元 → 任务），直到出现任务行的 ⋯ 按钮
     for (let round = 0; round < 4; round += 1) {
-        if (findAll(tree, el => el.textContent === '⋯').length > 0) break;
-        const expandable = findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes('▶'));
+        if (findAll(tree, el => el.classList.contains('meta-btn')).length > 0) break;
+        const expandable = findAll(tree, el => el.classList.contains('node-row')
+            && findAll(el, child => child.classList.contains('arrow'))
+                .some(arrow => !arrow.classList.contains('leaf')));
         if (expandable.length === 0) break;
         expandable.forEach(row => row.dispatch('click'));
         await sleep(20);
@@ -854,9 +858,9 @@ function step(name, fn) {
     }
 
 
-    const metaButtons = findAll(tree, el => el.textContent === '⋯');
+    const metaButtons = findAll(tree, el => el.classList.contains('meta-btn'));
     check('详情树里有元数据按钮（⋯）', metaButtons.length > 0, '树内容：' + textOf(tree).slice(0, 160));
-    if (metaButtons[0]) step('点击 ⋯ 打开元数据弹窗不抛异常', () => metaButtons[0].dispatch('click'));
+    if (metaButtons[0]) step('点击元数据按钮打开弹窗不抛异常', () => metaButtons[0].dispatch('click'));
     check('元数据弹窗已打开', elementsById.get('utilityModal').hidden === false);
     check('元数据弹窗里有表单字段', elementsById.get('utilityBody').children.length > 0);
 
@@ -1295,7 +1299,9 @@ function step(name, fn) {
     await sleep(80);
     for (let round = 0; round < 4; round += 1) {
         if (findAll(tree, el => el.classList.contains('delete-btn')).length > 0) break;
-        const expandable = findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes('▶'));
+        const expandable = findAll(tree, el => el.classList.contains('node-row')
+            && findAll(el, child => child.classList.contains('arrow'))
+                .some(arrow => !arrow.classList.contains('leaf')));
         if (expandable.length === 0) break;
         expandable.forEach(row => row.dispatch('click'));
         await sleep(25);
@@ -1348,7 +1354,7 @@ function step(name, fn) {
                 JSON.stringify(fetchLog.slice(-4)));
         }
     } else {
-        check('任务行有复制按钮', false, '详情树里没找到 ⧉');
+        check('任务行有复制按钮', false, '详情树里没找到 .copy-btn');
     }
 
     // ⑮ 知识点库：更多工具 → 打开库页 → 按模块/层级筛选 → 立即练一次进会话
@@ -1549,9 +1555,9 @@ function step(name, fn) {
         for (let round = 0; round < 6; round += 1) {
             if (findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes(text)).length > 0) break;
             // 只点"还收起着的分组行"：连展开的行一起点会把刚展开的又收起来。
-            const collapsed = findAll(tree, el => el.classList.contains('node-row') && textOf(el).includes('▶')
-                && !findAll(el, child => child.classList.contains('arrow')
-                    && child.classList.contains('expanded')).length);
+            const collapsed = findAll(tree, el => el.classList.contains('node-row')
+                && findAll(el, child => child.classList.contains('arrow'))
+                    .some(arrow => !arrow.classList.contains('leaf') && !arrow.classList.contains('expanded')));
             if (collapsed.length === 0) break;
             collapsed.forEach(row => row.dispatch('click'));
             await sleep(30);

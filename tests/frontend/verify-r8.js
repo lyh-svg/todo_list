@@ -78,7 +78,7 @@ check('筛选：只选元数据条件也算正在筛选',
 
 // —— 接线断言 ——
 check('归档：页面有"已归档"筛选项', html.includes('<option value="archived">已归档</option>'));
-check('归档：卡片与详情都有归档入口', src.includes("archiveBtn.textContent = project.archived ? '↩' : '▣'")
+check('归档：卡片与详情都有归档入口', src.includes("iconEl(project.archived ? 'rotate' : 'archive')")
     && html.includes('id="projectArchiveBtn"'));
 check('归档：切换走 ensureProjectLoaded + 落库', /async function toggleProjectArchived[\s\S]{0,500}await ensureProjectLoaded\(projectId\);[\s\S]{0,200}await saveProjects\(\);/.test(src));
 // 前后端都要保留 archived：前端归一化丢掉它时，刷新后"已归档"恒为空、按钮永远是"归档"
