@@ -61,13 +61,41 @@ class RotationWithAiQuestionTests(unittest.TestCase):
         self.assertEqual(picked["questionType"], "concept")
         self.assertEqual(picked["questionRef"], ai_id)
 
+    def _clear_attempts(self) -> None:
+        """清掉 setUp 里那条"真实时间"的作答：否则它的 created_at 比测试写死的时间戳新，
+        LRU 断言就会变成在考时钟而不是在考轮换规则。"""
+        with storage.open_state_database() as connection:
+            connection.execute("DELETE FROM review_attempts WHERE code=?", (POINT["code"],))
+
+    def _record_attempt(self, kind: str, question_ref: str, created_at: str) -> None:
+        """直接写一条作答历史，时间戳可控。
+
+        `apply_grade` 用的 `_now()` 只有秒级精度：同一秒内连做两次，谁"更久没用"就分不出来，
+        测试会退化成在考并列规则而不是考 LRU。这里显式给 created_at。
+        """
+        with storage.open_state_database() as connection:
+            connection.execute(
+                "INSERT INTO review_attempts(id,code,task_id,project_id,question_type,question_ref,"
+                "grade,answer,ai_verdict,reviewed_on,duration_ms,session_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (f"attempt-{kind}-{question_ref or 'fixed'}-{created_at}", POINT["code"], "", "",
+                 kind, question_ref, 4, "作答", "", created_at[:10], 0, "", created_at))
+
     def test_fixed_question_wins_when_it_is_the_least_recently_used(self) -> None:
         ai_id = self._collect("AI 现场概念题")
-        review_storage.apply_grade(POINT["code"], "concept", 4, today="2026-09-16",
-                                   answer="先做 AI 题", question_ref=ai_id)
-        picked = self._queue_item(forced_type="concept")
-        # 固定题上次是 09-15，AI 题是 09-16 → 固定题更久没用，必须挑固定题
-        self.assertEqual(picked["questionRef"], "")
+        self._clear_attempts()
+        # 固定题 10:00:00 用过，AI 题 10:00:05 用过 → 固定题更久没用，必须挑固定题
+        self._record_attempt("concept", "", "2026-09-19T10:00:00")
+        self._record_attempt("concept", ai_id, "2026-09-19T10:00:05")
+        self.assertEqual(self._queue_item(forced_type="concept")["questionRef"], "")
+
+    def test_ai_question_wins_when_the_fixed_one_was_used_more_recently(self) -> None:
+        ai_id = self._collect("AI 现场概念题")
+        self._clear_attempts()
+        # 反过来：AI 题 10:00:00、固定题 10:00:05 → 必须挑 AI 题（真正的 LRU，不是并列规则）
+        self._record_attempt("concept", ai_id, "2026-09-19T10:00:00")
+        self._record_attempt("concept", "", "2026-09-19T10:00:05")
+        self.assertEqual(self._queue_item(forced_type="concept")["questionRef"], ai_id)
 
     def test_deleted_question_is_not_a_candidate_but_history_survives(self) -> None:
         ai_id = self._collect("会被删掉的 AI 题")
