@@ -1797,7 +1797,7 @@ def read_project(project_id: Any) -> tuple[dict[str, Any], int] | None:
         return _read_project_from_connection(connection, str(project_id))
 
 
-# JSON 导出附带的 5 张复习表的（导出键 → 表名、稳定排序键）映射。排序键都用主键：
+# JSON 导出附带的 6 张复习表的（导出键 → 表名、稳定排序键）映射。排序键都用主键：
 # 行序不定会让"导出内容比对"变成随机假阴性。键名与前端 camelCase 习惯保持一致。
 REVIEW_EXPORT_TABLES: dict[str, tuple[str, str]] = {
     "points": ("review_points", "code"),
@@ -1805,6 +1805,7 @@ REVIEW_EXPORT_TABLES: dict[str, tuple[str, str]] = {
     "states": ("review_states", "code"),
     "attempts": ("review_attempts", "id"),
     "sessions": ("review_sessions", "id"),
+    "aiQuestions": ("review_ai_questions", "question_id"),
 }
 
 
@@ -1832,7 +1833,8 @@ REVIEW_IMPORT_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "attempts": (
         ("id", "id"), ("code", "code"), ("taskId", "task_id"), ("projectId", "project_id"),
-        ("questionType", "question_type"), ("grade", "grade"), ("answer", "answer"),
+        ("questionType", "question_type"), ("questionRef", "question_ref"),
+        ("grade", "grade"), ("answer", "answer"),
         ("aiVerdict", "ai_verdict"), ("reviewedOn", "reviewed_on"), ("durationMs", "duration_ms"),
         ("sessionId", "session_id"), ("createdAt", "created_at"),
     ),
@@ -1840,6 +1842,12 @@ REVIEW_IMPORT_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("id", "id"), ("startedAt", "started_at"), ("finishedAt", "finished_at"),
         ("planned", "planned"), ("answered", "answered"), ("gradeCounts", "grade_counts_json"),
         ("durationMs", "duration_ms"),
+    ),
+    # 导出侧键名来自 `SELECT *` + camelCase：主键列 question_id 会导出成 questionId
+    # （不是 id），这里必须逐字对齐，否则导入会把空串写进主键。
+    "aiQuestions": (
+        ("questionId", "question_id"), ("code", "code"), ("questionType", "question_type"),
+        ("content", "content_json"), ("createdAt", "created_at"), ("updatedAt", "updated_at"),
     ),
 }
 
@@ -1877,7 +1885,7 @@ def _review_import_value(item: dict[str, Any], name: str, column: str,
 
 
 def _read_review_export(connection: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """把 5 张复习表读成 JSON 可序列化的快照（列名转 camelCase，JSON 文本列解析成对象）。"""
+    """把 6 张复习表读成 JSON 可序列化的快照（列名转 camelCase，JSON 文本列解析成对象）。"""
     review: dict[str, list[dict[str, Any]]] = {}
     for key, (table, order_by) in REVIEW_EXPORT_TABLES.items():
         rows = connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}").fetchall()
@@ -1910,8 +1918,8 @@ def export_projects_snapshot() -> dict[str, Any]:
     整个导出必须在一把锁、一个连接里完成：分成两次加锁的话，中间新建的项目不会出现在
     导出结果里，而导入是"整体替换"语义，用这份 JSON 恢复就会把它删掉。
 
-    顶层还额外带一个 `review` 键：5 张复习表（points / pointTasks / states / attempts /
-    sessions）的快照。不加它的话，用户拿"导出 JSON → 导入"做迁移会静默丢掉复习进度与作答
+    顶层还额外带一个 `review` 键：6 张复习表（points / pointTasks / states / attempts /
+    sessions / aiQuestions）的快照。不加它的话，用户拿"导出 JSON → 导入"做迁移会静默丢掉复习进度与作答
     历史（规格 §9/§10.7 把"导出往返覆盖新增表"列为验收项）。`review` 是附加信息：
     前端 extractProjects 只消费 `projects`，/api/import 除了 `projects` 之外还会消费
     `review`（见 import_review_snapshot），旧快照没有这个键时原样跳过。
@@ -1936,10 +1944,10 @@ def export_projects_snapshot() -> dict[str, Any]:
 
 
 def import_review_snapshot(review: Any) -> dict[str, int]:
-    """把 export_projects_snapshot() 附带的 `review` 快照 upsert 回 5 张复习表。
+    """把 export_projects_snapshot() 附带的 `review` 快照 upsert 回 6 张复习表。
 
     规格 §10.7：JSON 导出的复习表必须在导入侧闭环，否则"导出 → 导入"的跨机迁移会静默
-    丢复习进度与作答历史。语义是**只增不删**——payload 里出现的行按主键 upsert，没出现
+    丢复习进度与作答历史（收藏的 AI 题同理）。语义是**只增不删**——payload 里出现的行按主键 upsert，没出现
     的行保持不动；整个 `review` 键缺失（旧快照）时直接跳过该表，不报错、不删数据。
     JSON 列（content / gradeCounts）在导出时已被解析成对象，这里按库里的列形态写回 JSON 文本。
     事务/锁沿用 storage 里其他写路径的风格：state_lock() + open_state_database() + BEGIN IMMEDIATE。

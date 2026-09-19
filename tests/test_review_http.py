@@ -38,7 +38,7 @@ REVIEW_TABLE_ORDER = {
     "review_sessions": "id",
 }
 # 导出/导入响应里 review 快照的键（与 storage.REVIEW_EXPORT_TABLES 一致）。
-REVIEW_EXPORT_KEYS = ("points", "pointTasks", "states", "attempts", "sessions")
+REVIEW_EXPORT_KEYS = ("points", "pointTasks", "states", "attempts", "sessions", "aiQuestions")
 
 
 class _QuietHandler(local_server.TodoHandler):
@@ -381,6 +381,37 @@ class ReviewHttpTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row["title"], "被快照更新过的标题",
                          "快照里出现的行必须被写入/更新")
+
+    def test_export_and_import_round_trip_keeps_ai_questions(self) -> None:
+        saved = review_storage.collect_ai_question(
+            MUTABLE_DEFAULT, "predict", "导出往返要留住我", "print(1)", "考察点",
+            {"expected": ["1"], "explain": "常量", "reference": "print(1)"})
+        # 也留一条"问的是这道 AI 题"的作答：attempts 的 questionRef 同样必须往返。
+        review_storage.apply_grade(MUTABLE_DEFAULT, "predict", 4, today=TODAY,
+                                   answer="AI 题作答", question_ref=saved["id"])
+        snapshot = storage.export_projects_snapshot()
+        exported = snapshot["review"]["aiQuestions"]
+        # 导出侧是 `SELECT *` + camelCase：主键列 question_id 导出成 questionId（不是 id）。
+        self.assertEqual([item["questionId"] for item in exported], [saved["id"]])
+        exported_attempts = [item for item in snapshot["review"]["attempts"]
+                             if item.get("answer") == "AI 题作答"]
+        self.assertEqual([item["questionRef"] for item in exported_attempts], [saved["id"]])
+        review_storage.delete_ai_question(saved["id"])
+        self.assertEqual(review_storage.list_ai_questions(MUTABLE_DEFAULT), [])
+        with storage.open_state_database() as connection:
+            connection.execute("DELETE FROM review_attempts WHERE answer='AI 题作答'")
+        storage.import_review_snapshot(snapshot["review"])
+        restored = review_storage.list_ai_questions(MUTABLE_DEFAULT)
+        self.assertEqual([item["id"] for item in restored], [saved["id"]],
+                         "导入快照必须把收藏的 AI 题带回来")
+        self.assertEqual(review_storage.read_ai_question(saved["id"])["reference"]["expected"], ["1"])
+        with storage.open_state_database() as connection:
+            row = connection.execute(
+                "SELECT question_ref FROM review_attempts WHERE answer='AI 题作答'").fetchone()
+        self.assertIsNotNone(row, "导入快照必须把这条作答带回来")
+        self.assertEqual(row["question_ref"], saved["id"],
+                         "作答的题身份也要一起恢复，否则认不出问的是哪道 AI 题")
+        review_storage.delete_ai_question(saved["id"])
 
 
 class ReviewAiQuestionHttpTests(unittest.TestCase):

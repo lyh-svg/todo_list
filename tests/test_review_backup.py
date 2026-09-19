@@ -158,7 +158,8 @@ class ReviewBackupTests(unittest.TestCase):
 
 
     def test_json_export_attaches_review_snapshot(self) -> None:
-        """JSON 导出（/api/export）必须附带 5 张复习表，否则"导出 JSON → 导入"会丢复习进度。
+        """JSON 导出（/api/export）必须附带复习表快照，否则"导出 JSON → 导入"会丢复习进度
+        （收藏的 AI 题同理，所以 aiQuestions 也要在）。
 
         前端 extractProjects 只认 `projects` 且会拒绝更大的 schemaVersion，所以版本号必须原样
         保持 2：为了带 review 顺手 bump，会让整份备份被前端直接拒收。
@@ -171,7 +172,8 @@ class ReviewBackupTests(unittest.TestCase):
         self.assertEqual(snapshot["schemaVersion"], 2)
         self.assertIn("projects", snapshot)
         review = snapshot["review"]
-        self.assertEqual(set(review), {"points", "pointTasks", "states", "attempts", "sessions"})
+        self.assertEqual(set(review),
+                         {"points", "pointTasks", "states", "attempts", "sessions", "aiQuestions"})
 
         # 刚做的两次作答（setUp）必须能在点、状态、attempts 里逐项看到。
         point = next(point for point in review["points"] if point["code"] == CODE)
