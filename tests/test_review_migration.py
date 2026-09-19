@@ -19,8 +19,8 @@ REVIEW_TABLES = ("review_points", "review_point_tasks", "review_states",
 
 
 class ReviewMigrationTests(unittest.TestCase):
-    def test_schema_version_is_9(self) -> None:
-        self.assertEqual(storage.SCHEMA_VERSION, 9)
+    def test_schema_version_is_10(self) -> None:
+        self.assertEqual(storage.SCHEMA_VERSION, 10)
 
     def test_v8_database_drops_removed_tables(self) -> None:
         """v9 迁移注销三个已取消功能的空表（背景图 / 筛选视图 / 自定义模板）。"""
@@ -68,6 +68,38 @@ class ReviewMigrationTests(unittest.TestCase):
         for table in REVIEW_TABLES:
             self.assertIn(table, tables)
         self.assertEqual(storage.read_project("p-old")[0], before, "迁移不得改动项目数据")
+        self.assertTrue(storage.check_database_integrity())
+
+    def test_v9_database_gains_ai_question_table(self) -> None:
+        """v9 -> v10：新增 AI 加练收藏库（review_ai_questions），旧数据一行不动。"""
+        storage.ensure_schema()
+        project = {
+            "id": "p-ai", "name": "迁移不动我", "description": "", "createdAt": "2026-09-19",
+            "assessmentEnabled": False,
+            "tree": [{"id": "w-ai", "type": "week", "text": "第1周", "completed": False,
+                      "expanded": False, "createdAt": "2026-09-19", "children": [
+                          {"id": "i-ai", "type": "item", "text": "任务", "completed": False,
+                           "completedAt": None, "optional": False, "assessmentRequired": False,
+                           "assessmentHistory": 0, "assessment": None,
+                           "createdAt": "2026-09-19", "children": []}]}],
+        }
+        storage.write_project(project, None)
+        before = storage.read_project("p-ai")[0]
+        # 伪装成"升级前的 v9 库"：删掉新表并把版本退回去
+        with storage.open_state_database() as connection:
+            connection.execute("DROP TABLE IF EXISTS review_ai_questions")
+            connection.execute("PRAGMA user_version=9")
+        storage.ensure_schema()
+        with storage.open_state_database() as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            indexes = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+        self.assertEqual(version, storage.SCHEMA_VERSION)
+        self.assertIn("review_ai_questions", tables)
+        self.assertIn("idx_review_ai_questions_code", indexes)
+        self.assertEqual(storage.read_project("p-ai")[0], before, "迁移不得改动项目数据")
         self.assertTrue(storage.check_database_integrity())
 
 

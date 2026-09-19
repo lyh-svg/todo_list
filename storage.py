@@ -42,7 +42,7 @@ ACTIVITY_KEEP_ROWS = 2000
 # 原来把 500 个 id（每个 36 字符）整串写进 detail，一行活动就 ~20KB。
 ACTIVITY_NODE_IDS_MAX = 100
 ACTIVITY_LIMIT_MAX = 500
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 # 任务元数据（第 1~6 项日常功能）：优先级、截止日期、标签、预计耗时、备注、链接
 PRIORITIES = ("", "high", "mid", "low")
 MAX_TAGS = 20
@@ -487,6 +487,16 @@ def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Pat
             grade_counts_json TEXT NOT NULL DEFAULT '{}',
             duration_ms INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS review_ai_questions (
+            question_id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            question_type TEXT NOT NULL,
+            content_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_ai_questions_code
+            ON review_ai_questions(code, question_type, created_at);
         CREATE INDEX IF NOT EXISTS idx_review_states_due ON review_states(due);
         CREATE INDEX IF NOT EXISTS idx_review_states_weak ON review_states(weak);
         CREATE INDEX IF NOT EXISTS idx_review_attempts_code ON review_attempts(code, created_at);
@@ -1060,6 +1070,8 @@ def ensure_schema() -> None:
             # 不改动既有列、不回填数据；迁移前已自动快照，失败会回滚。
             migrate_legacy_state()
             # v8 -> v9：删掉三个已取消功能留下的空表（背景图 / 筛选视图 / 自定义模板）。
+            # v9 -> v10：新增 review_ai_questions（AI 加练收藏库）。纯增量 DDL、幂等、不回填，
+            # 由 open_state_database 的 bootstrap 建表 + 版本号跃迁触发；旧表旧行一律不动。
             _drop_removed_tables()
             with _database_lock:
                 with open_state_database() as connection:
