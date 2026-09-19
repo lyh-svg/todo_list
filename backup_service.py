@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import uuid
 import zipfile
@@ -58,6 +59,21 @@ def sha256_of(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_of_zip_member(archive: zipfile.ZipFile, name: str) -> tuple[str, int]:
+    """流式算 ZIP 成员的 sha256 与解压后字节数（不把整个成员读进内存）。
+
+    archive.read() 会一次性把成员解压成 bytes：一个 24.2 MB 的备忘录库实测让
+    describe_backup 的 Python 分配峰值到 66.6 MB（state 库上限 110 MB 时更糟）。
+    """
+    digest = hashlib.sha256()
+    size = 0
+    with archive.open(name) as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 def _snapshot_database(source: Path, target: Path) -> None:
@@ -204,11 +220,10 @@ def describe_backup(name: str) -> dict[str, Any]:
                 files.append({"name": file_name, "ok": False, "bytes": 0, "reason": "ZIP 内缺少该文件"})
                 checksum_ok = False
                 continue
-            data = archive.read(file_name)
-            actual = hashlib.sha256(data).hexdigest()
-            ok = actual == meta.get("sha256") and len(data) == int(meta.get("bytes", -1))
+            actual, size = sha256_of_zip_member(archive, file_name)
+            ok = actual == meta.get("sha256") and size == int(meta.get("bytes", -1))
             checksum_ok = checksum_ok and ok
-            files.append({"name": file_name, "ok": ok, "bytes": len(data),
+            files.append({"name": file_name, "ok": ok, "bytes": size,
                           "sha256": actual, "expectedSha256": meta.get("sha256")})
     return {
         "name": path.name,
@@ -265,7 +280,9 @@ def _restore_full_backup_locked(path: Path, *, progress: Callable[[str], None] |
             for file_name in DATABASE_FILES:
                 if file_name in archive.namelist():
                     staged = BACKUP_DIR / f".restore-{token}-{file_name}"
-                    staged.write_bytes(archive.read(file_name))
+                    # 流式解到暂存文件：以前 archive.read() 会把整个库读成 bytes
+                    with archive.open(file_name) as source, staged.open("wb") as target:
+                        shutil.copyfileobj(source, target, 1024 * 1024)
                     staged.chmod(0o600)
                     staging[file_name] = staged
                     if progress:
@@ -303,7 +320,8 @@ def _restore_from_backup_file(backup_path: Path, *, token: str | None = None) ->
                 continue
             destination = Path(DATABASE_FILES[file_name])
             staged = destination.parent / f".rollback-{suffix_token}-{file_name}"
-            staged.write_bytes(archive.read(file_name))
+            with archive.open(file_name) as source, staged.open("wb") as target:
+                shutil.copyfileobj(source, target, 1024 * 1024)
             for suffix in ("-wal", "-shm"):
                 Path(f"{destination}{suffix}").unlink(missing_ok=True)
             os.replace(staged, destination)

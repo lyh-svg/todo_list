@@ -86,6 +86,32 @@ class ReviewHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertLessEqual(len(queue["items"]), 5)
 
+    def test_queue_does_not_run_full_summary(self) -> None:
+        """队列接口只为读 limit/newPerDay：不能再跑一遍完整 summary（P7）。
+
+        /api/review/queue 与前端并行请求的 /api/review/summary 以前把这套开销跑了两遍。
+        """
+        calls = []
+        original = review_storage.summary
+
+        def counted(today):
+            calls.append(today)
+            return original(today)
+
+        review_storage.summary = counted
+        try:
+            status, queue = self.call(f"/api/review/queue?today={TODAY}&limit=5")
+        finally:
+            review_storage.summary = original
+        self.assertEqual(status, 200)
+        self.assertLessEqual(len(queue["items"]), 5)
+        self.assertEqual(calls, [], "队列接口不该调用 summary()，只该读 _settings()")
+
+        # 对照：summary 接口本身当然还是走完整统计
+        status, payload = self.call(f"/api/review/summary?today={TODAY}")
+        self.assertEqual(status, 200)
+        self.assertIn("dueToday", payload)
+
     def test_queue_never_leaks_answers(self) -> None:
         status, queue = self.call(f"/api/review/queue?today={TODAY}&limit=5")
         self.assertEqual(status, 200)

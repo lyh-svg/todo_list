@@ -111,6 +111,7 @@ delete_backup = backup_service.delete_backup
 check_database_integrity = storage_service.check_database_integrity
 checkpoint_database = storage_service.checkpoint_database
 list_trash_items = storage_service.list_trash_items
+trash_item_ids = storage_service.trash_item_ids
 restore_trash_items = storage_service.restore_trash_items
 delete_trash_items = storage_service.delete_trash_items
 clear_trash_items = storage_service.clear_trash_items
@@ -492,7 +493,10 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 if path == "/api/review/queue":
                     limit = int_param(params, "limit", required=False, default=0)
                     new_per_day = int_param(params, "newPerDay", required=False, default=-1)
-                    settings = review_storage.summary(today or server_today)
+                    # 只为读 limit/newPerDay：以前这里跑一遍完整 summary()（全量 points 扫描 +
+                    # streak + 两次 recent_attempts），而前端同时还会请求 /api/review/summary，
+                    # 等于把同一套开销跑两遍。_settings() 只读设置。
+                    settings = review_storage._settings()
                     queue = review_storage.build_queue(
                         today or server_today,
                         limit or settings["limit"],
@@ -1144,14 +1148,15 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     self.send_json(200, {"ok": True, "item": saved, "items": list_trash_items()})
                 elif action == "restore":
                     trash_id = str(payload.get("id") or "")
-                    if not trash_id or not any(entry["id"] == trash_id for entry in list_trash_items()):
+                    # 存在性只看这一条：以前是 list_trash_items() 全量列一遍再线性查
+                    if not trash_id or trash_id not in trash_item_ids([trash_id]):
                         self.send_json(404, {"error": "回收站条目不存在"})
                         return
                     result = restore_trash_item(trash_id)
                     self.send_json(200, {"ok": True, "item": result, "items": list_trash_items(), "projects": read_project_summaries()})
                 elif action == "delete":
                     trash_id = str(payload.get("id") or "")
-                    if not trash_id or not any(entry["id"] == trash_id for entry in list_trash_items()):
+                    if not trash_id or trash_id not in trash_item_ids([trash_id]):
                         self.send_json(404, {"error": "回收站条目不存在"})
                         return
                     delete_trash_item(trash_id)
@@ -1160,7 +1165,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     ids = payload.get("ids")
                     if not isinstance(ids, list) or not ids:
                         raise ValueError("请先选择要处理的回收站条目")
-                    known = {entry["id"] for entry in list_trash_items()}
+                    known = trash_item_ids([str(item) for item in ids])
                     unknown = [str(item) for item in ids if str(item) not in known]
                     if unknown:
                         self.send_json(404, {"error": f"有 {len(unknown)} 条记录已不在回收站，请刷新后重试"})

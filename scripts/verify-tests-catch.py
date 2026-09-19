@@ -148,6 +148,82 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
          "test_deleted_and_recreated_file_is_bootstrapped_again"],
     ),
     (
+        "备份校验必须流式读（不能把整个库读进内存）",
+        "backup_service.py",
+        crlf("            actual, size = sha256_of_zip_member(archive, file_name)\n"),
+        crlf("            _data = archive.read(file_name)\n"
+             "            actual, size = hashlib.sha256(_data).hexdigest(), len(_data)\n"),
+        [sys.executable, "-m", "unittest", "tests.test_backup_memory.BackupMemoryTests."
+         "test_describe_backup_streams_checksum"],
+    ),
+    (
+        "恢复暂存必须流式落盘（不能整个读成 bytes）",
+        "backup_service.py",
+        crlf("                    with archive.open(file_name) as source, staged.open(\"wb\") as target:\n"
+             "                        shutil.copyfileobj(source, target, 1024 * 1024)\n"),
+        crlf("                    staged.write_bytes(archive.read(file_name))\n"),
+        [sys.executable, "-m", "unittest", "tests.test_backup_memory.BackupMemoryTests."
+         "test_restore_stages_files_without_loading_them"],
+    ),
+    (
+        "自动归档必须先用 SQL 筛完成度（不能逐个读树）",
+        "storage.py",
+        crlf("                if total == 0 or completed < total:\n"
+             "                    continue\n"),
+        crlf("                if False:\n"
+             "                    continue\n"),
+        [sys.executable, "-m", "unittest", "tests.test_import_export_templates."
+         "AutoArchiveTests.test_auto_archive_only_reads_qualifying_projects"],
+    ),
+    (
+        "回收站存在性校验必须走轻量查询（不能全量列一遍）",
+        "local_server.py",
+        crlf("                    if not trash_id or trash_id not in trash_item_ids([trash_id]):\n"),
+        crlf('                    if not trash_id or not any(entry["id"] == trash_id for entry in list_trash_items()):\n'),
+        [sys.executable, "-m", "unittest", "tests.test_trash_paths.TrashRouteTests."
+         "test_unknown_id_is_404_without_listing"],
+    ),
+    (
+        "被移除项目的节点数必须真的数出来（GROUP BY）",
+        "storage.py",
+        crlf('                    removed_node_counts[str(row["project_id"])] = int(row["nodes"])\n'),
+        crlf('                    removed_node_counts[str(row["project_id"])] = 0\n'),
+        [sys.executable, "-m", "unittest", "tests.test_import_preview_cost.ImportPreviewCostTests."
+         "test_deleted_nodes_count_matches_project_contents"],
+    ),
+    (
+        "导入预览的本地节点集合必须从库里读（差异统计才有意义）",
+        "storage.py",
+        crlf('                        f"SELECT project_id,node_id FROM nodes WHERE project_id IN ({placeholders})", chunk):\n'),
+        crlf('                        f"SELECT project_id,node_id FROM nodes WHERE 1=0", chunk):\n'),
+        [sys.executable, "-m", "unittest", "tests.test_import_preview_cost.ImportPreviewCostTests."
+         "test_preview_still_counts_added_and_local_only_nodes"],
+    ),
+    (
+        "队列题面必须一次批量查（不能退回逐条目回查）",
+        "review_storage.py",
+        crlf('            block = (content_by_code.get(str(item["code"])) or {}).get(kind) or {}\n'),
+        crlf("            block: dict[str, Any] = {}\n"),
+        [sys.executable, "-m", "unittest", "tests.test_review_queue_batch.QueueBatchingTests."
+         "test_queue_fields_match_reference"],
+    ),
+    (
+        "题型轮换必须批量查（不能每个知识点各查一次）",
+        "review_storage.py",
+        crlf("                         else _question_types_by_code(connection, chosen_codes))\n"),
+        crlf("                         else {})\n"),
+        [sys.executable, "-m", "unittest", "tests.test_review_queue_batch.QueueBatchingTests."
+         "test_batched_rotation_prefers_least_used_type"],
+    ),
+    (
+        "队列接口不能为了设置跑完整 summary",
+        "local_server.py",
+        crlf("                    settings = review_storage._settings()\n"),
+        crlf("                    settings = review_storage.summary(today or server_today)\n"),
+        [sys.executable, "-m", "unittest", "tests.test_review_http."
+         "ReviewHttpTests.test_queue_does_not_run_full_summary"],
+    ),
+    (
         "复习计数必须走轻量接口（不能又去拉全部项目摘要）",
         "js/app.js",
         crlf("        return apiFetch(`/api/review/counts?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' })\n"),

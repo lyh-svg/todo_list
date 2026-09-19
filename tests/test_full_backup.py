@@ -58,10 +58,13 @@ class FullBackupTests(unittest.TestCase):
         self.assertNotEqual(Path(backup_service.DATABASE_FILES["todo.sqlite3"]), APP_DIR / "data" / "todo.sqlite3",
                             "测试必须使用临时数据库")
         shutil.rmtree(BACKUP_DIR, ignore_errors=True)
-        for filename in ("todo.sqlite3", "memo.sqlite3", "summary.sqlite3"):
-            path = Path(_TEMP_DIR.name) / filename
+        # 必须按各模块真正使用的路径清：以前用的是本模块自己的 _TEMP_DIR，
+        # 而 tests/__init__.py 早就把 TODO_* 钉到共用的临时目录了 —— 等于什么都没清，
+        # 于是"memo 计数"这类断言会依赖前一个测试模块留下多少数据。
+        for database in (storage.DATABASE_FILE, memo_storage.MEMO_DATABASE_FILE,
+                         summary_storage.SUMMARY_DATABASE_FILE):
             for suffix in ("", "-wal", "-shm"):
-                Path(f"{path}{suffix}").unlink(missing_ok=True)
+                Path(f"{database}{suffix}").unlink(missing_ok=True)
         with storage.open_state_database() as connection:
             connection.execute(f"PRAGMA user_version={storage.SCHEMA_VERSION}")
         storage.ensure_schema()

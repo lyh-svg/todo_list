@@ -345,6 +345,59 @@ class AutoArchiveTests(ResetMixin, unittest.TestCase):
         self.assertFalse(bool(summaries["p1"].get("archived")))
         self.assertTrue(any(entry["kind"] == "auto-archive" for entry in storage.list_activity(5)))
 
+    def test_auto_archive_only_reads_qualifying_projects(self) -> None:
+        """候选项目先用 SQL 筛完成度，只有真正要归档的才去重建树（P11）。
+
+        以前对每个"很久没动"的项目都 _read_project_from_connection 重建整棵树只为判断是否全部完成：
+        50 个项目 / 111,220 节点实测 570 ms，其中没一个能归档。
+        """
+        pending = [make_project(f"p{index}", f"没完成 {index}") for index in range(5)]
+        done = make_project("done", "已完成")
+        for node in storage._walk_nodes(done["tree"]):
+            if node["type"] == "item":
+                node["completed"] = True
+        storage.replace_projects(pending + [done])
+        for index in range(5):
+            self._set_updated(f"p{index}", 100)
+        self._set_updated("done", 100)
+        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 30})
+
+        calls: list[str] = []
+        original = storage._read_project_from_connection
+
+        def counted(connection, project_id):
+            calls.append(str(project_id))
+            return original(connection, project_id)
+
+        storage._read_project_from_connection = counted
+        try:
+            result = storage.auto_archive_projects()
+        finally:
+            storage._read_project_from_connection = original
+        self.assertEqual([entry["id"] for entry in result["archived"]], ["done"])
+        self.assertEqual(calls, ["done"], f"只该读真正要归档的项目，实际读了 {calls}")
+
+    def test_incomplete_optional_item_blocks_auto_archive(self) -> None:
+        """完成度口径不变：选做任务没做完也不算"全部完成"（沿用 count_node_progress 的口径）。"""
+        project = make_project("opt", "含选做")
+        for node in storage._walk_nodes(project["tree"]):
+            if node["type"] == "item":
+                node["completed"] = True
+        project["tree"][0]["children"][0]["children"].append({
+            "id": "opt-extra", "type": "item", "text": "没做完的选做任务", "completed": False,
+            "completedAt": None, "optional": True, "assessmentRequired": False,
+            "assessmentHistory": 0, "createdAt": TODAY, "children": []})
+        storage.replace_projects([project])
+        self._set_updated("opt", 100)
+        storage.update_app_settings({"autoArchiveEnabled": True, "autoArchiveDays": 30})
+        result = storage.auto_archive_projects()
+        self.assertEqual(result["archived"], [], "选做没做完就不该自动归档")
+
+        with storage.open_state_database() as connection:
+            connection.execute("UPDATE nodes SET completed=1 WHERE project_id='opt' AND node_id='opt-extra'")
+        result = storage.auto_archive_projects()
+        self.assertEqual([entry["id"] for entry in result["archived"]], ["opt"], "补完后才归档")
+
     def test_recent_projects_are_left_alone(self) -> None:
         completed = make_project("done", "刚完成的项目")
         for node in storage._walk_nodes(completed["tree"]):
