@@ -60,7 +60,7 @@ body {
 .save-status.error { color: #b42318; }
 .app {
     width: 100%;
-    max-width: 720px;
+    max-width: none;
     height: fit-content;
 }
 .view {
@@ -1542,7 +1542,7 @@ body {
     padding: 28px 16px 60px;
 }
 body.modal-open { overflow: hidden; }
-.app { max-width: 980px; }
+.app { max-width: 1400px; }
 .projects-header {
     min-height: 42px;
     margin-bottom: 12px;
@@ -2172,7 +2172,7 @@ body.modal-open { overflow: hidden; }
     align-items: center;
     gap: 12px;
     padding: 18px 22px 10px;
-    max-width: 980px;
+    max-width: 1200px;
     margin: 0 auto;
     width: 100%;
     flex-wrap: wrap;
@@ -2189,7 +2189,7 @@ body.modal-open { overflow: hidden; }
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-    max-width: 980px;
+    max-width: 1200px;
     margin: 0 auto;
     width: 100%;
     padding: 0 22px 6px;
@@ -2207,7 +2207,7 @@ body.modal-open { overflow: hidden; }
 }
 .review-toolbar .utility-primary-btn { font-size: 12px; padding: 6px 14px; }
 .review-body {
-    max-width: 980px;
+    max-width: 1200px;
     margin: 0 auto;
     width: 100%;
     padding: 4px 22px 60px;
@@ -2443,6 +2443,8 @@ body.modal-open { overflow: hidden; }
 .extra-ask { width: 100%; margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); flex-wrap: nowrap; gap: 8px; }
 .extra-count { font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 .review-session-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+/* 阅读型视图：复习会话整屏限宽 820px 居中（列表/树型视图吃满外壳宽度） */
+#reviewSessionView { max-width: 820px; margin: 0 auto; }
 .review-card { background: var(--panel-bg, #fff); border-radius: 12px; padding: 18px; }
 .review-meta { color: #6b7280; font-size: 13px; margin-bottom: 8px; }
 .review-prompt { font-size: 16px; line-height: 1.6; margin-bottom: 12px; white-space: pre-wrap; }
@@ -2470,7 +2472,7 @@ body.modal-open { overflow: hidden; }
     color: var(--text);
     max-width: 180px;
 }
-.knowledge-list { display: grid; gap: 8px; max-width: 980px; margin: 0 auto; width: 100%; }
+.knowledge-list { display: grid; gap: 8px; max-width: 1200px; margin: 0 auto; width: 100%; }
 .knowledge-item {
     display: flex;
     align-items: center;
