@@ -2447,7 +2447,10 @@ body.modal-open { overflow: hidden; }
 #reviewSessionView { max-width: 820px; margin: 0 auto; }
 .review-card { background: var(--panel-bg, #fff); border-radius: 12px; padding: 18px; }
 .review-meta { color: #6b7280; font-size: 13px; margin-bottom: 8px; }
-.review-prompt { font-size: 16px; line-height: 1.6; margin-bottom: 12px; white-space: pre-wrap; }
+.review-prompt { font-size: 16px; line-height: 1.6; margin-bottom: 12px; white-space: pre-wrap; min-width: 0; }
+/* 题面/答案里的代码块：必须横向可滚动，长行不能被卡片右边界切掉 */
+.review-body-code { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.review-card, #reviewQuestionPrompt, #reviewAnswerPanel, .review-ai-practice { min-width: 0; }
 .review-card textarea { width: 100%; font-family: inherit; font-size: 14px; padding: 10px; border-radius: 8px;
   border: 1px solid #d1d5db; box-sizing: border-box; }
 .review-actions-row { margin: 12px 0; }
