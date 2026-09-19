@@ -310,6 +310,8 @@ const fetchUrls = [];
 const projectPostBodies = [];
 // 记录复习自评的请求体：断言"点第 3 个按钮 = 档位 3"，而不是只断言"发过这个请求"。
 const reviewAnswerBodies = [];
+// 记录揭示答案的请求体：断言队列里的题身份（questionRef）被原样带回 reveal。
+const reviewRevealBodies = [];
 // 记录 AI 判分的请求体：断言入口真的把当前题/答案 POST 给了 /api/review/ai-grade。
 const reviewAiGradeBodies = [];
 // 记录 /api/import 的请求体：断言导出文件里的 review 快照被原样转发（旧备份不能凭空多出该键）。
@@ -434,6 +436,7 @@ async function fetchStub(url, options = {}) {
             grade: 5, answer: '我写对的答案', reviewedOn: '2026-09-12' }] });
     if (path === '/api/review/queue') return reply(200, { items: [{ code: 'py.a.b', title: '示例知识点',
         minutes: 10, module: '容器', level: '基础', questionType: 'predict',
+        questionRef: 'ai-q-1',
         prompt: '写出下面代码的输出', body: 'def add(a, b):\n    return a + b\n\nprint(add(1, 2))',
         reason: 'overdue', due: '2026-09-01', taskId: '1103', projectId: 'p1' },
         { code: 'py.a.c', title: '示例知识点二',
@@ -450,6 +453,7 @@ async function fetchStub(url, options = {}) {
         // 桩里写死一份会让"第二题"的断言失去意义。
         let revealRequest = {};
         try { revealRequest = JSON.parse(options.body || '{}'); } catch (error) { revealRequest = {}; }
+        reviewRevealBodies.push(revealRequest);
         // 知识点 code 在 reveal 里叫 pointCode（题面片段才叫 code），与
         // review_storage.reveal 的真实返回一致；两个都叫 code 会撞重复键。
         const predictReveal = { pointCode: 'py.a.b', type: 'predict', title: '示例知识点',
@@ -1497,6 +1501,33 @@ function step(name, fn) {
     check('删除后知识点卡片上的徽标消失',
         !textOf(elementsById.get('knowledgeList')).includes('AI 题 1'),
         textOf(elementsById.get('knowledgeList')).slice(0, 160));
+
+    // ⑲ 队列里的 AI 题：卡片要标出来，reveal / 自评 / AI 判分都要把题身份带回去
+    // （计划写的是"插在 ⑰ 之前"，但这一段会揭示并提交自评、把单题会话练完，
+    //  ⑰ 的卡片出题入口依赖"当前还有题"（handler 里 `if (!item) return`），会因此失效；
+    //  所以挪到 ⑱ 之后，语义不变。）
+    elementsById.get('reviewQueueBtn').dispatch('click');
+    await sleep(80);
+    const aiRow = findAll(elementsById.get('reviewBody'), el => textOf(el).includes('示例知识点'))[0];
+    if (aiRow) step('点击 AI 题库来源的题不抛异常', () => aiRow.dispatch('click'));
+    await sleep(120);
+    check('AI 题在卡片上被标成「AI 题库」',
+        textOf(elementsById.get('reviewQuestionMeta')).includes('AI 题库'),
+        textOf(elementsById.get('reviewQuestionMeta')));
+    elementsById.get('reviewRevealBtn').dispatch('click');
+    await sleep(120);
+    check('揭示答案时带上了 questionRef',
+        reviewRevealBodies.slice(-1)[0]?.questionRef === 'ai-q-1',
+        JSON.stringify(reviewRevealBodies.slice(-1)[0]));
+    // 桩按 index.html 静态解析出来的按钮不带 textContent（解析器不抽文本），
+    // 所以这里按 data-grade 找「基本掌握」，与既有五档断言的 class 口径一致。
+    const gradeBtn = findAll(elementsById.get('reviewGradeButtons'),
+        el => el.dataset.grade === '3')[0];
+    if (gradeBtn) step('提交自评不抛异常', () => gradeBtn.dispatch('click'));
+    await sleep(120);
+    check('自评提交也带上 questionRef',
+        reviewAnswerBodies.slice(-1)[0]?.questionRef === 'ai-q-1',
+        JSON.stringify(reviewAnswerBodies.slice(-1)[0]));
 
     // ⑯ 默认课程（assessmentEnabled: true + 每个任务 assessmentRequired: true）：
     //     勾选任务直接进 AI 验收，验收通过必须走生成回流（POST /api/review/generate）；

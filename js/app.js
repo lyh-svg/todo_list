@@ -6129,6 +6129,9 @@ let knowledgePoints = [];
             path: entry.path || '',
             due: entry.due,
             learning: Boolean(entry.learning),
+            // 题身份：非空表示这一题是收藏的 AI 题（'' = 内置固定题）。只有队列条目会带；
+            // 任务级到期条目恒为 ''，回到会话里就是固定题。
+            questionRef: String(entry.questionRef || ''),
             node: {
                 id: entry.nodeId,
                 text: entry.text || '未命名任务',
@@ -6625,7 +6628,8 @@ let knowledgePoints = [];
         reviewSessionSummary.hidden = true;
         reviewQuestionCard.hidden = false;
         reviewSessionProgress.textContent = `第 ${reviewSessionState.index + 1} / ${reviewSessionState.items.length} 题`;
-        reviewQuestionMeta.textContent = `${item.title} · ${item.module || '未分类'} · ${item.minutes} 分钟 · ${item.reason === 'new' ? '新知识点' : '复习'}`;
+        reviewQuestionMeta.textContent = `${item.title} · ${item.module || '未分类'} · ${item.minutes} 分钟 · ${item.reason === 'new' ? '新知识点' : '复习'}`
+            + (item.questionRef ? ' · AI 题库' : '');
         const promptBlock = document.createElement('div');
         promptBlock.textContent = item.prompt || '（这道题没有题面）';
         const bodyBlock = reviewBodyBlock(item.body);
@@ -6649,7 +6653,8 @@ let knowledgePoints = [];
         saveReviewDraft();
         let data;
         try {
-            data = await callApi('/api/review/reveal', 'POST', { code: item.code, type: item.questionType });
+            data = await callApi('/api/review/reveal', 'POST', {
+                code: item.code, type: item.questionType, questionRef: item.questionRef || '' });
         } catch (error) {
             reviewRevealBtn.disabled = false;
             showToast(error.message || '读取答案失败，请重试');
@@ -6771,6 +6776,7 @@ let knowledgePoints = [];
         try {
             const payload = await callApi('/api/review/ai-grade', 'POST', {
                 code: item.code, type: item.questionType, answer: answer,
+                questionRef: item.questionRef || '',
             });
             renderReviewAiGradeVerdict(payload && payload.verdict);
         } catch (error) {
@@ -6799,6 +6805,7 @@ let knowledgePoints = [];
                 durationMs: Date.now() - reviewSessionState.startedAt,
                 sessionId: reviewSessionState.sessionId,
                 taskId: item.taskId || '', projectId: item.projectId || '',
+                questionRef: item.questionRef || '',
                 today: todayStr(),
             });
         } catch (error) {
@@ -7067,7 +7074,7 @@ let knowledgePoints = [];
             // 取题失败/题库没配题面时用知识点元数据兜底，保证"立即练一次"仍能进会话。
             item = { code: point.code, title: point.title, minutes: point.minutes,
                 module: point.module, level: point.level, questionType: '',
-                prompt: '', body: '', reason: 'practice', due: point.due };
+                questionRef: '', prompt: '', body: '', reason: 'practice', due: point.due };
         }
         await startReviewSessionWithItems([item]);
     }
