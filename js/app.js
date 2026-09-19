@@ -33,6 +33,7 @@ const reviewBody = document.getElementById('reviewBody');
 const reviewSubline = document.getElementById('reviewSubline');
 // 第七批 Task 11：复习页工具栏（开始今日复习 + 题型/模块/范围筛选）
 const startReviewSessionBtn = document.getElementById('startReviewSessionBtn');
+const homeStartReviewBtn = document.getElementById('homeStartReviewBtn');
 const reviewTypeFilter = document.getElementById('reviewTypeFilter');
 const reviewModuleFilter = document.getElementById('reviewModuleFilter');
 const reviewScopeFilter = document.getElementById('reviewScopeFilter');
@@ -258,6 +259,13 @@ let knowledgePoints = [];
         const now = new Date();
         const pad = value => String(value).padStart(2, '0');
         return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    }
+
+    // 首页今日带上的日期（纸上的日历感，也是"今天"这个概念的落点）
+    function todayLabel() {
+        const now = new Date();
+        const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
+        return `${now.getMonth() + 1}月${now.getDate()}日 ${week}`;
     }
 
     const SEARCH_DEBOUNCE_MS = 180;
@@ -1409,7 +1417,7 @@ let knowledgePoints = [];
         utilityBody.innerHTML = '';
         const hint = document.createElement('p');
         hint.className = 'utility-hint';
-        hint.textContent = `本地版本 ${Number(local._revision) || 0} · 服务端版本 ${Number(remote._revision) || 0}`
+        hint.textContent = `本地版本 ${Number(local._revision) || 0}　服务端版本 ${Number(remote._revision) || 0}`
             + `；差异：${diff.changed.length} 个任务被改、仅本地 ${diff.onlyLocal.length} 个、仅服务端 ${diff.onlyRemote.length} 个、项目字段 ${diff.projectFields.length} 处`;
         utilityBody.appendChild(hint);
         const list = document.createElement('div');
@@ -1421,9 +1429,9 @@ let knowledgePoints = [];
             list.appendChild(row);
         };
         diff.projectFields.forEach(item => addRow(`${item.field}：本地「${item.local || '空'}」/ 服务端「${item.remote || '空'}」`));
-        diff.changed.forEach(item => addRow(`改动 · ${item.path}（${item.fields.map(f => f.field).join('、')}）`));
-        diff.onlyLocal.forEach(item => addRow(`仅本地有 · ${item.path}`));
-        diff.onlyRemote.forEach(item => addRow(`仅服务端有 · ${item.path}`));
+        diff.changed.forEach(item => addRow(`改动　${item.path}（${item.fields.map(f => f.field).join('、')}）`));
+        diff.onlyLocal.forEach(item => addRow(`仅本地有　${item.path}`));
+        diff.onlyRemote.forEach(item => addRow(`仅服务端有　${item.path}`));
         if (diff.projectFields.length + diff.changed.length + diff.onlyLocal.length + diff.onlyRemote.length === 0) {
             addRow('没有可显示的差异（可能只是版本号不同）。');
         }
@@ -1490,7 +1498,7 @@ let knowledgePoints = [];
                 const row = document.createElement('div');
                 row.className = 'conflict-row';
                 const on = choices[key].has(item.id);
-                row.textContent = `${key === 'keepLocalOnly' ? '仅本地有' : '仅服务端有'} · ${item.path}：${on ? '保留' : '丢弃'}`;
+                row.textContent = `${key === 'keepLocalOnly' ? '仅本地有' : '仅服务端有'}　${item.path}：${on ? '保留' : '丢弃'}`;
                 const toggle = document.createElement('button');
                 toggle.type = 'button';
                 toggle.className = 'utility-secondary-btn';
@@ -1827,8 +1835,8 @@ let knowledgePoints = [];
             for (const backup of payload.backups || []) {
                 const option = document.createElement('option');
                 option.value = backup.name;
-                option.textContent = `${backup.name} · ${formatBytes(backup.bytes)}`
-                    + `${backup.kind === 'legacy' ? ' · 旧格式' : ''}${backup.valid ? '' : ' · 损坏'}`;
+                option.textContent = `${backup.name}　${formatBytes(backup.bytes)}`
+                    + `${backup.kind === 'legacy' ? '　旧格式' : ''}${backup.valid ? '' : '　损坏'}`;
                 option.disabled = !backup.valid;
                 optionFragment.appendChild(option);
                 const row = document.createElement('div');
@@ -1847,7 +1855,7 @@ let knowledgePoints = [];
                 const remove = document.createElement('button');
                 remove.type = 'button';
                 remove.className = 'backup-picker-delete';
-                remove.textContent = '×';
+                remove.appendChild(iconEl('x'));
                 remove.title = `删除 ${backup.name}`;
                 remove.setAttribute('aria-label', `删除 ${backup.name}`);
                 remove.addEventListener('click', event => {
@@ -2006,7 +2014,7 @@ let knowledgePoints = [];
         }
         const totalBytes = assessmentCodeFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
         const truncated = assessmentCodeFiles.some(file => Number(file.size) > 120000);
-        assessmentFileHint.textContent = `已选 ${assessmentCodeFiles.length} 个文件 · ${formatBytes(totalBytes)} · 每个文件会截断到 120 KB${truncated ? '，超出部分不会发送' : ''}`;
+        assessmentFileHint.textContent = `已选 ${assessmentCodeFiles.length} 个文件　${formatBytes(totalBytes)}　每个文件会截断到 120 KB${truncated ? '，超出部分不会发送' : ''}`;
     }
 
     function renderAssessmentFiles() {
@@ -2021,7 +2029,7 @@ let knowledgePoints = [];
             const row = document.createElement('div');
             row.className = 'assessment-file-row';
             const name = document.createElement('span');
-            name.textContent = `${file.name} · ${formatBytes(file.size)}`;
+            name.textContent = `${file.name}　${formatBytes(file.size)}`;
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.textContent = '移除';
@@ -3080,7 +3088,7 @@ let knowledgePoints = [];
         ensureRemedialQueueAtBottom(nextProjects);
         nextProjects.forEach(project => expandAllNodes(project.tree || [], false));
         const state = { mode: 'replace', keepAiHistory: true, preview: null };
-        showUtilityModal('导入预览', '替换全部 · 合并到现有项目 · 导入为新项目');
+        showUtilityModal('导入预览', '替换全部　合并到现有项目　导入为新项目');
         utilityBody.innerHTML = '';
         const form = document.createElement('div');
         form.className = 'meta-form';
@@ -3377,7 +3385,7 @@ let knowledgePoints = [];
         setMemoSaveStatus('正在写入 SQLite…');
         try {
             const saved = await persistMemo(memo);
-            if (saved) setMemoSaveStatus(`已保存 · ${saved.updatedAt}`);
+            if (saved) setMemoSaveStatus(`已保存　${saved.updatedAt}`);
             setSaveStatus('已保存');
             return saved;
         } catch (error) {
@@ -3432,8 +3440,8 @@ let knowledgePoints = [];
             preview.textContent = liveText.replace(/\s+/g, ' ').trim() || '还没有内容';
             const meta = document.createElement('span');
             const stamp = memo.updatedAt ? memo.updatedAt.slice(0, 10) : '';
-            const size = Number.isFinite(memo.contentLength) ? ` · ${memo.contentLength} 字` : '';
-            meta.textContent = `${memo.pinned ? '置顶 · ' : ''}${stamp}${size}`;
+            const size = Number.isFinite(memo.contentLength) ? `　${memo.contentLength} 字` : '';
+            meta.textContent = `${memo.pinned ? '置顶　' : ''}${stamp}${size}`;
             button.append(title, preview, meta);
             button.addEventListener('click', async () => {
                 const previous = currentMemo();
@@ -3586,7 +3594,7 @@ let knowledgePoints = [];
             saveGroup.className = 'memo-save-group';
             const saveStatus = document.createElement('span');
             saveStatus.className = 'memo-save-status';
-            saveStatus.textContent = `已保存 · ${memo.updatedAt}`;
+            saveStatus.textContent = `已保存　${memo.updatedAt}`;
             const saveButton = document.createElement('button');
             saveButton.type = 'button';
             saveButton.className = 'utility-primary-btn memo-save-btn';
@@ -3661,7 +3669,7 @@ let knowledgePoints = [];
         }
         const arrow = document.createElement('span');
         arrow.className = 'utility-task-arrow';
-        arrow.textContent = '→';
+        arrow.replaceChildren(iconEl('arrow-right'));
         button.append(content, arrow);
         button.addEventListener('click', () => locateStudyTask(projectId, entry));
         return button;
@@ -3696,7 +3704,7 @@ let knowledgePoints = [];
     }
 
     function renderProjectPicker(action) {
-        showUtilityModal(`选择项目 · ${studyActionNames[action]}`, '选择范围');
+        showUtilityModal(`选择项目　${studyActionNames[action]}`, '选择范围');
         utilityBody.innerHTML = '';
         const hint = document.createElement('p');
         hint.className = 'utility-hint';
@@ -3717,7 +3725,7 @@ let knowledgePoints = [];
             progress.textContent = total > 0 ? `主线 ${completed}/${total}` : '还没有主线任务';
             text.append(name, progress);
             const arrow = document.createElement('span');
-            arrow.textContent = '→';
+            arrow.replaceChildren(iconEl('arrow-right'));
             button.append(text, arrow);
             button.addEventListener('click', async () => {
                 button.disabled = true;
@@ -3844,7 +3852,7 @@ let knowledgePoints = [];
             const result = document.createElement('div');
             result.className = 'random-result';
             const label = document.createElement('span');
-            label.textContent = currentEntry.optional ? '本次抽到 · 选做' : '本次抽到';
+            label.textContent = currentEntry.optional ? '本次抽到　选做' : '本次抽到';
             const name = document.createElement('strong');
             name.textContent = currentEntry.text;
             const path = document.createElement('small');
@@ -3878,7 +3886,7 @@ let knowledgePoints = [];
         const rate = document.createElement('strong');
         rate.textContent = `${stats.completionRate}%`;
         const label = document.createElement('span');
-        label.textContent = `总进度 · ${stats.completed}/${stats.total}`;
+        label.textContent = `总进度　${stats.completed}/${stats.total}`;
         const track = document.createElement('div');
         track.className = 'stats-progress';
         const fill = document.createElement('span');
@@ -3892,10 +3900,10 @@ let knowledgePoints = [];
             ['主线任务', `${stats.mainCompleted}/${stats.mainTotal}`],
             ['选做任务', `${stats.optionalCompleted}/${stats.optionalTotal}`],
             ['完成最多的一周', stats.busiestWeek
-                ? `${stats.busiestWeek.year} 年第 ${stats.busiestWeek.week} 周 · ${stats.busiestWeek.count} 项`
+                ? `${stats.busiestWeek.year} 年第 ${stats.busiestWeek.week} 周　${stats.busiestWeek.count} 项`
                 : '还没有完成记录'],
             ['最近完成', stats.latestCompletion
-                ? `${new Date(stats.latestCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })} · ${stats.latestCompletion.text}`
+                ? `${new Date(stats.latestCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })}　${stats.latestCompletion.text}`
                 : '还没有完成记录']
         ];
         const factFragment = document.createDocumentFragment();
@@ -4008,6 +4016,10 @@ let knowledgePoints = [];
             reviewQueueBtn.classList.toggle('empty', reviewTotal === 0);
         }
         const visibleProjects = getVisibleProjects();
+        const todayDateLabel = document.getElementById('todayDateLabel');
+        if (todayDateLabel) todayDateLabel.textContent = todayLabel();
+        const projectCountLabel = document.getElementById('projectCount');
+        if (projectCountLabel) projectCountLabel.textContent = visibleProjects.length ? String(visibleProjects.length) : '';
         const emptyState = projectsEmptyStateView(stateLoadError, projects.length, visibleProjects.length);
         if (emptyState) {
             renderProjectsMessage(emptyState);
@@ -4028,7 +4040,7 @@ let knowledgePoints = [];
             top.className = 'card-top';
             const icon = document.createElement('span');
             icon.className = 'card-icon';
-            icon.textContent = '▱';
+            icon.appendChild(iconEl('note'));
             const info = document.createElement('div');
             info.className = 'card-info';
             const nameDiv = document.createElement('div');
@@ -4057,7 +4069,7 @@ let knowledgePoints = [];
             const actions = document.createElement('div');
             actions.className = 'card-actions';
             const editBtn = document.createElement('button');
-            editBtn.textContent = '✎';
+            editBtn.appendChild(iconEl('pencil'));
             editBtn.title = '编辑项目名称';
             editBtn.setAttribute('aria-label', '编辑项目名称');
             editBtn.addEventListener('click', async (e) => {
@@ -4070,7 +4082,7 @@ let knowledgePoints = [];
                 }
             });
             const delBtn = document.createElement('button');
-            delBtn.textContent = '✕';
+            delBtn.appendChild(iconEl('x'));
             delBtn.title = '删除项目';
             delBtn.setAttribute('aria-label', '删除项目');
             delBtn.classList.add('delete-proj-btn');
@@ -4081,7 +4093,7 @@ let knowledgePoints = [];
             const archiveBtn = document.createElement('button');
             archiveBtn.type = 'button';
             archiveBtn.classList.add('archive-proj-btn');
-            archiveBtn.textContent = project.archived ? '↩' : '▣';
+            archiveBtn.appendChild(iconEl(project.archived ? 'rotate' : 'archive'));
             archiveBtn.title = project.archived ? '取消归档' : '归档（默认列表不再显示）';
             archiveBtn.setAttribute('aria-label', archiveBtn.title);
             archiveBtn.addEventListener('click', (e) => {
@@ -5201,7 +5213,7 @@ let knowledgePoints = [];
         }
         const remaining = getProjectRemaining(project);
         const optional = getProjectOptionalStats(project);
-        countDisplay.textContent = `主线剩余 ${remaining} 项 · 选做 ${optional.completed}/${optional.total}`;
+        countDisplay.textContent = `主线剩余 ${remaining} 项　选做 ${optional.completed}/${optional.total}`;
         treeRoot.replaceChildren();
         renderedNodeEntries = new Map();      // 上一轮的行引用一律作废
         if (!project.tree || project.tree.length === 0) {
@@ -5261,7 +5273,7 @@ let knowledgePoints = [];
         if (node.type === 'item') {
             arrow.classList.add('leaf');
         } else {
-            arrow.textContent = '▶';
+            arrow.appendChild(iconEl('chevron'));
             if (node.expanded) arrow.classList.add('expanded');
         }
         const checkbox = document.createElement('span');
@@ -5278,7 +5290,8 @@ let knowledgePoints = [];
         }
         checkbox.tabIndex = 0;
         const textSpan = document.createElement('span');
-        textSpan.className = 'node-text' + (completionState === 'completed' ? ' completed-text' : '');
+        textSpan.className = 'node-text' + (completionState === 'completed' ? ' completed-text' : '')
+            + (completionState === 'completed' && String(node.id) === justCompletedNodeId ? ' just-completed' : '');
         textSpan.textContent = node.text;
         const optionalBadge = node.optional ? document.createElement('span') : null;
         if (optionalBadge) {
@@ -5293,8 +5306,8 @@ let knowledgePoints = [];
             assessmentBadge.textContent = assessed
                 ? (node.assessment.passed ? '通过' : '补漏')
                 : questionPassed
-                    ? '题目通过 · 待写代码'
-                    : (node.assessmentHistory > 0 ? `曾通过 ${node.assessmentHistory} 次 · 待验收` : '待验收');
+                    ? '题目通过　待写代码'
+                    : (node.assessmentHistory > 0 ? `曾通过 ${node.assessmentHistory} 次　待验收` : '待验收');
         }
         if (node.type === 'item') {
             const metaBadges = createNodeMetaBadges(node);
@@ -5308,7 +5321,7 @@ let knowledgePoints = [];
         if (node.type === 'week' || node.type === 'day') {
             const addBtn = document.createElement('button');
             addBtn.className = 'add-btn';
-            addBtn.textContent = '+';
+            addBtn.appendChild(iconEl('plus'));
             addBtn.title = node.type === 'week' ? '添加学习单元' : '添加任务';
             addBtn.setAttribute('aria-label', '添加子项');
             actions.appendChild(addBtn);
@@ -5332,32 +5345,32 @@ let knowledgePoints = [];
         if (node.type === 'item') {
             const metaBtn = document.createElement('button');
             metaBtn.className = 'meta-btn';
-            metaBtn.textContent = '⋯';
+            metaBtn.appendChild(iconEl('dots'));
             metaBtn.title = '优先级 / 截止 / 标签 / 耗时 / 备注 / 链接';
             metaBtn.setAttribute('aria-label', metaBtn.title);
             actions.appendChild(metaBtn);
         }
         const editBtn = document.createElement('button');
         editBtn.className = 'edit-btn';
-        editBtn.textContent = '✎';
+        editBtn.appendChild(iconEl('pencil'));
         editBtn.title = '编辑';
         editBtn.setAttribute('aria-label', '编辑');
         actions.appendChild(editBtn);
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'delete-btn';
-        deleteBtn.textContent = '✕';
+        deleteBtn.appendChild(iconEl('x'));
         deleteBtn.title = '删除';
         deleteBtn.setAttribute('aria-label', '删除');
         actions.appendChild(deleteBtn);
         const copyBtn = document.createElement('button');
         copyBtn.className = 'copy-btn';
-        copyBtn.textContent = '⧉';
+        copyBtn.appendChild(iconEl('copy'));
         copyBtn.title = '复制这个节点（可选是否带走子任务 / 完成状态 / AI 历史 / 复习）';
         copyBtn.setAttribute('aria-label', copyBtn.title);
         actions.appendChild(copyBtn);
         const moveBtn = document.createElement('button');
         moveBtn.className = 'move-btn';
-        moveBtn.textContent = '⇄';
+        moveBtn.appendChild(iconEl('move'));
         moveBtn.title = '移动到其他周 / 学习单元 / 项目（也可以直接拖拽）';
         moveBtn.setAttribute('aria-label', moveBtn.title);
         actions.appendChild(moveBtn);
@@ -5485,7 +5498,7 @@ let knowledgePoints = [];
     function openNodeMeta(node, options) {
         if (!node || node.type !== 'item') return;
         const draft = normalizeNodeMeta(node);
-        showUtilityModal('任务详情', '优先级 · 截止 · 标签 · 耗时 · 备注 · 链接');
+        showUtilityModal('任务详情', '优先级　截止　标签　耗时　备注　链接');
         utilityBody.innerHTML = '';
         const form = document.createElement('div');
         form.className = 'meta-form';
@@ -5718,6 +5731,9 @@ let knowledgePoints = [];
     // toggleNodeCompleted 现在是 async：下面三处事件处理器都是 fire-and-forget，
     // 必须自己兜住 refreshAfterToggle（甚至后续生成回流）抛出的异常，否则会变成
     // unhandled rejection —— 事件回调时代它是同步抛错，语义上不该悄悄升级成全局未处理。
+    // 刚被勾完成的那一条：只在"用户这一次操作"后播一次划掉的动效（重新渲染不重播）
+    let justCompletedNodeId = '';
+
     function toggleNodeCompletedSafely(node) {
         void toggleNodeCompleted(node).catch(error => {
             console.warn('切换完成状态失败', error);
@@ -5733,6 +5749,10 @@ let knowledgePoints = [];
                 return;
             }
             const outcome = setNodeCompleted(node, !node.completed);
+            justCompletedNodeId = node.completed ? String(node.id) : '';
+            setTimeout(() => {
+                if (justCompletedNodeId === String(node.id)) justCompletedNodeId = '';
+            }, 500);
             if (node.assessmentRequired && !node.completed) {
                 // Canceling a passed task invalidates both stages; it must be earned again.
                 if (node.assessment && node.assessment.passed) {
@@ -6280,6 +6300,13 @@ let knowledgePoints = [];
 
     function renderAiVerdict(container, verdict, reference) {
         container.replaceChildren();
+        // 朱批：答对是墨批，没答对是朱批 + 一枚印章（老师批作业的样子）
+        container.classList.toggle('is-pass', Boolean(verdict.correct));
+        container.classList.toggle('is-fail', !verdict.correct);
+        const stamp = document.createElement('span');
+        stamp.className = 'verdict-stamp';
+        stamp.textContent = verdict.correct ? '通过' : '待改';
+        container.appendChild(stamp);
         const head = document.createElement('h4');
         head.textContent = verdict.correct ? 'AI 批改：答对了' : 'AI 批改：还需要补';
         container.appendChild(head);
@@ -6359,8 +6386,8 @@ let knowledgePoints = [];
         const badge = document.createElement('span');
         badge.className = 'ai-badge';
         badge.textContent = state.question
-            ? `AI 加练 · ${AI_TYPE_LABELS[state.question.questionType] || state.question.questionType}`
-            : 'AI 加练 · 正在出题…';
+            ? `AI 加练　${AI_TYPE_LABELS[state.question.questionType] || state.question.questionType}`
+            : 'AI 加练　正在出题…';
         head.appendChild(badge);
         if (state.question && state.question.focus) {
             const focus = document.createElement('span');
@@ -6617,6 +6644,35 @@ let knowledgePoints = [];
         container.appendChild(box);
     }
 
+    // 进度刻度：把"还剩几题"画成纸上的长度，当前那格用荧光笔划住。
+    // 文字进度（第 N / M 题）保持不变，屏幕阅读器和测试都还看得到。
+    // 图标：一份 16×16 的墨线 sprite（见 index.html 的 <symbol>），这里只负责引用。
+    // 描边色跟 currentColor 走，所以 hover/禁用态不用另写样式。
+    function iconEl(name) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'icon');
+        svg.setAttribute('aria-hidden', 'true');
+        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        use.setAttribute('href', `#i-${name}`);
+        svg.appendChild(use);
+        return svg;
+    }
+
+    function renderSessionTicks() {
+        const container = document.getElementById('reviewSessionTicks');
+        if (!container) return;
+        const total = reviewSessionState.items.length;
+        const fragment = document.createDocumentFragment();
+        for (let index = 0; index < total; index += 1) {
+            const tick = document.createElement('span');
+            tick.className = 'session-tick'
+                + (index < reviewSessionState.index ? ' done' : '')
+                + (index === reviewSessionState.index ? ' now' : '');
+            fragment.appendChild(tick);
+        }
+        container.replaceChildren(fragment);
+    }
+
     function renderReviewQuestion() {
         const item = reviewSessionState.items[reviewSessionState.index];
         if (!item) { finishReviewSession(); return; }
@@ -6628,8 +6684,9 @@ let knowledgePoints = [];
         reviewSessionSummary.hidden = true;
         reviewQuestionCard.hidden = false;
         reviewSessionProgress.textContent = `第 ${reviewSessionState.index + 1} / ${reviewSessionState.items.length} 题`;
-        reviewQuestionMeta.textContent = `${item.title} · ${item.module || '未分类'} · ${item.minutes} 分钟 · ${item.reason === 'new' ? '新知识点' : '复习'}`
-            + (item.questionRef ? ' · AI 题库' : '');
+        renderSessionTicks();
+        reviewQuestionMeta.textContent = `${item.title}　${item.module || '未分类'}　${item.minutes} 分钟　${item.reason === 'new' ? '新知识点' : '复习'}`
+            + (item.questionRef ? '　AI 题库' : '');
         const promptBlock = document.createElement('div');
         promptBlock.textContent = item.prompt || '（这道题没有题面）';
         const bodyBlock = reviewBodyBlock(item.body);
@@ -6717,7 +6774,7 @@ let knowledgePoints = [];
             parts.push(historyTitle);
             history.slice(0, 5).forEach(entry => {
                 const line = document.createElement('div');
-                line.textContent = `${entry.reviewedOn} · ${GRADE_LABELS[entry.grade] || entry.grade} · ${entry.answer || '（没写）'}`;
+                line.textContent = `${entry.reviewedOn}　${GRADE_LABELS[entry.grade] || entry.grade}　${entry.answer || '（没写）'}`;
                 parts.push(line);
             });
         }
@@ -6890,7 +6947,7 @@ let knowledgePoints = [];
         ];
         if (narrowed) parts.push('按题型/模块筛选后');
         if (scope) parts.push('范围筛选只收窄分组，数字为全量');
-        return parts.join(' · ');
+        return parts.join('　');
     }
 
     // 模块下拉的选项来自知识点库（/api/review/points），每次整体重建但保留当前选择。
@@ -7021,14 +7078,36 @@ let knowledgePoints = [];
             knowledgeList.appendChild(empty);
             return;
         }
+        // 按模块分目录：261 条平铺成一张长列表既难扫也单调；模块名 + 计数就是目录，吸顶跟着滚。
+        const moduleCounts = new Map();
         list.forEach(point => {
+            const name = point.module || '未分类';
+            moduleCounts.set(name, (moduleCounts.get(name) || 0) + 1);
+        });
+        // 不重排顺序：服务端本来就按模块成段返回，重排会打乱"第一张卡是哪一条"的既有约定
+        let currentModule = null;
+        list.forEach(point => {
+            const moduleName = point.module || '未分类';
+            if (moduleName !== currentModule) {
+                currentModule = moduleName;
+                const head = document.createElement('div');
+                head.className = 'knowledge-group-title';
+                const label = document.createElement('span');
+                label.textContent = moduleName;
+                const count = document.createElement('span');
+                count.className = 'knowledge-group-count';
+                count.textContent = String(moduleCounts.get(moduleName) || 0);
+                head.append(label, count);
+                knowledgeList.appendChild(head);
+            }
             const card = document.createElement('div');
-            card.className = 'knowledge-item';
+            // 逾期（下次复习时间已经过去）折个角，和首页项目卡的标记语言一致
+            card.className = 'knowledge-item' + (point.due && point.due < todayStr() ? ' is-overdue' : '');
             const title = document.createElement('div');
             title.className = 'knowledge-title';
             title.textContent = `${point.title}（${point.minutes} 分钟）`;
             const meta = document.createElement('small');
-            meta.textContent = `${point.module || '未分类'} · ${point.level} · ${point.weak ? '薄弱' : (point.due ? `下次 ${point.due}` : '还没学过')}`;
+            meta.textContent = `${point.module || '未分类'}　${point.level}　${point.weak ? '薄弱' : (point.due ? `下次 ${point.due}` : '还没学过')}`;
             const practice = document.createElement('button');
             practice.type = 'button';
             practice.className = 'utility-secondary-btn';
@@ -7737,13 +7816,23 @@ let knowledgePoints = [];
     function renderWorkbench(board) {
         const groups = board.groups || {};
         const totals = board.totals || {};
-        workbenchSubline.textContent = `今天 ${totals.today || 0} · 逾期 ${totals.overdue || 0} · 未来 7 天 ${totals.next7 || 0}`
-            + ` · 待复习 ${totals.reviewToday || 0} · 收集箱 ${totals.inbox || 0}`;
+        workbenchSubline.textContent = `今天 ${totals.today || 0}　逾期 ${totals.overdue || 0}　未来 7 天 ${totals.next7 || 0}`
+            + `　待复习 ${totals.reviewToday || 0}　收集箱 ${totals.inbox || 0}`;
         workbenchBody.replaceChildren();
         const order = ['overdue', 'today', 'next7', 'reviewToday', 'inbox'];
         const fragment = document.createDocumentFragment();
+        // 三类都空的时候不要摆三段"没有需要处理的"：合成一句，纸面安静下来；
+        // 只要有一类非空，就照旧把每组（含空组）列出来，方便看清今天的状态。
+        const allEmpty = order.every(key => (groups[key] || []).length === 0);
+        if (allEmpty) {
+            const line = document.createElement('p');
+            line.className = 'workbench-empty-all';
+            line.textContent = '今天没有要处理的　去项目里安排学习任务，或用上面的输入框快速记一条';
+            fragment.appendChild(line);
+        }
         for (const key of order) {
             const items = groups[key] || [];
+            if (allEmpty) break;
             const group = document.createElement('div');
             group.className = 'review-group';
             const head = document.createElement('div');
@@ -7775,7 +7864,7 @@ let knowledgePoints = [];
         main.className = 'review-item-main';
         const pathSpan = document.createElement('span');
         pathSpan.className = 'review-item-path';
-        pathSpan.textContent = item.path ? `${item.projectName} · ${item.path}` : item.projectName;
+        pathSpan.textContent = item.path ? `${item.projectName}　${item.path}` : item.projectName;
         const text = document.createElement('div');
         text.className = 'review-item-text';
         text.textContent = item.text || '未命名任务';
@@ -8111,7 +8200,7 @@ let knowledgePoints = [];
         else if (reminderState.permission === 'denied') parts.push('浏览器通知：已被浏览器拒绝');
         else parts.push('浏览器通知：未授权');
         parts.push('只在页面开着时生效');
-        reminderStatus.textContent = parts.join(' · ');
+        reminderStatus.textContent = parts.join('　');
         if (reminderToggleBtn) reminderToggleBtn.textContent = reminderState.enabled ? '关闭提醒' : '开启提醒';
     }
 
@@ -8146,7 +8235,7 @@ let knowledgePoints = [];
         if (reminderState.permission === 'granted' && typeof Notification === 'function') {
             pending.slice(0, 3).forEach(entry => {
                 try {
-                    new Notification(`待办提醒 · ${entry.label}`, {
+                    new Notification(`待办提醒　${entry.label}`, {
                         body: entry.item.text,
                         tag: `${entry.item.projectId}:${entry.item.nodeId}`,
                     });
@@ -8335,7 +8424,7 @@ let knowledgePoints = [];
     }
 
     async function showRecent() {
-        showUtilityModal('最近', '打开 · 修改 · 完成');
+        showUtilityModal('最近', '打开　修改　完成');
         renderUtilityMessage('正在读取最近记录…');
         let recent;
         try {
@@ -8386,7 +8475,7 @@ let knowledgePoints = [];
             const title = document.createElement('strong');
             title.textContent = entry.text || '未命名任务';
             const detail = document.createElement('small');
-            detail.textContent = `${entry.projectName} · ${String(entry.at || '').slice(0, 16).replace('T', ' ')}`;
+            detail.textContent = `${entry.projectName}　${String(entry.at || '').slice(0, 16).replace('T', ' ')}`;
             row.append(title, detail);
             row.addEventListener('click', async () => {
                 closeUtilityModal();
@@ -8431,13 +8520,13 @@ let knowledgePoints = [];
         const matchesAttempt = entry => (!type || entry.questionType === type)
             && (!moduleName || entry.module === moduleName);
         let groups = [
-            { title: '今日必须复习', items: state.dueToday || [] },
-            { title: '即将到期', items: state.upcoming || [] },
-            { title: '已逾期', items: state.overdue || [] },
-            { title: '薄弱知识点', items: state.weak || [] },
-            { title: '新知识点', items: state.newItems || [] },
-            { title: '最近答错', items: (state.recentWrong || []).filter(matchesAttempt), attempt: true },
-            { title: '最近掌握', items: (state.recentMastered || []).filter(matchesAttempt), attempt: true },
+            { key: 'dueToday', title: '今日必须复习', items: state.dueToday || [] },
+            { key: 'upcoming', title: '即将到期', items: state.upcoming || [] },
+            { key: 'overdue', title: '已逾期', items: state.overdue || [] },
+            { key: 'weak', title: '薄弱知识点', items: state.weak || [] },
+            { key: 'newItems', title: '新知识点', items: state.newItems || [] },
+            { key: 'recentWrong', title: '最近答错', items: (state.recentWrong || []).filter(matchesAttempt), attempt: true },
+            { key: 'recentMastered', title: '最近掌握', items: (state.recentMastered || []).filter(matchesAttempt), attempt: true },
         ];
         if (scope) {
             groups = groups.filter(entry => entry.title === scopedTitles[scope]);
@@ -8446,19 +8535,22 @@ let knowledgePoints = [];
         groups.forEach(entry => {
             if (entry.items.length === 0) return;
             matchedGroups += 1;
-            body.appendChild(entry.attempt ? renderAttemptGroup(entry.title, entry.items)
-                : renderKnowledgeGroup(entry.title, entry.items));
+            const group = entry.attempt ? renderAttemptGroup(entry.title, entry.items)
+                : renderKnowledgeGroup(entry.title, entry.items);
+            // 分组键落成 class，样式侧才能按"这一组是什么意思"上标记（例如已逾期转朱）
+            group.classList.add('group-' + entry.key);
+            body.appendChild(group);
         });
         // 任务组沿用旧 /api/reviews 的行渲染与操作按钮（记住/模糊/忘了/更多/AI）。
         // 它有自己的 due 判断（due / future 两个桶），不受"只看已逾期/薄弱/新知识点"这个
         // 范围筛选影响——以前 scope 非空时整组被隐藏，等于把它也筛掉了。
         if ((state.taskDue || []).length > 0) {
-            body.appendChild(renderReviewGroup(scope ? '任务级到期（原来的复习 · 不受范围筛选影响）'
+            body.appendChild(renderReviewGroup(scope ? '任务级到期（原来的复习　不受范围筛选影响）'
                 : '任务级到期（原来的复习）', state.taskDue));
         }
         if ((state.taskFuture || []).length > 0) {
-            body.appendChild(renderReviewGroup(scope ? '任务级到期 · 未来安排（不受范围筛选影响）'
-                : '任务级到期 · 未来安排', state.taskFuture));
+            body.appendChild(renderReviewGroup(scope ? '任务级到期　未来安排（不受范围筛选影响）'
+                : '任务级到期　未来安排', state.taskFuture));
         }
         // 范围筛选下的空态要和"今天完全没有到期"区分开：前者只是这个范围没条目。
         if (scope && matchedGroups === 0) {
@@ -8493,14 +8585,26 @@ let knowledgePoints = [];
         return group;
     }
 
+    // B 方向：荧光笔触＝"现在该复习"（今天/薄弱/新），朱笔＝逾期，未来安排不标。
+    // 只在这里判一次，样式侧只认 .mark-now / .mark-overdue 两个 class。
+    function reviewMarkClass(item) {
+        const reason = item.reason || '';
+        if (reason === 'overdue') return ' mark-overdue';
+        if (reason === 'today' || reason === 'weak' || reason === 'new') return ' mark-now';
+        const due = String(item.due || '');
+        if (due && due < todayStr()) return ' mark-overdue';
+        if (due === todayStr() || item.learning) return ' mark-now';
+        return '';
+    }
+
     function createKnowledgeItemElement(item) {
         const row = document.createElement('div');
-        row.className = 'review-item';
+        row.className = 'review-item' + reviewMarkClass(item);
         const main = document.createElement('div');
         main.className = 'review-item-main';
         const path = document.createElement('span');
         path.className = 'review-item-path';
-        path.textContent = `${item.module || '未分类'} · ${item.minutes || 0} 分钟`;
+        path.textContent = `${item.module || '未分类'}　${item.minutes || 0} 分钟`;
         const text = document.createElement('div');
         text.className = 'review-item-text';
         text.textContent = item.title || item.code || '未命名知识点';
@@ -8549,7 +8653,7 @@ let knowledgePoints = [];
         const path = document.createElement('span');
         path.className = 'review-item-path';
         const typeLabel = REVIEW_TYPE_LABELS[attempt.questionType] || attempt.questionType || '未标注题型';
-        path.textContent = `${typeLabel} · ${attempt.reviewedOn || '日期未知'}`;
+        path.textContent = `${typeLabel}　${attempt.reviewedOn || '日期未知'}`;
         const text = document.createElement('div');
         text.className = 'review-item-text';
         text.textContent = attempt.title || attempt.code || '未命名知识点';
@@ -8559,7 +8663,7 @@ let knowledgePoints = [];
         main.append(path, text, answer);
         const tag = document.createElement('span');
         tag.className = 'review-tag';
-        tag.textContent = `第 ${attempt.grade} 档 · ${GRADE_LABELS[Number(attempt.grade)] || `档位 ${attempt.grade}`}`;
+        tag.textContent = `第 ${attempt.grade} 档　${GRADE_LABELS[Number(attempt.grade)] || `档位 ${attempt.grade}`}`;
         main.appendChild(tag);
         const actions = document.createElement('div');
         actions.className = 'review-actions';
@@ -8621,7 +8725,7 @@ let knowledgePoints = [];
             if (!response.ok) throw new Error(data.error || '读取历史失败');
             showUtilityModal('复习历史', data.title || code);
             const lines = (Array.isArray(data.attempts) ? data.attempts : []).map(entry =>
-                `${entry.reviewedOn || ''} · ${GRADE_LABELS[entry.grade] || entry.grade} · ${entry.answer || '（没写）'}`);
+                `${entry.reviewedOn || ''}　${GRADE_LABELS[entry.grade] || entry.grade}　${entry.answer || '（没写）'}`);
             utilityBody.textContent = lines.length > 0 ? lines.join('\n') : '还没有作答记录';
         } catch (error) {
             showToast(error.message || '读取历史失败');
@@ -8661,7 +8765,7 @@ let knowledgePoints = [];
 
     function createReviewItemElement(item) {
         const row = document.createElement('div');
-        row.className = 'review-item';
+        row.className = 'review-item' + reviewMarkClass(item);
         const main = document.createElement('div');
         main.className = 'review-item-main';
         const pathSpan = document.createElement('span');
@@ -8671,7 +8775,9 @@ let knowledgePoints = [];
         text.className = 'review-item-text';
         text.textContent = item.node.text || '未命名任务';
         text.title = item.node.text || '';
-        text.addEventListener('click', () => row.classList.toggle('expanded'));
+        // 题面为了笔触改成 inline-block（不再铺满整行），点击区放回整列，
+        // 免得只有文字本身能点开。
+        main.addEventListener('click', () => row.classList.toggle('expanded'));
         main.append(pathSpan, text);
         if (item.learning) {
             const tag = document.createElement('span');
@@ -8946,7 +9052,7 @@ let knowledgePoints = [];
     // 徽标文案只有这一处定义：整卡渲染（renderProjects）与原地刷新（updateReviewBadges）共用。
     function reviewBadgeText(bucket) {
         return bucket.overdue > 0
-            ? '待复习 ' + bucket.today + ' · 逾期 ' + bucket.overdue
+            ? '待复习 ' + bucket.today + '　逾期 ' + bucket.overdue
             : '待复习 ' + bucket.today;
     }
 
@@ -9014,6 +9120,82 @@ let knowledgePoints = [];
             console.warn('刷新复习计数失败', error);
         }
         updateReviewBadges();
+        loadTodayPreview();
+    }
+
+    // 首页"今天要复习"预览：复用复习队列接口与队列行的 class，
+    // 所以荧光笔（该复习）/ 朱笔（逾期）的语义和队列页自动一致。
+    const TODAY_PREVIEW_LIMIT = 4;
+    let todayPreviewLoading = false;
+
+    function createTodayPreviewRow(item) {
+        const row = document.createElement('div');
+        row.className = 'review-item' + reviewMarkClass(item);
+        const main = document.createElement('div');
+        main.className = 'review-item-main';
+        const path = document.createElement('span');
+        path.className = 'review-item-path';
+        path.textContent = item.path
+            ? `${item.projectName || ''}　${item.path}`
+            : `${item.module || '未分类'}　${item.minutes || 0} 分钟`;
+        const text = document.createElement('div');
+        text.className = 'review-item-text';
+        text.textContent = (item.node && item.node.text) || item.title || item.code || '未命名任务';
+        main.append(path, text);
+        const actions = document.createElement('div');
+        actions.className = 'review-actions';
+        const start = document.createElement('button');
+        start.type = 'button';
+        start.className = 'review-btn easy';
+        start.textContent = '复习这道';
+        start.addEventListener('click', () => { startReviewSessionWithItems([item]); });
+        actions.appendChild(start);
+        row.append(main, actions);
+        return row;
+    }
+
+    async function loadTodayPreview() {
+        const container = document.getElementById('todayPreview');
+        if (!container || todayPreviewLoading) return;
+        todayPreviewLoading = true;
+        try {
+            // 口径必须和上面那个数字一致：今日待复习 = 已完成且排了复习的任务里今天到期 + 逾期，
+            // 所以这里读 /api/reviews（任务级），不读知识点队列；知识点在"打开复习队列"里。
+            const response = await apiFetch(
+                `/api/reviews?today=${encodeURIComponent(todayStr())}`,
+                { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '读取今日复习失败');
+            const entries = Array.isArray(payload.due) ? payload.due : [];
+            const items = entries.slice(0, TODAY_PREVIEW_LIMIT).map(reviewEntryToItem);
+            container.replaceChildren();
+            if (items.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'today-preview-empty';
+                empty.textContent = '今天没有到期的复习任务　打开复习队列看知识点';
+                container.appendChild(empty);
+            } else {
+                const list = document.createElement('div');
+                list.className = 'today-preview-list';
+                items.forEach(item => list.appendChild(createTodayPreviewRow(item)));
+                container.appendChild(list);
+                const more = document.createElement('button');
+                more.type = 'button';
+                more.className = 'today-preview-more';
+                more.textContent = entries.length > TODAY_PREVIEW_LIMIT
+                    ? `打开复习队列（还有 ${entries.length - TODAY_PREVIEW_LIMIT} 条）` : '打开复习队列';
+                more.addEventListener('click', () => { showReviewQueue(); });
+                container.appendChild(more);
+            }
+            container.hidden = false;
+        } catch (error) {
+            // 预览只是首页的顺带信息：拿不到就安静地不显示，不打扰主流程
+            container.replaceChildren();
+            container.hidden = true;
+            console.warn('加载今日复习预览失败', error);
+        } finally {
+            todayPreviewLoading = false;
+        }
     }
 
 
@@ -9256,8 +9438,8 @@ let knowledgePoints = [];
             title.textContent = item.title || '未命名条目';
             head.append(box, title);
             const meta = document.createElement('small');
-            meta.textContent = `${item.kind === 'project' ? '项目' : '任务'} · 删除于 ${(item.deletedAt || '').slice(0, 16).replace('T', ' ')}`
-                + (item.expiresAt ? ` · ${item.expiresAt.slice(0, 10)} 自动清理` : '');
+            meta.textContent = `${item.kind === 'project' ? '项目' : '任务'}　删除于 ${(item.deletedAt || '').slice(0, 16).replace('T', ' ')}`
+                + (item.expiresAt ? `　${item.expiresAt.slice(0, 10)} 自动清理` : '');
             const context = document.createElement('div');
             context.className = 'trash-context';
             context.textContent = item.context || item.projectId || '';
@@ -9394,8 +9576,8 @@ let knowledgePoints = [];
                 title.textContent = item.label;
                 const detail = document.createElement('small');
                 detail.textContent = item.kind === 'project'
-                    ? `项目 · ${item.detail || ''}`
-                    : `任务 · ${item.detail || ''}`;
+                    ? `项目　${item.detail || ''}`
+                    : `任务　${item.detail || ''}`;
                 row.append(title, detail);
                 row.addEventListener('click', async () => {
                     if (item.kind === 'project') {
@@ -9601,7 +9783,7 @@ let knowledgePoints = [];
         const remaining = getProjectRemaining(project);
         const optional = getProjectOptionalStats(project);
         const count = document.getElementById('countDisplay');
-        if (count) count.textContent = '主线剩余 ' + remaining + ' 项 · 选做 ' + optional.completed + '/' + optional.total;
+        if (count) count.textContent = '主线剩余 ' + remaining + ' 项　选做 ' + optional.completed + '/' + optional.total;
     }
     function refreshAfterToggle(project, node) {
         try {
@@ -9814,6 +9996,9 @@ let knowledgePoints = [];
         reviewQueueBtn.addEventListener('click', () => { showReviewQueue(); });
         if (startReviewSessionBtn) {
             startReviewSessionBtn.addEventListener('click', () => { startReviewSession(); });
+        }
+        if (homeStartReviewBtn) {
+            homeStartReviewBtn.addEventListener('click', () => { startReviewSession(); });
         }
         [reviewTypeFilter, reviewModuleFilter].forEach(select => {
             if (select) select.addEventListener('change', () => { showReviewQueue(); });

@@ -16,7 +16,7 @@ check('R4 ⑧ 备份操作只剩 列表/下载/删除/恢复',
     && !html.includes('id="createDatabaseBackupBtn"') && !html.includes('id="renameDatabaseBackupBtn"')
     && !html.includes('id="inspectDatabaseBackupBtn"') && !src.includes('/api/backup/inspect')
     && !src.includes("action: 'create'") && !src.includes("action: 'rename'"));
-check('R4 ⑧ 备份列表区分完整备份与旧格式', src.includes("backup.kind === 'legacy' ? ' · 旧格式' : ''"));
+check('R4 ⑧ 备份列表区分完整备份与旧格式', src.includes("backup.kind === 'legacy' ? '　旧格式' : ''"));
 check('R4 ⑧ 恢复前有确认（说明会先自动备份并重载页面）',
     /function restoreDatabaseBackupFromUi[\s\S]{0,400}确认恢复数据库备份/.test(src));
 check('R4 ⑧ 备份仍可删除（下拉里的 ×）', /deleteDatabaseBackupByName/.test(src));

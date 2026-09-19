@@ -274,7 +274,7 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "计数刷新只能改徽标（不能整卡重绘）",
         "js/app.js",
-        crlf("        updateReviewBadges();\n    }\n"),
+        crlf("        updateReviewBadges();\n        loadTodayPreview();\n    }\n"),
         crlf("        renderProjects();\n    }\n"),
         ["node", "tests/frontend/verify-review-counts.js"],
     ),
@@ -657,6 +657,15 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
         [sys.executable, "-m", "unittest",
          "tests.test_review_rotation_ai.RotationWithAiQuestionTests"
          ".test_pick_is_deterministic_and_uses_ai_question_when_never_used"],
+    ),
+    (
+        "入口 HTML 的资源版本号必须跟着文件走（否则改了样式没人看得见）",
+        "local_server.py",
+        crlf('        text = re.sub(rf"({re.escape(relative)})\\?v=\\d+",\n'
+             '                      lambda match, relative=relative: f"{match.group(1)}?v={asset_version(relative)}", text)\n'),
+        crlf('        pass  # 改坏：保留源码里写死的旧版本号\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_static_versions.StaticVersionTests"],
     ),
 ]
 

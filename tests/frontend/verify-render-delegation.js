@@ -146,6 +146,8 @@ function buildWorld() {
     };
     const deps = {
         document: documentStub, treeRoot, state, calls,
+        // 图标走 sprite 引用（iconEl 在真实 app.js 里；沙箱里给个同名桩）
+        iconEl: () => makeEl('span'),
         getCurrentProject: () => state.currentProject,
         getNodeCompletionState: node => (node.completed ? 'completed' : 'active'),
         createNodeMetaBadges: node => {
@@ -202,7 +204,7 @@ function buildWorld() {
                 createNodeMetaBadges, startAddChild, openAssessment, openScheduleReview, openNodeMeta,
                 startEditNode, deleteNode, duplicateNodeWithOptions, openMoveNodeDialog, updateBranch,
                 toggleNodeCompletedSafely, toggleBatchSelection, batchKey, dropTargetFor, clearDropHints,
-                applyDrop, nodeMatchesOwnFilter, attachDragHandlers, nodeHasVisibleMatch } = deps;
+                applyDrop, nodeMatchesOwnFilter, attachDragHandlers, nodeHasVisibleMatch, iconEl } = deps;
         const renderedNodeEntries = state.renderedNodeEntries;
         let treeDelegationReady = state.treeDelegationReady;
         let dragState = state.dragState;

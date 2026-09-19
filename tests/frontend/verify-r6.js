@@ -70,7 +70,7 @@ check('接线：行内徽标函数存在并渲染优先级/截止/标签/耗时/
 check('接线：徽标点击打开元数据弹窗（走 treeRoot 委托）',
     /target\.closest\('\.node-meta'\)[\s\S]{0,160}openNodeMeta\(entry\.node\);/.test(src));
 check('接线：行内 ⋯ 按钮打开弹窗（走委托处理器表）',
-    src.includes("metaBtn.textContent = '⋯'")
+    src.includes("metaBtn.appendChild(iconEl('dots'))")
     && /\['\.meta-btn', entry => openNodeMeta\(entry\.node\)\]/.test(src));
 check('接线：弹窗含六类字段与快捷按钮',
     src.includes("addField('优先级', prioritySelect)") && src.includes("addField('截止日期', dueInput)")

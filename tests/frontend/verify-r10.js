@@ -42,11 +42,11 @@ check('移动：有"移动到…"对话框（项目 + 周/单元 + 位置）',
     /async function openMoveNodeDialog\(node\)[\s\S]{0,1200}目标项目[\s\S]{0,800}放到哪一周 \/ 单元[\s\S]{0,400}位置/.test(src));
 check('移动：跨项目走 /api/inbox/move，同项目走 reorder',
     /openMoveNodeDialog[\s\S]{0,3000}reorderNodeRemote[\s\S]{0,3000}\/api\/inbox\/move/.test(src));
-check('移动：行内有 ⇄ 按钮', /moveBtn\.textContent = '⇄'/.test(src));
+check('移动：行内有移动图标按钮', /moveBtn\.appendChild\(iconEl\('move'\)\)/.test(src));
 
 // ③ 复制任务 / 整枝
-check('复制：行内有 ⧉ 按钮并打开选项对话框',
-    /copyBtn\.textContent = '⧉'/.test(src) && /duplicateNodeWithOptions/.test(src));
+check('复制：行内有复制图标按钮并打开选项对话框',
+    /copyBtn\.appendChild\(iconEl\('copy'\)\)/.test(src) && /duplicateNodeWithOptions/.test(src));
 check('复制：选项包含子任务/完成状态/AI 历史/复习',
     /includeChildren[\s\S]{0,200}keepCompletion[\s\S]{0,200}keepAssessment[\s\S]{0,200}keepReview/.test(src));
 check('复制：调 /api/node/duplicate', /\/api\/node\/duplicate/.test(src));

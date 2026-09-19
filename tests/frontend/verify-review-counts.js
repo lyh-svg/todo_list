@@ -91,7 +91,7 @@ function makeCard(projectId, withBadge) {
 }
 
 function buildWorld({ cards, response }) {
-    const calls = { urls: [], renderProjects: 0, toasts: [] };
+    const calls = { urls: [], renderProjects: 0, toasts: [], preview: 0 };
     const documentStub = { createElement: tag => makeEl(tag) };
     const projectGrid = makeEl('div');
     cards.forEach(card => projectGrid.appendChild(card));
@@ -112,6 +112,8 @@ function buildWorld({ cards, response }) {
         todayStr: () => '2026-09-19',
         showToast: message => calls.toasts.push(String(message)),
         renderProjects: () => { calls.renderProjects += 1; },
+        // 首页「今天要复习」预览：刷新计数时顺带刷新，这里只数调用次数
+        loadTodayPreview: () => { calls.preview += 1; },
         apiFetch: url => {
             calls.urls.push(String(url));
             if (!response) return Promise.reject(new Error('服务不可用'));
@@ -120,7 +122,7 @@ function buildWorld({ cards, response }) {
     };
     const prelude = `
         const { document, projectGrid, reviewQueueCount, reviewQueueBtn, state, todayStr, showToast,
-                renderProjects, apiFetch, projectsView, readStoredState } = deps;
+                renderProjects, apiFetch, projectsView, readStoredState, loadTodayPreview } = deps;
         let reviewCounts = state.reviewCounts;
         let timezoneWarned = state.timezoneWarned;
     `;
@@ -182,7 +184,7 @@ async function run() {
 
     const badgeA = cardA.querySelector('.review-card-badge');
     check('行为：拿到计数的卡片原地长出徽标，文案与样式正确',
-        Boolean(badgeA) && badgeA.textContent === '待复习 2 · 逾期 1' && badgeA.classList.contains('overdue'),
+        Boolean(badgeA) && badgeA.textContent === '待复习 2　逾期 1' && badgeA.classList.contains('overdue'),
         badgeA ? badgeA.textContent : '(没有徽标)');
     check('行为：没有计数的卡片不加徽标',
         cardB.querySelector('.review-card-badge') === null);
@@ -190,6 +192,7 @@ async function run() {
         cardC.querySelector('.review-card-badge') === null);
     check('行为：顶栏计数同步', world.reviewQueueCount.textContent === '3',
         world.reviewQueueCount.textContent);
+    check('行为：刷新计数时顺带刷新首页今日预览', world.calls.preview === 1, String(world.calls.preview));
     // 计数全为 0：顶栏归零并置 empty
     const zeroWorld = buildWorld({
         cards: [makeCard('p1', false)],

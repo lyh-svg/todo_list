@@ -45,10 +45,34 @@ SESSION_TOKEN_FILE = Path(
     os.environ.get("TODO_SESSION_TOKEN_FILE", f"/tmp/todo-list-ai-{PORT}.token")
 )
 PUBLIC_PATHS = {"/", "/index.html", "/css/style.css", "/js/api-client.js", "/js/study-tools.js", "/js/app.js"}
-# 这些静态资源的 URL 带 ?v= 版本号（见 index.html），可以放心缓存；入口 HTML 与所有 /api/* 仍用 no-store。
+# 这些静态资源的 URL 带 ?v= 版本号（由 asset_version() 按文件实时生成），可以放心缓存；
+# 入口 HTML 与所有 /api/* 仍用 no-store。
 VERSIONED_STATIC_PATHS = {"/css/style.css", "/js/api-client.js", "/js/study-tools.js", "/js/app.js"}
 STATIC_CACHE_CONTROL = "public, max-age=86400"
 NO_STORE = "no-store"
+HTML_PATHS = {"/", "/index.html"}
+
+
+def asset_version(relative_path: str) -> str:
+    """静态资源的缓存版本号 = mtime + 文件大小。
+
+    以前版本号是手写在 index.html 里的（?v=37），改了 css/js 却忘了改它，就等于"改了没人看见"：
+    静态资源是 public, max-age=86400，浏览器会一直吃旧文件。现在按文件实时算，改文件即换版本。
+    """
+    try:
+        stat = (APP_DIR / relative_path.lstrip("/")).stat()
+    except OSError:
+        return "0"
+    return f"{int(stat.st_mtime)}{stat.st_size:07d}"
+
+
+def versioned_html(text: str) -> str:
+    """把入口 HTML 里的 ?v=<旧值> 换成当前文件版本。"""
+    for path in sorted(VERSIONED_STATIC_PATHS):
+        relative = path.lstrip("/")
+        text = re.sub(rf"({re.escape(relative)})\?v=\d+",
+                      lambda match, relative=relative: f"{match.group(1)}?v={asset_version(relative)}", text)
+    return text
 
 _heartbeat_lock = threading.Lock()
 _last_heartbeat = time.monotonic()
@@ -252,6 +276,23 @@ class TodoHandler(SimpleHTTPRequestHandler):
             # 客户端提前断开：正常情况，不必打堆栈。
             self.close_connection = True
 
+    def send_versioned_html(self, head_only: bool = False) -> None:
+        """入口 HTML：注入实时版本号后再发（HTML 本身 no-store，永远是最新的）。"""
+        try:
+            body = versioned_html((APP_DIR / "index.html").read_text(encoding="utf-8")).encode("utf-8")
+        except OSError:
+            self.send_json(404, {"error": "资源不存在"})
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def send_evaluate_stream(self, payload: dict[str, Any]) -> None:
         """NDJSON 流式返回 AI 验收: {"type":"text","text":..} ... {"type":"result","result":..}"""
         try:
@@ -339,6 +380,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path in HTML_PATHS:
+            self.send_versioned_html(head_only=True)
+            return
         if path not in PUBLIC_PATHS:
             self.send_response(404)
             self.end_headers()
@@ -694,6 +738,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 self.send_json(400, {"error": str(error)})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取备忘录失败：{error}"})
+            return
+        if path in HTML_PATHS:
+            self.send_versioned_html()
             return
         if path not in PUBLIC_PATHS:
             self.send_json(404, {"error": "资源不存在"})
