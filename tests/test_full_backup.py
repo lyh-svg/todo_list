@@ -15,6 +15,7 @@ import tempfile
 import unittest
 import zipfile
 from datetime import datetime, timedelta
+from contextlib import closing
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -136,7 +137,8 @@ class FullBackupTests(unittest.TestCase):
         所以多出来的成员会被安全忽略，而不是报错或把它写到别处。
         """
         fake_summary = BACKUP_DIR / "legacy-summary.sqlite3"
-        with sqlite3.connect(fake_summary) as connection:
+        # closing() 只负责关连接，第二个 connection 上下文负责提交（原来的 with sqlite3.connect(X) 只提交、不关闭）
+        with closing(sqlite3.connect(fake_summary)) as connection, connection:
             connection.execute("CREATE TABLE summaries(summary_id TEXT PRIMARY KEY)")
         name = backup_service.create_full_backup("legacy", include_databases={
             "todo.sqlite3": Path(storage.DATABASE_FILE),
@@ -265,3 +267,9 @@ class DailySnapshotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

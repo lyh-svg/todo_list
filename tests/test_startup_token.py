@@ -167,11 +167,49 @@ class StartupTokenTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         printed = result.stdout.strip().splitlines()[-1]
-        self.assertIn("?token=", printed, printed)
-        token = printed.split("?token=", 1)[1].strip()
+        self.assertIn("#token=", printed, printed)
+        self.assertNotIn("?token=", printed, "token 不能再拼进查询串（会进访问日志）")
+        token = printed.split("#token=", 1)[1].strip()
         self.assertEqual(token, TOKEN_A, "脚本从 token 文件读到的不是活实例的 token")
         self.assertEqual(self.call_projects(token), 200,
                          "脚本打印的 token 被活实例拒绝 → 浏览器打开就是 401")
+
+    def test_startup_url_and_access_log_do_not_leak_the_token(self) -> None:
+        """token 改走 fragment（浏览器不发 # 之后的内容），旧式 ?token= 请求行必须打码。"""
+        process = self.start_server(TOKEN_A)
+        self.wait_until_healthy()
+        # 旧式 URL：token 真的出现在请求行里，服务端日志必须把它抹掉
+        with urllib.request.urlopen(f"{self.url}/?token={TOKEN_A}", timeout=10) as response:
+            response.read()
+        process.terminate()
+        process.wait(timeout=10)
+        output = process.stdout.read().decode("utf-8", "replace") if process.stdout else ""
+
+        startup_lines = [line for line in output.splitlines() if "Todo AI running at" in line]
+        self.assertTrue(startup_lines, output)
+        self.assertIn("#token=", startup_lines[0], "启动打印必须用 fragment 形式")
+        self.assertNotIn("?token=", startup_lines[0], "启动打印不能再出现 ?token=")
+
+        access = "\n".join(line for line in output.splitlines() if "Todo AI running at" not in line)
+        self.assertIn("token=***", access, f"旧式 ?token= 请求行没有被打码：{access}")
+        self.assertNotIn(TOKEN_A, access, f"token 明文出现在访问日志里：{access}")
+
+    def test_sigterm_shuts_down_cleanly(self) -> None:
+        """后台启动（nohup … &）拿不到 Ctrl+C，SIGTERM 必须走完同一套收尾。
+
+        旧实现下 SIGTERM 是默认动作直接死掉：没有 Stopping 日志、token 文件也不删，
+        下一个启动脚本会读到一个死进程的 token。
+        """
+        process = self.start_server(TOKEN_A)
+        self.wait_until_healthy()
+        self.assertTrue(self.token_file.exists(), "活实例启动后必须写下 token 文件")
+
+        process.terminate()   # SIGTERM
+        process.wait(timeout=10)
+        output = process.stdout.read().decode("utf-8", "replace") if process.stdout else ""
+
+        self.assertIn("Stopping Todo AI.", output, f"SIGTERM 没有走收尾路径：\n{output}")
+        self.assertFalse(self.token_file.exists(), "SIGTERM 收尾没有删掉 token 文件")
 
 
 if __name__ == "__main__":

@@ -193,7 +193,6 @@ def main() -> int:
             for suffix in ("", "-wal", "-shm"):
                 Path(f"{work}/todo.sqlite3{suffix}").unlink(missing_ok=True)
                 Path(f"{work}/memo.sqlite3{suffix}").unlink(missing_ok=True)
-                Path(f"{work}/summary.sqlite3{suffix}").unlink(missing_ok=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

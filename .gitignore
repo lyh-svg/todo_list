@@ -19,17 +19,15 @@ node_modules/
 .playwright-libs/
 
 # ===== 个人数据与数据库(勿提交) =====
+# data/ 整体忽略：数据库与个人数据一律不进仓库。
+# 注意：git 不会在被排除的目录里再重新包含文件，所以这里不要写 !data/xxx.sqlite3 这种否定。
+# 需要临时把数据库写进一次快照时用 ./db-snapshot.sh 「说明」 sqlite（脚本内部用 git add -f）。
 data/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
 *.b64.txt
 *.db
-
-# 但保留 data 下的这三个特定文件
-!data/memo.sqlite3
-!data/summary.sqlite3
-!data/todo.sqlite3
 
 # ===== 日志/临时 =====
 *.log

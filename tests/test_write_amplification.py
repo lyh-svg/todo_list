@@ -282,3 +282,9 @@ class WriteAmplificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

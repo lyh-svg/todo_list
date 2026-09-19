@@ -9,6 +9,7 @@ import hmac
 import os
 import re
 import secrets
+import signal
 import sqlite3
 import sys
 import threading
@@ -99,6 +100,7 @@ delete_backup = backup_service.delete_backup
 check_database_integrity = storage_service.check_database_integrity
 checkpoint_database = storage_service.checkpoint_database
 list_trash_items = storage_service.list_trash_items
+count_trash_items = storage_service.count_trash_items
 trash_item_ids = storage_service.trash_item_ids
 restore_trash_items = storage_service.restore_trash_items
 delete_trash_items = storage_service.delete_trash_items
@@ -114,6 +116,11 @@ call_deepseek = ai_service.call_deepseek
 call_question = ai_service.call_question
 
 
+def trash_items_payload() -> dict[str, Any]:
+    """回收站动作后的刷新体：只回第一页 + 总数，剩下的由前端"加载更多"继续拉。"""
+    return {"items": list_trash_items(), "total": count_trash_items()}
+
+
 def touch_heartbeat() -> None:
     global _last_heartbeat
     with _heartbeat_lock:
@@ -123,6 +130,16 @@ def touch_heartbeat() -> None:
 def valid_session(request: SimpleHTTPRequestHandler) -> bool:
     supplied = request.headers.get("X-Todo-Session", "")
     return bool(SESSION_TOKEN) and hmac.compare_digest(supplied, SESSION_TOKEN)
+
+
+def _sigterm_means_stop(signum: int, frame: Any) -> None:
+    """SIGTERM 也走和 Ctrl+C 同一条收尾路径（删 token 文件、checkpoint WAL）。
+
+    后台启动（open-ai-list.sh 用 nohup … &）拿不到 Ctrl+C，而 POSIX 规定非交互 shell 的
+    后台进程会把 SIGINT 设成忽略 —— 能用的停止信号就只剩 SIGTERM。它的默认动作是直接
+    终止进程，`finally` 里的收尾会被整个跳过（实测会留下陈旧的 token 文件与未 checkpoint 的 WAL）。
+    """
+    raise KeyboardInterrupt
 
 
 def idle_shutdown_monitor(server: ThreadingHTTPServer) -> None:
@@ -178,6 +195,19 @@ def optional_iso_date(value: str) -> str:
     return text
 
 
+TOKEN_IN_URL = re.compile(r"([?&#](?:token|code)=)[^&\s#]+")
+
+
+def redact_session_token(text: str) -> str:
+    """抹掉日志里的会话 token。
+
+    token 现在走 URL fragment（`/#token=…`），浏览器不会把 fragment 发给服务端，
+    所以正常启动路径下它根本不会出现在请求行里；但旧的 `?token=…` 链接、用户手拼的 URL
+    仍可能进来，访问日志（open-ai-list.sh 落在 /tmp/todo-list-ai.log）不能留这种明文凭据。
+    """
+    return TOKEN_IN_URL.sub(r"\1***", text)
+
+
 class TodoHandler(SimpleHTTPRequestHandler):
     server_version = "TodoAI/1.0"
     # 客户端声明了 Content-Length 却中断发送时，读操作不能永远挂住这个线程。
@@ -186,7 +216,9 @@ class TodoHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         if self.path == "/api/heartbeat":
             return
-        super().log_message(format, *args)
+        # 请求行是原样写进日志的，先打码再交给父类格式化。
+        message = redact_session_token(format % args) if args else str(format)
+        super().log_message("%s", message)
 
     def handle_one_request(self) -> None:
         # _cache_control 是实例属性，必须在每个请求开始时重置：
@@ -249,17 +281,6 @@ class TodoHandler(SimpleHTTPRequestHandler):
             with path.open("rb") as source:
                 while chunk := source.read(1024 * 1024):
                     self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError):
-            self.close_connection = True
-
-    def send_blob(self, payload: bytes, content_type: str, file_name: str) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", content_type or "application/octet-stream")
-        self.send_header("X-File-Name", urllib.parse.quote(file_name))
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        try:
-            self.wfile.write(payload)
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
@@ -629,7 +650,15 @@ class TodoHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/trash":
             try:
-                self.send_json(200, {"items": list_trash_items()})
+                params = query_params(self)
+                limit = int_param(params, "limit", required=False,
+                                  default=storage_service.MAX_TRASH_LIST)
+                offset = int_param(params, "offset", required=False, default=0)
+                self.send_json(200, {"items": list_trash_items(limit, offset),
+                                     "total": count_trash_items()})
+            except ValueError as error:
+                # limit/offset 非法 → 400；漏了这一步就会变成"空回复"（本仓库明令禁止）
+                self.send_json(400, {"error": str(error)})
             except (OSError, sqlite3.Error, RuntimeError) as error:
                 self.send_json(500, {"error": f"读取回收站失败：{error}"})
             return
@@ -972,7 +1001,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         context=str(item.get("context") or ""),
                         revision=int(item.get("revision") or 0),
                     )
-                    self.send_json(200, {"ok": True, "item": saved, "items": list_trash_items()})
+                    self.send_json(200, {"ok": True, "item": saved, **trash_items_payload()})
                 elif action == "restore":
                     trash_id = str(payload.get("id") or "")
                     # 存在性只看这一条：以前是 list_trash_items() 全量列一遍再线性查
@@ -980,14 +1009,14 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         self.send_json(404, {"error": "回收站条目不存在"})
                         return
                     result = restore_trash_item(trash_id)
-                    self.send_json(200, {"ok": True, "item": result, "items": list_trash_items(), "projects": read_project_summaries()})
+                    self.send_json(200, {"ok": True, "item": result, **trash_items_payload(), "projects": read_project_summaries()})
                 elif action == "delete":
                     trash_id = str(payload.get("id") or "")
                     if not trash_id or trash_id not in trash_item_ids([trash_id]):
                         self.send_json(404, {"error": "回收站条目不存在"})
                         return
                     delete_trash_item(trash_id)
-                    self.send_json(200, {"ok": True, "items": list_trash_items()})
+                    self.send_json(200, {"ok": True, **trash_items_payload()})
                 elif action in {"restore-many", "delete-many"}:
                     ids = payload.get("ids")
                     if not isinstance(ids, list) or not ids:
@@ -999,14 +1028,14 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         return
                     if action == "restore-many":
                         result = restore_trash_items(ids)
-                        self.send_json(200, {"ok": True, **result, "items": list_trash_items(),
+                        self.send_json(200, {"ok": True, **result, **trash_items_payload(),
                                              "projects": read_project_summaries()})
                     else:
                         result = delete_trash_items(ids)
-                        self.send_json(200, {"ok": True, **result, "items": list_trash_items()})
+                        self.send_json(200, {"ok": True, **result, **trash_items_payload()})
                 elif action == "purge":
                     removed = clear_trash_items()
-                    self.send_json(200, {"ok": True, "purged": removed, "items": list_trash_items()})
+                    self.send_json(200, {"ok": True, "purged": removed, **trash_items_payload()})
                 else:
                     raise ValueError("不支持的回收站操作")
             elif path == "/api/project/plan":
@@ -1087,6 +1116,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
 def main() -> None:
     os.umask(0o077)
     harden_storage_permissions()
+    ai_service.harden_config_permissions()
     if not check_database_integrity():
         raise RuntimeError(
             f"SQLite integrity check failed; restore a backup from {BACKUP_DIR}"
@@ -1114,9 +1144,11 @@ def main() -> None:
     SESSION_TOKEN_FILE.write_text(SESSION_TOKEN, encoding="utf-8")
     SESSION_TOKEN_FILE.chmod(0o600)
     threading.Thread(target=idle_shutdown_monitor, args=(server,), daemon=True).start()
-    print(f"Todo AI running at http://{HOST}:{PORT}/?token={SESSION_TOKEN}")
+    print(f"Todo AI running at http://{HOST}:{PORT}/#token={SESSION_TOKEN}")
     if not read_settings().get("DEEPSEEK_API_KEY"):
         print(f"Set DEEPSEEK_API_KEY in {CONFIG_FILE}; the file is reloaded for every assessment.")
+    # 服务已经建好、token 文件也写下之后再接管 SIGTERM：收尾逻辑与 Ctrl+C 完全共用。
+    signal.signal(signal.SIGTERM, _sigterm_means_stop)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -361,6 +361,26 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("error", bad)
 
+    def test_trash_list_supports_paging_and_total(self) -> None:
+        for index in range(3):
+            storage.store_trash_item("node", "p1", f"删除的条目 {index}",
+                                     {"id": f"gone{index}", "type": "item"})
+        status, payload = self.json_call("GET", "/api/trash?limit=2")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["items"]), 2)
+        self.assertEqual(payload["total"], 3)
+        status, second = self.json_call("GET", "/api/trash?limit=2&offset=2")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(second["items"]), 1)
+        self.assertEqual(second["total"], 3)
+        first_ids = {item["id"] for item in payload["items"]}
+        second_ids = {item["id"] for item in second["items"]}
+        self.assertEqual(first_ids & second_ids, set(), "两页不能重复")
+        self.assertEqual(len(first_ids | second_ids), 3, "两页必须覆盖全部条目")
+        status, bad = self.json_call("GET", "/api/trash?limit=abc")
+        self.assertEqual(status, 400, "非法 limit 要 400，不能变成空回复")
+        self.assertIn("error", bad)
+
     def test_oversized_post_gets_json_413(self) -> None:
         """声明超过上限的请求也必须拿到 JSON 413（而不是连接重置）。"""
         status, payload = self.call("POST", "/api/evaluate", b"{}", {
@@ -402,3 +422,9 @@ class HttpLayerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

@@ -40,9 +40,10 @@ fi
 SESSION_TOKEN="$(cat -- "$TOKEN_FILE")"
 
 if [ "${TODO_NO_BROWSER:-0}" = "1" ]; then
-    echo "${URL}/?token=${SESSION_TOKEN}"
+    # token 放 fragment（#）：浏览器不会把 # 后面的内容发给服务端，token 因此不进访问日志。
+    echo "${URL}/#token=${SESSION_TOKEN}"
 elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "${URL}/?token=${SESSION_TOKEN}" >/dev/null 2>&1 &
+    xdg-open "${URL}/#token=${SESSION_TOKEN}" >/dev/null 2>&1 &
 else
     echo "请重新运行本脚本自动打开受保护的页面"
 fi

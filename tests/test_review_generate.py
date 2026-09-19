@@ -5,6 +5,8 @@
 
 运行：python3 -m unittest tests.test_review_generate -v
 """
+import contextlib
+import io
 import json
 import os
 import sys
@@ -259,11 +261,16 @@ class ReviewGenerateAiTests(unittest.TestCase):
                       generated[0]["taskRefs"])
 
     def test_real_branch_failure_returns_empty_without_network(self) -> None:
+        stderr = io.StringIO()
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key", "TODO_AI_MOCK": ""}, clear=False):
             with mock.patch.object(ai_service, "_post_json",
                                    side_effect=RuntimeError("DeepSeek API 返回 429")):
-                self.assertEqual(ai_service.generate_review_points(
-                    task_id="1301", project_id="", task_text="闭包"), [])
+                with contextlib.redirect_stderr(stderr):
+                    self.assertEqual(ai_service.generate_review_points(
+                        task_id="1301", project_id="", task_text="闭包"), [])
+        # 失败要留下原因，否则现场只剩"没生成出来"，无法排查（服务端日志是唯一出口）
+        self.assertIn("1301", stderr.getvalue())
+        self.assertIn("429", stderr.getvalue())
 
     def test_real_branch_cannot_leak_unparseable_points(self) -> None:
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key", "TODO_AI_MOCK": ""}, clear=False):
@@ -537,3 +544,9 @@ class ReviewGenerateHttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP.cleanup()

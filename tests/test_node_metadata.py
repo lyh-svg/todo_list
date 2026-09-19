@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -63,7 +64,8 @@ class SchemaMigrationTests(unittest.TestCase):
         with storage.open_state_database() as connection:
             connection.execute("PRAGMA user_version=5")
         storage.replace_projects([make_project()])
-        with sqlite3.connect(DB) as connection:
+        # closing() 只负责关连接，第二个 connection 上下文负责提交（原来的 with sqlite3.connect(X) 只提交、不关闭）
+        with closing(sqlite3.connect(DB)) as connection, connection:
             connection.execute("UPDATE nodes SET completed=1, completed_at='2026-09-10T08:00:00'")
             connection.execute("UPDATE nodes SET review_due='2026-09-20'")
             connection.execute("PRAGMA user_version=5")
@@ -71,12 +73,12 @@ class SchemaMigrationTests(unittest.TestCase):
         storage.ensure_schema()
 
         self.assertEqual(storage.database_user_version(), storage.SCHEMA_VERSION)
-        with sqlite3.connect(DB) as connection:
+        with closing(sqlite3.connect(DB)) as connection, connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
         for column in ("priority", "due_date", "estimate_minutes", "tags", "note", "links"):
             self.assertIn(column, columns, f"v5 → v6 迁移必须补上 {column}")
         project_columns = None
-        with sqlite3.connect(DB) as connection:
+        with closing(sqlite3.connect(DB)) as connection, connection:
             project_columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
         self.assertIn("archived", project_columns)
         self.assertIn("last_opened_at", project_columns)
@@ -93,7 +95,7 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(item.get("links", []), [])
 
     def test_indexes_created(self) -> None:
-        with sqlite3.connect(DB) as connection:
+        with closing(sqlite3.connect(DB)) as connection, connection:
             names = {row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='index'")}
         for index in ("idx_nodes_due", "idx_nodes_priority", "idx_projects_archived"):
@@ -223,3 +225,9 @@ class MetadataValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

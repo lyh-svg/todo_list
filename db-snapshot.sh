@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # db-snapshot.sh：一键 暂存+提交+推送（只作用于当前所在分支）
-#   ./db-snapshot.sh "说明" push          不含三个数据库
-#   ./db-snapshot.sh "说明" sqlite push    包含三个数据库(记录后自动恢复不跟踪)
+#   ./db-snapshot.sh "说明" push          不含数据库
+#   ./db-snapshot.sh "说明" sqlite push    包含两个数据库(记录后自动恢复不跟踪)
 #   ./db-snapshot.sh status / untrack      辅助
 set -euo pipefail
 cd "$(dirname "$0")"
-FILES=(data/todo.sqlite3 data/memo.sqlite3 data/summary.sqlite3)
+FILES=(data/todo.sqlite3 data/memo.sqlite3)
 now() { date +%Y-%m-%d; }
 BR="$(git branch --show-current)"
 tracked() { git ls-files -- "${FILES[@]}"; }

@@ -118,7 +118,10 @@ class ServerProcess:
             with urllib.request.urlopen(request, timeout=15) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            return error.code, json.loads(error.read().decode("utf-8") or "{}")
+            try:
+                return error.code, json.loads(error.read().decode("utf-8") or "{}")
+            finally:
+                error.close()   # 不关会在 GC 时发 ResourceWarning
 
     def stop(self) -> None:
         if self.process and self.process.poll() is None:
@@ -150,7 +153,7 @@ class BrowserServerFixtureTests(unittest.TestCase):
     def test_server_serves_health_and_index(self) -> None:
         with urllib.request.urlopen(f"{self.server.base}/api/health", timeout=10) as response:
             self.assertEqual(response.status, 200)
-        with urllib.request.urlopen(f"{self.server.base}/?token={TOKEN}", timeout=10) as response:
+        with urllib.request.urlopen(f"{self.server.base}/", timeout=10) as response:
             html = response.read().decode("utf-8")
         self.assertIn('id="newProjectInput"', html)
         self.assertIn("app.js?v=", html)
@@ -159,6 +162,7 @@ class BrowserServerFixtureTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(f"{self.server.base}/api/projects", timeout=10)
         self.assertEqual(ctx.exception.code, 401)
+        ctx.exception.close()   # HTTPError 是文件对象，不关会在 GC 时发 ResourceWarning
 
     def test_temp_database_is_used(self) -> None:
         """绝不能在真实 data/ 上跑浏览器测试。"""
@@ -207,7 +211,7 @@ class BrowserFlowTests(unittest.TestCase):
         cls.dialogs: list[str] = []
         cls.page.on("pageerror", lambda error: cls.page_errors.append(str(error)))
         cls.page.on("dialog", cls._on_dialog)
-        cls.page.goto(f"{cls.server.base}/?token={TOKEN}")
+        cls.page.goto(f"{cls.server.base}/#token={TOKEN}")
 
     @classmethod
     def _on_dialog(cls, dialog) -> None:
@@ -236,6 +240,37 @@ class BrowserFlowTests(unittest.TestCase):
         self.page.evaluate("document.getElementById('moreTools').open = true")
 
     # ---------- 流程 ----------
+    def test_00_fragment_token_is_scrubbed_from_the_address_bar(self) -> None:
+        """setUpClass 用 `/#token=…` 打开：token 要被收下，并从地址栏/历史里消失。
+
+        这是"token 不再出现在 URL（也就不会进浏览器历史与访问日志）"的真实浏览器证明。
+        """
+        self.assertNotIn("token", self.page.url, self.page.url)
+        self.assertEqual(self.page.evaluate("window.location.search"), "")
+        self.assertEqual(self.page.evaluate("window.location.hash"), "")
+        self.assertEqual(self.page.evaluate("window.sessionStorage.getItem('todo_list_session_token')"),
+                         TOKEN)
+        status = self.page.evaluate(
+            "async () => (await fetch('/api/projects', {cache: 'no-store', "
+            "headers: {'X-Todo-Session': window.sessionStorage.getItem('todo_list_session_token')}})).status")
+        self.assertEqual(status, 200, "页面收下的 token 必须被服务端接受")
+
+    def test_09_legacy_query_token_url_still_works(self) -> None:
+        """老的 `?token=…` 链接不能变砖（书签/旧脚本），同样要把 token 从地址栏抹掉。
+
+        用独立页面跑，避免影响共享页面上按顺序执行的流程用例。
+        """
+        page = self.context.new_page()
+        try:
+            page.goto(f"{self.server.base}/?token={TOKEN}")
+            page.wait_for_function(
+                "window.sessionStorage.getItem('todo_list_session_token') === 'browser-smoke-token'")
+            self.assertNotIn("token", page.url, page.url)
+            self.assertEqual(page.evaluate("window.location.search"), "")
+            self.assertEqual(page.evaluate("window.location.hash"), "")
+        finally:
+            page.close()
+
     def test_01_new_project(self) -> None:
         """新建项目：输入名称 → 点按钮 → 卡片出现。"""
         self.page.wait_for_selector("#newProjectInput")

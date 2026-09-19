@@ -228,6 +228,7 @@ class URLSearchParamsStub {
     }
     get(name) { return this.params.has(name) ? this.params.get(name) : null; }
     set(name, value) { this.params.set(name, String(value)); }
+    delete(name) { this.params.delete(name); }
     toString() { return [...this.params].map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&'); }
 }
 
@@ -333,6 +334,8 @@ let generateFails = false;
 // 置 true 后 /api/node/patch 返回 409：断言节点级保存冲突时会提示并回退为整项目保存。
 // （callApi 以前不透出 response.status，saveNodeChange 的 409 分支是死代码。）
 let patchConflict = false;
+// 非 null 时 /api/trash 的 GET 按 offset 分页返回这份夹具（每页 2 条 + total）：验证「加载更多」。
+let trashFixture = null;
 async function fetchStub(url, options = {}) {
     const path = String(url).split('?')[0];
     fetchLog.push(`${options.method || 'GET'} ${path}`);
@@ -407,7 +410,12 @@ async function fetchStub(url, options = {}) {
         if ((options.method || 'GET') === 'POST') {
             return reply(200, { item: { id: 'trash-new', kind: 'node', title: '任务一' }, items: [] });
         }
-        return reply(200, { items: [] });
+        if (trashFixture) {
+            const query = new URLSearchParams(String(url).split('?')[1] || '');
+            const offset = Number(query.get('offset') || 0);
+            return reply(200, { items: trashFixture.slice(offset, offset + 2), total: trashFixture.length });
+        }
+        return reply(200, { items: [], total: 0 });
     }
     if (path === '/api/settings') return reply(200, { settings: {
         trashRetentionDays: 7, reviewDailyLimit: 10, reviewNewPerDay: 2 } });
@@ -527,9 +535,26 @@ async function fetchStub(url, options = {}) {
 // ---------------- 组装全局环境 ----------------
 const timers = [];
 let reloadCount = 0;
+// 页面用 fragment 里的 token 换会话（#token=… 不会发给服务端），启动时顺便把 token 从地址栏抹掉。
+// 桩以前是 `replaceState() {}` 空实现，这条路径根本没被覆盖到：这里让地址栏真的跟着变。
+const locationStub = {
+    protocol: 'http:', search: '?token=query-token&keep=1',
+    pathname: '/', hash: '#token=fragment-token',
+    href: 'http://127.0.0.1:8765/?token=query-token&keep=1#token=fragment-token',
+    reload() { reloadCount += 1; },
+};
 const windowStub = {
-    document: documentStub, location: { protocol: 'http:', search: '', pathname: '/', hash: '', href: 'http://127.0.0.1:8765/', reload() { reloadCount += 1; } },
-    history: { replaceState() {} },
+    document: documentStub, location: locationStub,
+    history: {
+        replaceState(state, title, url) {
+            if (typeof url !== 'string' || !url) return;
+            const parsed = new URL(url, locationStub.href);
+            locationStub.pathname = parsed.pathname;
+            locationStub.search = parsed.search;
+            locationStub.hash = parsed.hash;
+            locationStub.href = parsed.href;
+        },
+    },
     sessionStorage: storageStub(), localStorage: storageStub(),
     crypto: { randomUUID: () => `uuid-${++uuidCounter}` },
     fetch: fetchStub, Headers: HeadersStub, Notification: Object.assign(function Notification() {}, { permission: 'default', requestPermission: async () => 'granted' }),
@@ -622,6 +647,12 @@ function step(name, fn) {
 
 (async () => {
     await sleep(60);
+    check('会话 token：优先取 fragment、写进 sessionStorage、并从地址栏抹掉',
+        windowStub.sessionStorage.getItem('todo_list_session_token') === 'fragment-token'
+        && !locationStub.search.includes('token') && !locationStub.hash.includes('token')
+        && locationStub.search.includes('keep=1'),
+        JSON.stringify({ search: locationStub.search, hash: locationStub.hash,
+            token: windowStub.sessionStorage.getItem('todo_list_session_token') }));
     check('init() 之后恰好一个视图 active', activeViews().length === 1, JSON.stringify(activeViews()));
     check('启动拉取了项目列表与工作台所需接口', fetchLog.some(line => line.includes('/api/projects')), JSON.stringify(fetchLog.slice(0, 6)));
     check('设置面板有每日复习上限与新增名额输入框',
@@ -1480,6 +1511,39 @@ function step(name, fn) {
             !String(elementsById.get('toastMessage').textContent).includes('已生成'),
             String(elementsById.get('toastMessage').textContent));
     }
+
+    // ⑭ 回收站：分页 + 「加载更多」；同时覆盖"原项目已不存在 / 同 ID 冲突"的禁用条目
+    // （DOM 桩里 innerHTML='' 不会清空子节点，所以断言只看"最后一次渲染"的那份 DOM）
+    trashFixture = [
+        { id: 't1', kind: 'node', title: '回收站条目 1', projectId: 'p1', context: '第1周 / 单元1',
+          deletedAt: '2026-09-19T10:00:00', expiresAt: '2026-09-26T10:00:00', restoreTarget: 'original' },
+        { id: 't2', kind: 'node', title: '回收站条目 2', projectId: 'p-gone', context: '',
+          deletedAt: '2026-09-19T09:00:00', expiresAt: '2026-09-26T09:00:00', restoreTarget: 'unavailable' },
+        { id: 't3', kind: 'project', title: '回收站条目 3', projectId: 'p1', context: '',
+          deletedAt: '2026-09-19T08:00:00', expiresAt: '2026-09-26T08:00:00', restoreTarget: 'conflict' },
+    ];
+    const lastOf = predicate => findAll(elementsById.get('utilityBody'), predicate).slice(-1)[0];
+    const lastToolbar = () => textOf(lastOf(el => el.classList.contains('utility-toolbar')));
+    const lastList = () => textOf(lastOf(el => el.classList.contains('trash-list')));
+    step('点击「回收站」不抛异常', () => elementsById.get('openTrashBtn').dispatch('click'));
+    await sleep(60);
+    check('回收站首屏只渲染一页，总数显示全部',
+        lastToolbar().includes('共 3 条') && lastToolbar().includes('已显示 2 条'),
+        lastToolbar().slice(0, 160));
+    check('「原项目已不存在」的条目照样渲染（以前一条就让整个列表抛 TDZ 错）',
+        lastList().includes('原项目已不存在'), lastList().slice(0, 200));
+    const loadMoreBtn = lastOf(el => el.textContent === '加载更多');
+    check('首屏有「加载更多」按钮', Boolean(loadMoreBtn));
+    if (loadMoreBtn) step('点击「加载更多」不抛异常', () => loadMoreBtn.dispatch('click'));
+    await sleep(80);
+    check('加载更多把剩余条目追加进来（3 条 + 冲突提示）',
+        (lastList().match(/回收站条目/g) || []).length === 3
+        && lastList().includes('同 ID 的项目已存在'),
+        lastList().slice(0, 240));
+    check('全部加载后不再提示"已显示"',
+        !lastToolbar().includes('已显示') && lastToolbar().includes('共 3 条'),
+        lastToolbar().slice(0, 160));
+    trashFixture = null;
 
     await sleep(80);
     check('事件处理器里没有未处理的异步异常', asyncErrors.length === 0, asyncErrors.slice(0, 3).join(' || '));

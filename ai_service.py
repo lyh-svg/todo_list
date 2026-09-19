@@ -31,6 +31,17 @@ STREAM_SUFFIX_PROMPT = chr(10).join([
 
 MAX_CONVERSATION_MESSAGE_CHARS = 8000
 CONFIG_FILE = Path(os.environ.get("TODO_AI_ENV_FILE", str(APP_DIR / "deepseek.env"))).expanduser()
+
+
+def harden_config_permissions() -> None:
+    """Keep the plaintext API key file unreadable to other users (best effort)."""
+    try:
+        if CONFIG_FILE.exists():
+            CONFIG_FILE.chmod(0o600)
+    except OSError as error:
+        print(f"Unable to protect AI config file {CONFIG_FILE}: {error}", file=sys.stderr)
+
+
 CONFIG_KEYS = {
     "DEEPSEEK_API_KEY", "DEEPSEEK_API_URL", "DEEPSEEK_BASE_URL",
     "DEEPSEEK_FLASH_MODEL", "DEEPSEEK_PRO_MODEL",
@@ -725,7 +736,9 @@ def generate_review_points(*, task_id: str, project_id: str, task_text: str, cou
     }
     try:
         parsed = _post_json(settings, request_body)
-    except Exception:
+    except Exception as error:
+        # 生成点是可选增强，失败不该阻塞任务；但必须留下原因，否则现场只剩"没生成出来"。
+        print(f"Unable to generate review points for task {task_id}: {error}", file=sys.stderr)
         return []
     draft = parsed.get("points") if isinstance(parsed, dict) else None
     if not isinstance(draft, list):

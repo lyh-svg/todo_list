@@ -98,7 +98,7 @@ def _integrity_ok(path: Path) -> bool:
 
 
 def database_counts() -> dict[str, int]:
-    counts = {"projects": 0, "nodes": 0, "memos": 0, "summaries": 0}
+    counts = {"projects": 0, "nodes": 0, "memos": 0}
     try:
         with storage_service.open_state_database() as connection:
             counts["projects"] = int(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0])

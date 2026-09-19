@@ -44,8 +44,8 @@ jobs:
 
       - name: Python 语法检查
         run: |
-          python -m compileall -q storage.py local_server.py backup_service.py ai_service.py \
-            memo_storage.py summary_storage.py tests
+          python -m compileall -q db_support.py storage.py local_server.py backup_service.py ai_service.py \
+            memo_storage.py tests
 
       - name: Node 语法检查
         run: |

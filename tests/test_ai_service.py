@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -294,6 +295,7 @@ class StreamParsingTests(unittest.TestCase):
     def test_http_error_is_reported_with_status_and_body(self) -> None:
         error = urllib.error.HTTPError("http://x", 429, "Too Many Requests", {},
                                        __import__("io").BytesIO(b'{"error":"rate limit"}'))
+        self.addCleanup(error.close)   # HTTPError 是文件对象，不关会在 GC 时发 ResourceWarning
         with mock.patch.object(ai_service.urllib.request, "urlopen", side_effect=error):
             with self.assertRaises(RuntimeError) as ctx:
                 collect(ai_service.call_deepseek_stream(payload()))
@@ -437,6 +439,25 @@ class PlanTreeSafetyTests(unittest.TestCase):
         items = tree[0]["children"][0]["children"]
         self.assertTrue(items[0]["optional"])
         self.assertFalse(items[1]["optional"])
+
+
+class ConfigPermissionTests(unittest.TestCase):
+    """deepseek.env 存的是明文 API key：启动时要收紧权限，但失败不能拦住服务。"""
+
+    def test_existing_config_file_is_hardened(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="todo-ai-config-") as directory:
+            config = Path(directory) / "deepseek.env"
+            config.write_text("DEEPSEEK_API_KEY=sk-test\n", encoding="utf-8")
+            config.chmod(0o644)
+            with mock.patch.object(ai_service, "CONFIG_FILE", config):
+                ai_service.harden_config_permissions()
+            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(config.read_text(encoding="utf-8"), "DEEPSEEK_API_KEY=sk-test\n")
+
+    def test_missing_config_file_is_not_an_error(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="todo-ai-config-") as directory:
+            with mock.patch.object(ai_service, "CONFIG_FILE", Path(directory) / "missing.env"):
+                ai_service.harden_config_permissions()
 
 
 if __name__ == "__main__":

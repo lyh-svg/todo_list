@@ -85,6 +85,24 @@ class RepeatRuleMathTests(unittest.TestCase):
                      {"freq": "monthly", "day": 0}, {"freq": "monthly", "day": 40}, "每天"):
             self.assertEqual(storage.next_repeat_due(rule, "2026-09-15"), "", f"{rule} 应视为非法")
 
+    def test_format_repeat_text_covers_every_frequency(self) -> None:
+        # 导出（Markdown/CSV）里"周期 …"这一列就是它，中文星期映射写错不会报错、只会导错。
+        cases = [
+            ({"freq": "daily"}, "每天"),
+            ({"freq": "daily", "interval": 1}, "每天"),
+            ({"freq": "daily", "interval": 0}, "每天"),
+            ({"freq": "daily", "interval": 7}, "每 7 天"),
+            ({"freq": "weekday"}, "每个工作日"),
+            ({"freq": "weekly", "weekday": 0}, "每周日"),
+            ({"freq": "weekly", "weekday": 1}, "每周一"),
+            ({"freq": "weekly", "weekday": 6}, "每周六"),
+            ({"freq": "monthly", "day": 15}, "每月 15 日"),
+            ({"freq": "monthly", "day": 31}, "每月 31 日"),
+            ({"freq": "hourly"}, "hourly"),   # 未知频率原样回显，不能抛
+        ]
+        for rule, expected in cases:
+            self.assertEqual(storage.format_repeat_text(rule), expected, rule)
+
 
 class RepeatStorageTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -284,3 +302,9 @@ class RepeatStorageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

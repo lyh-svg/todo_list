@@ -14,8 +14,9 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
+from unittest import mock
 
 APP_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_DIR))
@@ -110,12 +111,13 @@ def reset_storage_database() -> None:
 
 
 def scalar(query: str) -> object:
-    with sqlite3.connect(storage.DATABASE_FILE) as connection:
+    # closing() 只负责关连接，第二个 connection 上下文负责提交（原来的 with sqlite3.connect(X) 只提交、不关闭）
+    with closing(sqlite3.connect(storage.DATABASE_FILE)) as connection, connection:
         return connection.execute(query).fetchone()[0]
 
 
 def table_names() -> set[str]:
-    with sqlite3.connect(storage.DATABASE_FILE) as connection:
+    with closing(sqlite3.connect(storage.DATABASE_FILE)) as connection, connection:
         return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
@@ -257,5 +259,59 @@ class MemoBootstrapTests(unittest.TestCase):
         self.assertGreaterEqual(ddl_count(statements), 1, "删库重建后要重新建表")
 
 
+class ConnectionCleanupTests(unittest.TestCase):
+    """建好连接之后、返回之前抛异常时，open_*_database() 必须自己把连接关掉。
+
+    恢复一个"非 SQLite 文件"的坏备份会走这条路：调用方根本拿不到连接对象，
+    句柄只能留到 GC（发 ResourceWarning；Windows 上还会挡住随后的文件替换）。
+    """
+
+    def _track_connections(self, module) -> list:
+        created = []
+        managed = module._ManagedConnection
+
+        class Tracked(managed):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.closed = False
+                created.append(self)
+
+            def close(self):
+                self.closed = True
+                super().close()
+
+        self.addCleanup(lambda: setattr(module, "_ManagedConnection", managed))
+        module._ManagedConnection = Tracked
+        return created
+
+    def test_bad_state_database_file_closes_the_connection(self) -> None:
+        created = self._track_connections(storage)
+        broken = Path(_TEMP_DIR.name) / "broken-todo.sqlite3"
+        broken.write_bytes(b"this-is-not-a-sqlite-file")
+        with mock.patch.object(storage, "DATABASE_FILE", broken):
+            with self.assertRaises(sqlite3.DatabaseError):
+                storage.open_state_database()
+        self.assertTrue(created, "这个用例必须真的建立过连接")
+        self.assertTrue(all(connection.closed for connection in created),
+                        "异常路径把连接留着没关，句柄一直要等到 GC")
+
+    def test_bad_memo_database_file_closes_the_connection(self) -> None:
+        created = self._track_connections(memo_storage)
+        broken = Path(_TEMP_DIR.name) / "broken-memo.sqlite3"
+        broken.write_bytes(b"this-is-not-a-sqlite-file")
+        with mock.patch.object(memo_storage, "MEMO_DATABASE_FILE", broken):
+            with self.assertRaises(sqlite3.DatabaseError):
+                memo_storage.open_memo_database()
+        self.assertTrue(created, "这个用例必须真的建立过连接")
+        self.assertTrue(all(connection.closed for connection in created),
+                        "异常路径把连接留着没关，句柄一直要等到 GC")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

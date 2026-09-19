@@ -106,6 +106,25 @@ class TrashBatchTests(unittest.TestCase):
         self.assertEqual(removed, 2)
         self.assertEqual(storage.list_trash_items(), [])
 
+    def test_list_is_paged_with_a_total(self) -> None:
+        """删掉整棵大项目会一次塞进上千条：列表只给一页，总数另外给。"""
+        for index in range(3):
+            self._trash_one(f"p{index}", f"项目{index}")
+
+        self.assertEqual(storage.count_trash_items(), 3)
+        first = storage.list_trash_items(limit=2)
+        second = storage.list_trash_items(limit=2, offset=2)
+        self.assertEqual(len(first), 2)
+        self.assertEqual(len(second), 1)
+        # 两页拼起来必须等于不分页时的顺序，且不重不漏
+        self.assertEqual([item["id"] for item in first + second],
+                         [item["id"] for item in storage.list_trash_items()])
+        self.assertEqual(storage.list_trash_items(limit=0), [])
+        # 负数按空处理，绝不能被当成"全量返回"
+        self.assertEqual(storage.list_trash_items(limit=-5), [])
+        self.assertEqual([item["id"] for item in storage.list_trash_items(offset=-5)],
+                         [item["id"] for item in storage.list_trash_items()])
+
     def test_deleted_project_payload_is_restorable_with_tree(self) -> None:
         """回收站里的项目必须是完整树，恢复后节点一个不少。"""
         trash_id = self._trash_one("p1", "带树的项目")
@@ -119,3 +138,9 @@ class TrashBatchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

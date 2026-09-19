@@ -6,9 +6,10 @@ import os
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from db_support import ManagedConnection as _ManagedConnection, now_iso as _now
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -27,18 +28,6 @@ class MemoConflictError(RuntimeError):
 
 class MemoSchemaVersionError(RuntimeError):
     """备忘录库 schema 高于本程序支持：拒绝打开，绝不降级。"""
-class _ManagedConnection(sqlite3.Connection):
-    """with 块结束时真正关闭连接。
-
-    sqlite3 的上下文管理器只负责提交/回滚，不关闭连接；不关会留下未释放的句柄
-    （表现为 ResourceWarning）。这里统一在 __exit__ 里关闭。
-    """
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        try:
-            return bool(super().__exit__(exc_type, exc, tb))
-        finally:
-            self.close()
 
 
 _memo_lock = threading.RLock()
@@ -51,10 +40,6 @@ def memo_lock() -> threading.RLock:
     getattr 链去猜锁名，改名就会静默拿不到锁。
     """
     return _memo_lock
-
-
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def _safe_text(value: Any, fallback: str = "") -> str:
@@ -81,49 +66,54 @@ def open_memo_database() -> sqlite3.Connection:
     """
     MEMO_DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(MEMO_DATABASE_FILE, timeout=10, factory=_ManagedConnection)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys=ON")
-    stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if stored_version > MEMO_SCHEMA_VERSION:
-        connection.close()
-        raise MemoSchemaVersionError(
-            f"备忘录库 schema 版本为 {stored_version}，高于本程序支持的 {MEMO_SCHEMA_VERSION}；请升级程序"
-        )
-    signature = _memo_file_signature()
-    with _memo_schema_ready_lock:
-        ready = _memo_schema_ready.get(str(MEMO_DATABASE_FILE)) == (signature, stored_version)
-    if not ready:
-        try:
-            MEMO_DATABASE_FILE.parent.chmod(0o700)
-        except OSError:
-            pass
-        try:
-            MEMO_DATABASE_FILE.chmod(0o600)
-        except OSError:
-            pass
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS memos (
-                memo_id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                pinned INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                revision INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_memos_order
-                ON memos(pinned DESC, updated_at DESC, memo_id);
-            """
-        )
-        connection.execute(f"PRAGMA user_version={MEMO_SCHEMA_VERSION}")
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if stored_version > MEMO_SCHEMA_VERSION:
+            raise MemoSchemaVersionError(
+                f"备忘录库 schema 版本为 {stored_version}，高于本程序支持的 {MEMO_SCHEMA_VERSION}；请升级程序"
+            )
+        signature = _memo_file_signature()
         with _memo_schema_ready_lock:
-            _memo_schema_ready[str(MEMO_DATABASE_FILE)] = (
-                signature, int(connection.execute("PRAGMA user_version").fetchone()[0]))
-    connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("PRAGMA busy_timeout=10000")
-    return connection
+            ready = _memo_schema_ready.get(str(MEMO_DATABASE_FILE)) == (signature, stored_version)
+        if not ready:
+            try:
+                MEMO_DATABASE_FILE.parent.chmod(0o700)
+            except OSError:
+                pass
+            try:
+                MEMO_DATABASE_FILE.chmod(0o600)
+            except OSError:
+                pass
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS memos (
+                    memo_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_memos_order
+                    ON memos(pinned DESC, updated_at DESC, memo_id);
+                """
+            )
+            connection.execute(f"PRAGMA user_version={MEMO_SCHEMA_VERSION}")
+            with _memo_schema_ready_lock:
+                _memo_schema_ready[str(MEMO_DATABASE_FILE)] = (
+                    signature, int(connection.execute("PRAGMA user_version").fetchone()[0]))
+        connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("PRAGMA busy_timeout=10000")
+        return connection
+    except BaseException:
+        # 与 storage.open_state_database 同样的道理：建好连接之后、返回之前抛异常时，
+        # 调用方拿不到连接对象，必须在这里自己关掉（坏库文件 / 版本不符 / 建表失败）。
+        connection.close()
+        raise
 
 
 def initialize() -> None:

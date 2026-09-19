@@ -509,6 +509,98 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
         [sys.executable, "-m", "unittest",
          "tests.test_node_patch.NodePatchTests.test_null_completed_at_is_stored_as_empty_string"],
     ),
+    (
+        "启动时必须收紧 deepseek.env 权限（明文密钥）",
+        "ai_service.py",
+        crlf("        if CONFIG_FILE.exists():\n            CONFIG_FILE.chmod(0o600)\n"),
+        crlf("        if CONFIG_FILE.exists():\n            pass\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_ai_service.ConfigPermissionTests.test_existing_config_file_is_hardened"],
+    ),
+    (
+        "生成复习点失败必须打日志（不能再静默返回空）",
+        "ai_service.py",
+        crlf('        print(f"Unable to generate review points for task {task_id}: {error}", file=sys.stderr)\n'),
+        crlf("        pass\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_review_generate.ReviewGenerateAiTests.test_real_branch_failure_returns_empty_without_network"],
+    ),
+    (
+        "读项目时对话必须按 node_id 分组（一次取回也不能让节点之间串台）",
+        "storage.py",
+        crlf('            messages_by_node.setdefault(str(message_row["node_id"]), []).append(message_row)\n'),
+        crlf("            messages_by_node.setdefault(project_id, []).append(message_row)\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_assessment_conversations.AssessmentConversationTests.test_batch_read_equals_per_node_query"],
+    ),
+    (
+        "回收站列表必须真的分页（改回全量返回必须被发现）",
+        "storage.py",
+        crlf('            "FROM trash_items ORDER BY deleted_at DESC,trash_id LIMIT ? OFFSET ?",\n'),
+        crlf('            "FROM trash_items ORDER BY deleted_at DESC,trash_id LIMIT -1 OFFSET ?",\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_http_layer.HttpLayerTests.test_trash_list_supports_paging_and_total"],
+    ),
+    (
+        "回收站条目渲染不能在使用 restoreBtn 之前就访问它（TDZ 会让整个列表空掉）",
+        "js/app.js",
+        crlf("            const actions = document.createElement('div');\n"
+             "            actions.className = 'trash-actions';\n"
+             "            const restoreBtn = document.createElement('button');\n"),
+        crlf("            const actions = document.createElement('div');\n"
+             "            actions.className = 'trash-actions';\n"
+             "            if (item.restoreTarget === 'unavailable') { restoreBtn.disabled = true; }\n"
+             "            const restoreBtn = document.createElement('button');\n"),
+        ["node", "tests/frontend/dom-smoke.js"],
+    ),
+    (
+        "会话 token 必须支持 fragment 形式（#token= 不进服务端日志）",
+        "js/app.js",
+        crlf("        const tokenFromUrl = hash.get('token') || search.get('token') || '';\n"),
+        crlf("        const tokenFromUrl = search.get('token') || '';\n"),
+        ["node", "tests/frontend/dom-smoke.js"],
+    ),
+    (
+        "访问日志里的 ?token= 必须打码",
+        "local_server.py",
+        crlf("        message = redact_session_token(format % args) if args else str(format)\n"
+             '        super().log_message("%s", message)\n'),
+        crlf("        super().log_message(format, *args)\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_startup_token.StartupTokenTests.test_startup_url_and_access_log_do_not_leak_the_token"],
+    ),
+    (
+        "启动脚本必须把 token 放 fragment（不能拼进查询串）",
+        "open-ai-list.sh",
+        '    echo "${URL}/#token=${SESSION_TOKEN}"\n',
+        '    echo "${URL}/?token=${SESSION_TOKEN}"\n',
+        [sys.executable, "-m", "unittest",
+         "tests.test_startup_token.StartupTokenTests.test_launcher_reads_token_the_live_server_accepts"],
+    ),
+    (
+        "主库建连接后抛异常时必须自己关掉连接（否则句柄漏到 GC）",
+        "storage.py",
+        crlf("        connection.close()\n        raise\n"),
+        crlf("        raise\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_open_overhead.ConnectionCleanupTests.test_bad_state_database_file_closes_the_connection"],
+    ),
+    (
+        "备忘录库建连接后抛异常也必须关掉连接",
+        "memo_storage.py",
+        crlf("        connection.close()\n        raise\n"),
+        crlf("        raise\n"),
+        [sys.executable, "-m", "unittest",
+         "tests.test_open_overhead.ConnectionCleanupTests.test_bad_memo_database_file_closes_the_connection"],
+    ),
+    (
+        "SIGTERM 必须走完收尾（后台启动唯一的停止信号）",
+        "local_server.py",
+        crlf("    signal.signal(signal.SIGTERM, _sigterm_means_stop)\n"),
+        "",
+        [sys.executable, "-m", "unittest",
+         "tests.test_startup_token.StartupTokenTests.test_sigterm_shuts_down_cleanly"],
+    ),
 ]
 
 

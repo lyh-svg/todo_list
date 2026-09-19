@@ -204,6 +204,7 @@ let knowledgePoints = [];
     let assessmentDraftTimer = null;
     let assessmentFileSummary = '';
     let trashItems = [];
+    let trashTotal = 0;
     let dirtyProjectIds = new Set();
     // 当前这轮渲染出来的节点行：nodeId -> { node, li, row, textSpan }。
     // 事件委托靠它从 event.target 反查到节点对象（每次 renderDetail 重建）。
@@ -218,7 +219,11 @@ let knowledgePoints = [];
     const batchState = { active: false, selected: new Set() };
 
     function initializeSessionToken() {
-        const tokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
+        const search = new URLSearchParams(window.location.search);
+        const hash = new URLSearchParams(String(window.location.hash || '').replace(/^#/, ''));
+        // 优先 fragment：`#token=…` 浏览器不会发给服务端，token 进不了访问日志；
+        // 旧的查询串写法仍然兼容（老书签/老脚本），两种情况都要从地址栏抹掉。
+        const tokenFromUrl = hash.get('token') || search.get('token') || '';
         try {
             sessionToken = tokenFromUrl || window.sessionStorage.getItem(SESSION_TOKEN_KEY) || '';
             if (tokenFromUrl) window.sessionStorage.setItem(SESSION_TOKEN_KEY, tokenFromUrl);
@@ -226,7 +231,12 @@ let knowledgePoints = [];
             sessionToken = tokenFromUrl;
         }
         if (tokenFromUrl && window.history.replaceState) {
-            window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+            search.delete('token');
+            hash.delete('token');
+            const query = search.toString();
+            const fragment = hash.toString();
+            window.history.replaceState(null, '', `${window.location.pathname}`
+                + (query ? `?${query}` : '') + (fragment ? `#${fragment}` : ''));
         }
     }
 
@@ -8641,11 +8651,19 @@ let knowledgePoints = [];
         if (assessmentQuestionItems[assessmentQuestionIndex]) showToast('已复制当前题目');
     }
 
-    async function loadTrashItems() {
-        const response = await apiFetch('/api/trash', { cache: 'no-store' });
+    function syncTrashTotal(payload) {
+        const total = Number(payload && payload.total);
+        trashTotal = Number.isFinite(total) ? total : trashItems.length;
+    }
+
+    // 回收站分页：offset=0 是首屏，offset>0 是「加载更多」在已有列表后面追加。
+    async function loadTrashItems(offset = 0) {
+        const response = await apiFetch(offset > 0 ? `/api/trash?offset=${offset}` : '/api/trash',
+                                        { cache: 'no-store' });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || !Array.isArray(payload.items)) throw new Error(payload.error || '读取回收站失败，请重试');
-        trashItems = payload.items;
+        trashItems = offset > 0 ? trashItems.concat(payload.items) : payload.items;
+        syncTrashTotal(payload);
         return trashItems;
     }
 
@@ -8658,6 +8676,7 @@ let knowledgePoints = [];
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || !payload.item) throw new Error(payload.error || '写入回收站失败，请重试');
         trashItems = payload.items || trashItems;
+        syncTrashTotal(payload);
         return payload.item;
     }
 
@@ -8670,6 +8689,7 @@ let knowledgePoints = [];
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || '恢复失败，请重试');
         trashItems = payload.items || trashItems;
+        syncTrashTotal(payload);
         if (Array.isArray(payload.projects)) {
             projects = payload.projects.map(normalizeProjectSummary);
             forgetAllProjectBaselines();
@@ -8689,6 +8709,7 @@ let knowledgePoints = [];
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || '删除回收站条目失败，请重试');
         trashItems = payload.items || trashItems;
+        syncTrashTotal(payload);
     }
 
     function renderTrashItems(items) {
@@ -8699,8 +8720,29 @@ let knowledgePoints = [];
         const count = document.createElement('span');
         const retention = items.length > 0 && items[0].expiresAt
             ? `（最近一条将于 ${items[0].expiresAt.slice(0, 16).replace('T', ' ')} 自动清理）` : '';
-        count.textContent = `共 ${items.length} 条最近删除记录${retention}`;
+        const total = Math.max(trashTotal, items.length);
+        count.textContent = (items.length < total
+            ? `共 ${total} 条最近删除记录（已显示 ${items.length} 条）`
+            : `共 ${total} 条最近删除记录`) + retention;
         toolbar.appendChild(count);
+        if (items.length < total) {
+            // 一次只渲染一页：删掉整棵大项目可能塞进上千条，全渲染会让弹窗卡住。
+            const loadMore = document.createElement('button');
+            loadMore.type = 'button';
+            loadMore.className = 'utility-secondary-btn';
+            loadMore.textContent = '加载更多';
+            loadMore.addEventListener('click', async () => {
+                loadMore.disabled = true;
+                try {
+                    await loadTrashItems(trashItems.length);
+                    renderTrashItems(trashItems);
+                } catch (error) {
+                    loadMore.disabled = false;
+                    showToast(error.message || '加载更多失败，请重试');
+                }
+            });
+            toolbar.appendChild(loadMore);
+        }
         utilityBody.appendChild(toolbar);
         const hint = document.createElement('p');
         hint.className = 'utility-hint';
@@ -8764,6 +8806,7 @@ let knowledgePoints = [];
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(payload.error || '批量操作失败，请重试');
                 trashItems = payload.items || [];
+                syncTrashTotal(payload);
                 const failed = payload.failed || [];
                 if (Array.isArray(payload.projects)) {
                     projects = payload.projects.map(normalizeProjectSummary);
@@ -8791,6 +8834,7 @@ let knowledgePoints = [];
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(payload.error || '清空回收站失败，请重试');
                 trashItems = payload.items || [];
+                syncTrashTotal(payload);
                 renderTrashItems(trashItems);
                 showToast(`已清空回收站（${payload.purged || 0} 条）`);
             } catch (error) {
@@ -8835,9 +8879,6 @@ let knowledgePoints = [];
             } else {
                 target.textContent = '恢复到删除前的位置';
             }
-            if (item.restoreTarget === 'unavailable' || item.restoreTarget === 'conflict') {
-                restoreBtn.disabled = true;
-            }
             const actions = document.createElement('div');
             actions.className = 'trash-actions';
             const restoreBtn = document.createElement('button');
@@ -8868,6 +8909,11 @@ let knowledgePoints = [];
                     showToast(error.message || '删除失败，请重试');
                 }
             });
+            // 必须在按钮创建之后：以前这行写在 const restoreBtn 之前，
+            // 只要列表里有一条"无法恢复/冲突"，整个回收站渲染就抛 TDZ 错、一条都显示不出来。
+            if (item.restoreTarget === 'unavailable' || item.restoreTarget === 'conflict') {
+                restoreBtn.disabled = true;
+            }
             actions.append(restoreBtn, deleteBtn);
             card.append(head, meta, context, target, actions);
             trashFragment.appendChild(card);

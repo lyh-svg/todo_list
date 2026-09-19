@@ -16,6 +16,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -90,7 +91,8 @@ class SchemaVersionTests(unittest.TestCase):
     def test_low_version_migrates_and_takes_snapshot(self) -> None:
         # 造一个 v0 的 legacy 库：project_state 单表 JSON
         payload = self._canonical_project_json("legacy-1", "老项目")
-        with sqlite3.connect(DB) as connection:
+        # closing() 只负责关连接，第二个 connection 上下文负责提交（原来的 with sqlite3.connect(X) 只提交、不关闭）
+        with closing(sqlite3.connect(DB)) as connection, connection:
             connection.execute(
                 "CREATE TABLE project_state (project_id TEXT PRIMARY KEY, position INTEGER, "
                 "payload TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0)"
@@ -112,7 +114,7 @@ class SchemaVersionTests(unittest.TestCase):
         self.assertEqual(len(snapshots), 1, "迁移前必须留一份快照")
 
     def test_failed_migration_rolls_back_to_snapshot(self) -> None:
-        with sqlite3.connect(DB) as connection:
+        with closing(sqlite3.connect(DB)) as connection, connection:
             connection.execute(
                 "CREATE TABLE project_state (project_id TEXT PRIMARY KEY, position INTEGER, "
                 "payload TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0)"
@@ -129,7 +131,7 @@ class SchemaVersionTests(unittest.TestCase):
 
         # 回滚后：版本没被改成 5，legacy 表和坏数据原样保留（可人工修复）
         self.assertEqual(storage.database_user_version(), 0)
-        with sqlite3.connect(DB) as connection:
+        with closing(sqlite3.connect(DB)) as connection, connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("project_state", tables)
             row = connection.execute("SELECT payload FROM project_state WHERE project_id='broken'").fetchone()
@@ -205,3 +207,9 @@ class ImportValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def tearDownModule() -> None:
+    # 模块级临时目录留到解释器退出才被 GC：每个模块都会留一条 ResourceWarning，
+    # 而且目录要到那时才删。跑完这个模块就显式清掉。
+    _TEMP_DIR.cleanup()

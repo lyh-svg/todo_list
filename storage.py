@@ -15,6 +15,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from db_support import ManagedConnection as _ManagedConnection, now_iso as _now
+
 
 APP_DIR = Path(__file__).resolve().parent
 DATABASE_FILE = Path(
@@ -53,19 +55,6 @@ ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # 导出 JSON 的 schema 版本。必须与前端 js/app.js 的 DATA_SCHEMA_VERSION 同步：
 # 前端 extractProjects() 会拒绝比自己更新的 schemaVersion。
 EXPORT_SCHEMA_VERSION = 2
-
-class _ManagedConnection(sqlite3.Connection):
-    """with 块结束时真正关闭连接。
-
-    sqlite3 的上下文管理器只负责提交/回滚，不关闭连接；不关会留下未释放的句柄
-    （表现为 ResourceWarning）。这里统一在 __exit__ 里关闭。
-    """
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        try:
-            return bool(super().__exit__(exc_type, exc, tb))
-        finally:
-            self.close()
 
 
 _database_lock = threading.RLock()
@@ -321,27 +310,33 @@ def open_state_database() -> sqlite3.Connection:
     database_file = DATABASE_FILE
     database_file.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(database_file, timeout=10, factory=_ManagedConnection)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys=ON")
-    # 版本守卫必须在任何"会写文件"的 PRAGMA 之前：journal_mode=WAL 会改写数据库文件头，
-    # 对一个未来版本的库执行它，等于在被拒绝打开的同时动了别人的文件。
-    stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if stored_version > SCHEMA_VERSION:
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        # 版本守卫必须在任何"会写文件"的 PRAGMA 之前：journal_mode=WAL 会改写数据库文件头，
+        # 对一个未来版本的库执行它，等于在被拒绝打开的同时动了别人的文件。
+        stored_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if stored_version > SCHEMA_VERSION:
+            raise SchemaVersionError(
+                f"数据库 schema 版本为 {stored_version}，高于本程序支持的 {SCHEMA_VERSION}；"
+                "请升级程序后再打开（已拒绝打开，避免降级损坏数据）"
+            )
+        signature = _file_signature(database_file)
+        if not _schema_is_ready(database_file, signature, stored_version):
+            _bootstrap_state_database(connection, database_file)
+            after = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            _remember_schema_ready(database_file, signature, after)
+        # 下面这些是连接级设置（不持久化），每条新连接都必须设，否则会静默失去外键级联与忙等。
+        connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("PRAGMA busy_timeout=10000")
+        connection.execute("PRAGMA wal_autocheckpoint=1000")
+        return connection
+    except BaseException:
+        # 在建好连接之后、返回之前抛异常（坏库文件 / 版本不符 / 建表失败）时，
+        # 连接必须自己关掉：调用方根本拿不到这个对象，也就永远没机会 close。
+        # 实测：恢复一个非 SQLite 的坏备份会走这条路，句柄一直留到 GC 才发 ResourceWarning。
         connection.close()
-        raise SchemaVersionError(
-            f"数据库 schema 版本为 {stored_version}，高于本程序支持的 {SCHEMA_VERSION}；"
-            "请升级程序后再打开（已拒绝打开，避免降级损坏数据）"
-        )
-    signature = _file_signature(database_file)
-    if not _schema_is_ready(database_file, signature, stored_version):
-        _bootstrap_state_database(connection, database_file)
-        after = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        _remember_schema_ready(database_file, signature, after)
-    # 下面这些是连接级设置（不持久化），每条新连接都必须设，否则会静默失去外键级联与忙等。
-    connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("PRAGMA busy_timeout=10000")
-    connection.execute("PRAGMA wal_autocheckpoint=1000")
-    return connection
+        raise
 
 
 def _bootstrap_state_database(connection: sqlite3.Connection, database_file: Path) -> None:
@@ -995,16 +990,22 @@ def _read_project_from_connection(connection: sqlite3.Connection, project_id: st
     assessment_rows = connection.execute(
         "SELECT node_id,payload FROM assessments WHERE project_id=?", (project_id,)
     ).fetchall()
+    # 逐节点再查一次对话会变成 N+1：验收节点一多，读项目就是"1 + 节点数次查询"。
+    # 一次取回本项目全部消息再按节点分组，每节点内的顺序仍由 SQL 的 ORDER BY 保证。
+    messages_by_node: dict[str, list[sqlite3.Row]] = {}
+    if assessment_rows:   # 没有验收节点的项目（大多数项目）连这一次查询都不发
+        for message_row in connection.execute(
+            """SELECT node_id,question_index,message_index,role,content FROM conversations
+            WHERE project_id=? ORDER BY node_id,question_index,message_index""",
+            (project_id,),
+        ):
+            messages_by_node.setdefault(str(message_row["node_id"]), []).append(message_row)
     for assessment_row in assessment_rows:
         node = by_id.get(assessment_row["node_id"])
         if not node:
             continue
         assessment = _decode_object(assessment_row["payload"], "SQLite 中的验收数据损坏")
-        messages = connection.execute(
-            """SELECT question_index,message_index,role,content FROM conversations
-            WHERE project_id=? AND node_id=? ORDER BY question_index,message_index""",
-            (project_id, assessment_row["node_id"]),
-        ).fetchall()
+        messages = messages_by_node.get(str(assessment_row["node_id"]), [])
         if messages:
             highest = max(int(message["question_index"]) for message in messages)
             existing_slots = assessment.get("questionConversations")
@@ -1289,10 +1290,6 @@ def list_activity(limit: int = 50) -> list[dict[str, Any]]:
     return entries
 
 
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
 def _new_trash_id() -> str:
     return str(uuid.uuid4())
 
@@ -1400,7 +1397,22 @@ def trash_item_ids(ids: Any) -> set[str]:
                 f"SELECT trash_id FROM trash_items WHERE trash_id IN ({placeholders})", chunk))
     return found
 
-def list_trash_items() -> list[dict[str, Any]]:
+
+MAX_TRASH_LIST = 200
+
+
+def count_trash_items() -> int:
+    """回收站总条数（分页用）。与 list_trash_items 用同一套"先清过期"口径，否则总数会偏大。"""
+    with _database_lock, open_state_database() as connection:
+        retention = int(read_app_settings(connection)["trashRetentionDays"])
+        _purge_trash_items(connection, retention)
+        return int(connection.execute("SELECT COUNT(*) FROM trash_items").fetchone()[0])
+
+
+def list_trash_items(limit: int = MAX_TRASH_LIST, offset: int = 0) -> list[dict[str, Any]]:
+    # 只取一页：删掉一个上万节点的项目会一次塞进上千条，全量返回连前端渲染一起卡住。
+    limit = max(0, int(limit))
+    offset = max(0, int(offset))
     # 以前这里要开 4 次连接（purge → settings → purge 自身 → settings + 自身），
     # 每开一次就重放一遍 DDL；现在清理、读设置、读列表共用同一个连接。
     with _database_lock, open_state_database() as connection:
@@ -1409,7 +1421,8 @@ def list_trash_items() -> list[dict[str, Any]]:
         _purge_trash_items(connection, retention)
         rows = connection.execute(
             "SELECT trash_id,kind,project_id,parent_id,position,title,context,deleted_at,revision "
-            "FROM trash_items ORDER BY deleted_at DESC,trash_id"
+            "FROM trash_items ORDER BY deleted_at DESC,trash_id LIMIT ? OFFSET ?",
+            (limit, offset),
         ).fetchall()
         live_projects = {str(row[0]) for row in connection.execute("SELECT project_id FROM projects")}
         known_nodes: set[tuple[str, str]] = {
