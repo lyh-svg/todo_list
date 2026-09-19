@@ -705,7 +705,8 @@ class AiGenerateQuestionTests(unittest.TestCase):
         self.assertIn("concept", user_payload["现有题面（风格参考，请勿重复）"])
         self.assertEqual(user_payload["最近作答"][0]["grade"], 2)
         self.assertTrue(user_payload["薄弱"])
-        self.assertNotIn("answer", json.dumps(user_payload, ensure_ascii=False))
+        self.assertNotIn("answer", user_payload["现有题面（风格参考，请勿重复）"],
+                         "风格参考只给题面，不能带上参考答案")
 
 
 class AiReviewAnswerTests(unittest.TestCase):
@@ -1161,7 +1162,12 @@ Expected: 全部 FAIL（`/api/review/ai-collect` 返回 404 `接口不存在`）
 ```python
             if path == "/api/review/ai-question":
                 question_id = required_param(params, "id")
-                result = review_storage.delete_ai_question(question_id)
+                try:
+                    result = review_storage.delete_ai_question(question_id)
+                except ValueError as error:
+                    # 未知 id → 404；不能落进下面通用的 ValueError→400 分支
+                    self.send_json(404, {"error": str(error)})
+                    return
                 self.send_json(200, {"ok": True, **result})
                 return
 ```
@@ -1172,7 +1178,7 @@ Expected: 全部 FAIL（`/api/review/ai-collect` 返回 404 `接口不存在`）
 python3 -m unittest tests.test_review_http -v
 ```
 
-Expected: 全部 `ok`（新类 5 个用例 + 原有用例不回归）
+Expected: 全部 `ok`（新类 6 个用例 + 原有用例不回归）
 
 - [ ] **Step 5: 提交**
 
