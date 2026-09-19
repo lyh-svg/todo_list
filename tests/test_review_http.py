@@ -20,6 +20,7 @@ os.environ["TODO_SQLITE_FILE"] = str(Path(_TEMP.name) / "todo.sqlite3")
 os.environ["TODO_SQLITE_BACKUP_DIR"] = str(Path(_TEMP.name) / "backups")
 os.environ["TODO_MEMO_SQLITE_FILE"] = str(Path(_TEMP.name) / "memo.sqlite3")
 
+import ai_service  # noqa: E402
 import local_server  # noqa: E402
 import review_storage  # noqa: E402
 import storage  # noqa: E402
@@ -341,6 +342,123 @@ class ReviewHttpTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row["title"], "被快照更新过的标题",
                          "快照里出现的行必须被写入/更新")
+
+
+class ReviewAiQuestionHttpTests(unittest.TestCase):
+    """AI 加练题的 HTTP 契约：收藏/列表/删除 200；参数非法 400；未知 id 404；未配置 AI 503；
+    AI 层失败 502（可读错误，不是"未预期错误"）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        storage.ensure_schema()
+        review_storage.ensure_content_imported()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(_QuietHandler, directory=str(APP_DIR)))
+        cls.port = int(cls.server.server_address[1])
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self) -> None:
+        with storage.open_state_database() as connection:
+            connection.execute("DELETE FROM review_ai_questions")
+
+    def call(self, path: str, method: str = "GET", body: dict | None = None):
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=15)
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"X-Todo-Session": local_server.SESSION_TOKEN}
+        if payload:
+            headers["Content-Type"] = "application/json"
+        connection.request(method, path, body=payload, headers=headers)
+        response = connection.getresponse()
+        raw = response.read().decode("utf-8")
+        connection.close()
+        if not raw and response.status < 400:
+            self.fail(f"{path} 返回 {response.status} 但 body 为空")
+        return response.status, json.loads(raw or "{}")
+
+    def collect(self, prompt: str = "现场题：写出两次调用的输出") -> dict:
+        status, payload = self.call("/api/review/ai-collect", "POST", {
+            "code": MUTABLE_DEFAULT, "questionType": "predict", "prompt": prompt,
+            "questionCode": "def f(items=[]):\n    return items",
+            "focus": "默认参数求值时机",
+            "reference": {"expected": ["[1]"], "explain": "定义时求值一次",
+                          "reference": "def f(items=None):\n    return items"},
+        })
+        self.assertEqual(status, 200, payload)
+        return payload["question"]
+
+    def test_collect_then_list_then_delete(self) -> None:
+        saved = self.collect()
+        status, payload = self.call(f"/api/review/ai-questions?code={MUTABLE_DEFAULT}")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in payload["items"]], [saved["id"]])
+        self.assertNotIn("reference", payload["items"][0])
+        status, all_items = self.call("/api/review/ai-questions")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(all_items["items"]), 1, "不传 code 要返回全部（知识点页一次拉取）")
+        status, payload = self.call(f"/api/review/ai-question?id={saved['id']}", "DELETE")
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["code"], MUTABLE_DEFAULT)
+        self.assertEqual(payload["items"], [])
+        status, second = self.call(f"/api/review/ai-question?id={saved['id']}", "DELETE")
+        self.assertEqual(status, 404, second)
+
+    def test_collect_rejects_bad_payload_with_400(self) -> None:
+        status, payload = self.call("/api/review/ai-collect", "POST", {
+            "code": "py.nope.nope", "questionType": "predict", "prompt": "x",
+            "reference": {"explain": "y"}})
+        self.assertEqual(status, 400, payload)
+        self.assertIn("知识点不存在", payload["error"])
+        status, payload = self.call("/api/review/ai-collect", "POST", {
+            "code": MUTABLE_DEFAULT, "questionType": "essay", "prompt": "x",
+            "reference": {"explain": "y"}})
+        self.assertEqual(status, 400, payload)
+        self.assertIn("题型", payload["error"])
+
+    def test_generate_and_answer_report_503_without_ai(self) -> None:
+        with mock.patch.object(ai_service, "is_configured", return_value=False):
+            status, payload = self.call("/api/review/ai-question", "POST", {"code": MUTABLE_DEFAULT})
+            self.assertEqual(status, 503, payload)
+            self.assertIn("未配置 AI", payload["error"])
+            status, payload = self.call("/api/review/ai-answer", "POST", {
+                "code": MUTABLE_DEFAULT, "questionType": "predict", "prompt": "x", "answer": ""})
+            self.assertEqual(status, 503, payload)
+
+    def test_generate_returns_question_without_reference(self) -> None:
+        with mock.patch.object(ai_service, "is_configured", return_value=True), \
+                mock.patch.object(ai_service, "generate_ai_question", return_value={
+                    "questionType": "predict", "prompt": "现场题", "code": "print(1)",
+                    "focus": "求值时机"}):
+            status, payload = self.call("/api/review/ai-question", "POST", {"code": MUTABLE_DEFAULT})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["question"]["prompt"], "现场题")
+        self.assertNotIn("reference", payload["question"], "出题阶段不能有答案")
+
+    def test_answer_returns_verdict_and_demo(self) -> None:
+        with mock.patch.object(ai_service, "is_configured", return_value=True), \
+                mock.patch.object(ai_service, "review_ai_answer", return_value={
+                    "verdict": {"correct": True, "summary": "不错", "missing": [],
+                                "wrongAt": "", "hint": ""},
+                    "focus": "求值时机",
+                    "reference": {"reference": "def f(items=None): ...", "expected": ["[1]"]}}):
+            status, payload = self.call("/api/review/ai-answer", "POST", {
+                "code": MUTABLE_DEFAULT, "questionType": "predict", "prompt": "现场题",
+                "questionCode": "", "focus": "求值时机", "answer": "我的答案"})
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["verdict"]["correct"])
+        self.assertIn("reference", payload["reference"])
+
+    def test_ai_failure_becomes_502_with_readable_error(self) -> None:
+        with mock.patch.object(ai_service, "is_configured", return_value=True), \
+                mock.patch.object(ai_service, "generate_ai_question",
+                                  side_effect=RuntimeError("DeepSeek API 返回 429: rate limit")):
+            status, payload = self.call("/api/review/ai-question", "POST", {"code": MUTABLE_DEFAULT})
+        self.assertEqual(status, 502, payload)
+        self.assertIn("429", payload["error"])
 
 
 class ReviewBootstrapTests(unittest.TestCase):

@@ -532,6 +532,10 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     limit = int_param(params, "limit", required=False, default=20)
                     self.send_json(200, review_storage.history(code, limit=limit))
                     return
+                if path == "/api/review/ai-questions":
+                    code = (params.get("code", [""])[0] or "").strip()
+                    self.send_json(200, {"items": review_storage.list_ai_questions(code or None)})
+                    return
             except ValueError as error:
                 message = str(error)
                 self.send_json(404 if "不存在" in message else 400, {"error": message})
@@ -716,7 +720,8 @@ class TodoHandler(SimpleHTTPRequestHandler):
                         "/api/trash",
                         "/api/project/plan",
                         "/api/review/reveal", "/api/review/answer", "/api/review/session",
-                        "/api/review/generate", "/api/review/ai-grade"}:
+                        "/api/review/generate", "/api/review/ai-grade",
+                        "/api/review/ai-question", "/api/review/ai-answer", "/api/review/ai-collect"}:
             self.discard_body(length)
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -867,6 +872,49 @@ class TodoHandler(SimpleHTTPRequestHandler):
                     code=code, question_type=kind, answer=str(payload.get("answer") or ""),
                     reference=review_storage.reveal(code, kind))
                 self.send_json(200, {"ok": True, "verdict": verdict})
+            elif path == "/api/review/ai-question":
+                code = str(payload.get("code") or "").strip()
+                kind = str(payload.get("questionType") or "").strip()
+                if kind and kind not in review_content.QUESTION_TYPES:
+                    raise ValueError("题型不正确")
+                if not ai_service.is_configured():
+                    self.send_json(503, {"error": "未配置 AI，出题不可用（复习本身不受影响）"})
+                    return
+                try:
+                    question = ai_service.generate_ai_question(
+                        context=review_storage.ai_question_context(code), question_type=kind)
+                except RuntimeError as error:
+                    self.send_json(502, {"error": f"AI 出题失败：{error}"})
+                    return
+                self.send_json(200, {"ok": True, "question": question})
+            elif path == "/api/review/ai-answer":
+                code = str(payload.get("code") or "").strip()
+                kind = str(payload.get("questionType") or "").strip()
+                if kind not in review_content.QUESTION_TYPES:
+                    raise ValueError("题型不正确")
+                if not ai_service.is_configured():
+                    self.send_json(503, {"error": "未配置 AI，批改不可用（复习本身不受影响）"})
+                    return
+                try:
+                    result = ai_service.review_ai_answer(
+                        context=review_storage.ai_question_context(code),
+                        question={"questionType": kind, "prompt": payload.get("prompt"),
+                                  "code": payload.get("questionCode"),
+                                  "focus": payload.get("focus")},
+                        answer=str(payload.get("answer") or ""))
+                except RuntimeError as error:
+                    self.send_json(502, {"error": f"AI 批改失败：{error}"})
+                    return
+                self.send_json(200, {"ok": True, **result})
+            elif path == "/api/review/ai-collect":
+                question = review_storage.collect_ai_question(
+                    str(payload.get("code") or "").strip(),
+                    str(payload.get("questionType") or "").strip(),
+                    str(payload.get("prompt") or ""),
+                    str(payload.get("questionCode") or ""),
+                    str(payload.get("focus") or ""),
+                    payload.get("reference") if isinstance(payload.get("reference"), dict) else {})
+                self.send_json(200, {"ok": True, "question": question})
             elif path == "/api/project":
                 project = payload.get("project")
                 if not isinstance(project, dict):
@@ -1063,7 +1111,7 @@ class TodoHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
-        if path not in {"/api/project", "/api/memo"}:
+        if path not in {"/api/project", "/api/memo", "/api/review/ai-question"}:
             self.discard_body(self.request_length())
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -1089,6 +1137,17 @@ class TodoHandler(SimpleHTTPRequestHandler):
                 memo_storage.delete_memo(memo_id, expected_revision)
                 self.send_json(200, {"ok": True, "memos": memo_storage.list_memo_summaries(),
                                      "total": memo_storage.count_memos()})
+                return
+            if path == "/api/review/ai-question":
+                question_id = required_param(params, "id")
+                try:
+                    result = review_storage.delete_ai_question(question_id)
+                except ValueError as error:
+                    # 设计 §11：DELETE 未知 id → 404；不能落进下面通用的 ValueError→400 分支，
+                    # 否则"删除一道不存在的题"会被报成"参数非法"。
+                    self.send_json(404, {"error": str(error)})
+                    return
+                self.send_json(200, {"ok": True, **result})
                 return
             project_id = required_param(params, "id")
             expected_revision = int_param(params, "revision")
