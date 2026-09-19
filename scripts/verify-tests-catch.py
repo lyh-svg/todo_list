@@ -250,10 +250,11 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "题型轮换必须批量查（不能每个知识点各查一次）",
         "review_storage.py",
-        crlf("                         else _question_types_by_code(connection, chosen_codes))\n"),
-        crlf("                         else {})\n"),
+        crlf("        picked = pick_questions(connection, chosen_codes, forced_type=question_type)\n"),
+        crlf("        picked = {code: pick_questions(connection, [code], forced_type=question_type)[code]\n"
+             "                  for code in chosen_codes}\n"),
         [sys.executable, "-m", "unittest", "tests.test_review_queue_batch.QueueBatchingTests."
-         "test_batched_rotation_prefers_least_used_type"],
+         "test_queue_build_uses_one_connection_and_few_queries"],
     ),
     (
         "队列接口不能为了设置跑完整 summary",
@@ -633,6 +634,29 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
              "                    return\n"),
         [sys.executable, "-m", "unittest",
          "tests.test_review_http.ReviewAiQuestionHttpTests.test_ai_failure_becomes_502_with_readable_error"],
+    ),
+    (
+        "轮换候选必须包含已收藏的 AI 题（否则收藏了也永远抽不到）",
+        "review_storage.py",
+        crlf('        candidates = [""] + variants.get((code, kind), [])\n'),
+        crlf('        candidates = [""]\n'),
+        [sys.executable, "-m", "unittest",
+         "tests.test_review_rotation_ai.RotationWithAiQuestionTests"
+         ".test_pick_is_deterministic_and_uses_ai_question_when_never_used"],
+    ),
+    (
+        "题型内必须挑最近最少用过的一道（不能永远固定题优先）",
+        "review_storage.py",
+        crlf('        question_ref = min(\n'
+             '            candidates,\n'
+             '            key=lambda ref: (last_used.get((code, kind, ref), ""), 0 if ref == "" else 1, ref))\n'),
+        crlf('        question_ref = ""\n'),
+        # 计划原本用 test_fixed_question_wins_when_it_is_the_least_recently_used 兜这条：
+        # 那条用例期望的正是 ""，把挑选改成"永远固定题"反而照样通过（改坏了测试还是绿）。
+        # 用"期望 AI 题胜出"的用例才对得上这个改坏动作。
+        [sys.executable, "-m", "unittest",
+         "tests.test_review_rotation_ai.RotationWithAiQuestionTests"
+         ".test_pick_is_deterministic_and_uses_ai_question_when_never_used"],
     ),
 ]
 

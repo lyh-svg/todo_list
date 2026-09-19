@@ -970,6 +970,46 @@ status, headers, data = call("/api/review/ai-collect", method="POST", body={
     "code": target_code, "questionType": "essay", "prompt": "x", "reference": {"explain": "y"}})
 check_json_error("AI 加练 非法题型 → 400 JSON", status, headers.get("Content-Type", ""), data, 400)
 
+# --- 第二批：收藏的 AI 题要能被队列抽中，并按题身份揭示/作答 ---
+status, _, data = call("/api/review/ai-collect", method="POST", body={
+    "code": target_code, "questionType": "concept", "prompt": "第二批：AI 题进轮换",
+    "questionCode": "", "focus": "题身份", "reference": {
+        "answer": ["要点"], "explain": "解释", "reference": "def f(): return 1"}})
+second_id = (json.loads(data).get("question") or {}).get("id") if status == 200 else ""
+# 前置：让 concept 成为"最久没用过"的题型（先作答它，再依次用掉另外三种）。
+# 不做这一步时 build_queue 的题型轮换会先挑从没用过的 predict，永远走不到 concept。
+for _kind in ("concept", "predict", "debug", "code_task"):
+    call("/api/review/answer", method="POST", body={
+        "code": target_code, "type": _kind, "grade": 4, "today": TODAY_STR,
+        "answer": "第二批：先用一次 " + _kind})
+status, _, data = call("/api/review/queue?today=" + TODAY_STR + "&code=" + urllib.parse.quote(target_code)
+                       + "&newPerDay=1")
+item = next((entry for entry in json.loads(data).get("items", []) if entry["code"] == target_code), {})
+check("第二批 队列带上 questionRef（未用过的 AI 题优先被抽中）",
+      status == 200 and item.get("questionRef") == second_id, f"item={str(item)[:200]}")
+check("第二批 队列题面来自被抽中的 AI 题",
+      item.get("prompt") == "第二批：AI 题进轮换", str(item.get("prompt"))[:120])
+status, _, data = call("/api/review/reveal", method="POST", body={
+    "code": target_code, "type": "concept", "questionRef": second_id})
+revealed = json.loads(data)
+check("第二批 揭示的是该 AI 题自己的参考解",
+      status == 200 and revealed.get("source") == "ai"
+      and revealed.get("reference") == "def f(): return 1", f"status={status} body={data[:200]}")
+status, _, data = call("/api/review/answer", method="POST", body={
+    "code": target_code, "type": "concept", "grade": 4, "today": TODAY_STR,
+    "answer": "第二批作答", "questionRef": second_id})
+check("第二批 作答按题身份落库", status == 200, f"status={status}")
+connection = _sqlite3.connect(_os.environ["TODO_SQLITE_FILE"])
+try:
+    row = connection.execute(
+        "SELECT question_ref FROM review_attempts WHERE answer='第二批作答'").fetchone()
+finally:
+    connection.close()
+check("第二批 review_attempts.question_ref 记的是这道 AI 题",
+      bool(row) and row[0] == second_id, str(row))
+status, _, data = call("/api/review/ai-question?id=" + urllib.parse.quote(second_id), method="DELETE")
+check("第二批 清理收藏题", status == 200, f"status={status}")
+
 print(f"\n   通过 {len(passed)} 项，失败 {len(failed)} 项")
 if failed:
     print("   失败项: " + ", ".join(failed))
