@@ -66,8 +66,12 @@ check('接线：行内徽标函数存在并渲染优先级/截止/标签/耗时/
     src.includes('function createNodeMetaBadges(node)') && src.includes("priority-badge priority-${node.priority}")
     && src.includes('dueBadgeInfo(node)') && src.includes('tag-badge') && src.includes('estimate-badge')
     && src.includes("'备注'") && src.includes('link-badge'));
-check('接线：徽标点击打开元数据弹窗', /wrap\.addEventListener\('click', \(event\) => \{\s*event\.stopPropagation\(\);\s*openNodeMeta\(node\);/.test(src));
-check('接线：行内 ⋯ 按钮打开弹窗', src.includes("metaBtn.textContent = '⋯'") && src.includes('openNodeMeta(node);'));
+// P5 起事件改成 treeRoot 委托：徽标与 ⋯ 按钮不再各自挂闭包
+check('接线：徽标点击打开元数据弹窗（走 treeRoot 委托）',
+    /target\.closest\('\.node-meta'\)[\s\S]{0,160}openNodeMeta\(entry\.node\);/.test(src));
+check('接线：行内 ⋯ 按钮打开弹窗（走委托处理器表）',
+    src.includes("metaBtn.textContent = '⋯'")
+    && /\['\.meta-btn', entry => openNodeMeta\(entry\.node\)\]/.test(src));
 check('接线：弹窗含六类字段与快捷按钮',
     src.includes("addField('优先级', prioritySelect)") && src.includes("addField('截止日期', dueInput)")
     && src.includes("addField('预计耗时（分钟）', estimateInput)") && src.includes("addField('标签', tagsInput)")

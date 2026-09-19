@@ -413,6 +413,26 @@ class TodoHandler(SimpleHTTPRequestHandler):
             self.discard_body(self.request_length())
             self.send_json(401, {"error": "本地页面会话已失效，请重新启动"})
             return
+        if path == "/api/review/counts":
+            try:
+                # 轻量计数：勾选/复习操作之后前端只要这两个数字，不必把全部项目摘要读出来。
+                requested_today = optional_iso_date(query_params(self).get("today", [""])[0])
+                server_today = datetime.date.today().isoformat()
+                used_today = requested_today or server_today
+                counts = storage_service.review_counts(used_today)
+                totals = {"today": 0, "overdue": 0}
+                for bucket in counts.values():
+                    totals["today"] += bucket["today"]
+                    totals["overdue"] += bucket["overdue"]
+                self.send_json(200, {
+                    "byProject": counts,
+                    "totals": totals,
+                    "serverToday": server_today,
+                    "usedToday": used_today,
+                })
+            except (OSError, sqlite3.Error, RuntimeError) as error:
+                self.send_json(500, {"error": f"读取复习计数失败：{error}"})
+            return
         if path == "/api/projects":
             try:
                 # 复习计数用"浏览器本地日期"，避免 WSL 与宿主时区不同导致午夜前后差一天。

@@ -248,7 +248,7 @@ for (const total of [1000, 10000]) {
 }
 
 const labels = [['items', '任务数'], ['bytes', '保存载荷(字节)'], ['serialize', '保存前序列化(ms)'],
-                ['fingerprint', 'patch 判据指纹(ms)'], ['fingerprintBytes', 'patch 判据指纹(字节)'],
+                ['fingerprint', '整树指纹(ms)（基线/flush 用）'], ['fingerprintBytes', '整树指纹(字节)'],
                 ['collapsedMs', '渲染-全部折叠(ms)'], ['collapsedEls', '渲染-全部折叠(元素数)'],
                 ['oneWeekMs', '渲染-展开1周(ms)'], ['oneWeekEls', '渲染-展开1周(元素数)']];
 for (const [key, label] of labels) {

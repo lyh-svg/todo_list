@@ -143,6 +143,29 @@ class HttpLayerTests(unittest.TestCase):
         self.assertEqual([entry["nodeId"] for entry in payload["future"]], ["p1-i"])
         self.assertEqual(payload["due"], [])
 
+    def test_review_counts_endpoint_is_lightweight(self) -> None:
+        """勾选/复习之后只刷计数：轻量接口只回 byProject + totals，不夹带项目摘要（P6）。"""
+        self.with_review_item()
+        status, payload = self.json_call("GET", f"/api/review/counts?today={TODAY}")
+        self.assertEqual(status, 200)
+        # with_review_item() 排的复习日是 2026-09-10，比 TODAY(2026-09-15) 早 → 逾期
+        self.assertEqual(payload["byProject"], {"p1": {"today": 0, "overdue": 1}})
+        self.assertEqual(payload["totals"], {"today": 0, "overdue": 1})
+        self.assertNotIn("projects", payload, "轻量接口不该带全部项目摘要")
+        self.assertEqual(payload["usedToday"], TODAY)
+        self.assertTrue(payload["serverToday"])
+
+        # 把 today 挪到复习日当天 → 同一条复习算"今天"
+        status, on_due = self.json_call("GET", "/api/review/counts?today=2026-09-10")
+        self.assertEqual(on_due["byProject"], {"p1": {"today": 1, "overdue": 0}})
+        self.assertEqual(on_due["totals"], {"today": 1, "overdue": 0})
+
+        # 非法日期回落服务端日期，仍然必须是结构完整的 JSON（不能空回复）
+        status, fallback = self.json_call("GET", "/api/review/counts?today=not-a-date")
+        self.assertEqual(status, 200)
+        self.assertIn("byProject", fallback)
+        self.assertIn("totals", fallback)
+
     def test_workbench_since_short_circuits_unchanged_data(self) -> None:
         """提醒轮询靠 since 跳过"数据没变"的整次重算（P3）。"""
         status, board = self.json_call("GET", f"/api/workbench?today={TODAY}")

@@ -25,10 +25,12 @@ function extract(name) {
 }
 
 // ① 拖拽排序：行可拖拽 + 落点提示 + 调 reorder 接口
-check('拖拽：树行设为可拖拽并挂上 drag 事件',
-    /function attachDragHandlers\(li, row, node\)[\s\S]{0,300}row\.draggable = true[\s\S]{0,600}dragstart[\s\S]{0,900}dragover[\s\S]{0,600}drop/.test(src));
-check('拖拽：renderNode 里真的调用了 attachDragHandlers',
-    /attachDragHandlers\(li, row, node\);/.test(src));
+// P5 起改为事件委托：行仍然是 draggable，但 drag 事件统一挂在 treeRoot 上（不再每行挂闭包）
+check('拖拽：树行设为可拖拽，drag 事件由 treeRoot 委托',
+    /row\.draggable = true;/.test(src)
+    && /function ensureTreeDelegation\(\)[\s\S]{0,600}dragstart[\s\S]{0,200}dragover[\s\S]{0,400}\bdrop\b/.test(src));
+check('拖拽：renderNode 只产 DOM，不再每行挂监听器',
+    !/attachDragHandlers/.test(src) && !/addEventListener/.test(extract('renderNode')));
 check('拖拽：落点提示有样式', css.includes('.drop-before') && css.includes('.drop-after') && css.includes('.drop-inside'));
 check('拖拽：跨单元/跨周通过 /api/node/reorder 落库',
     /async function reorderNodeRemote[\s\S]{0,200}\/api\/node\/reorder/.test(src));

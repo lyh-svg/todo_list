@@ -33,6 +33,9 @@ SCRIPTS = [
     "verify-r9.js",
     "verify-r10.js",
     "verify-reminders.js",
+    "verify-save-paths.js",
+    "verify-render-delegation.js",
+    "verify-review-counts.js",
     "dom-smoke.js",
 ]
 

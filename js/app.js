@@ -193,6 +193,11 @@ let knowledgePoints = [];
     let sessionToken = '';
     let apiClient = null;
     let savedProjectJsonById = new Map();
+    // "这个项目被改过几次"。markProjectDirty 是唯一的自增点：canUseNodePatch 靠它判断
+    // "内存 == 已保存基线"，免去每次交互对整棵树做一次 JSON.stringify（10k 任务 20–22 ms）。
+    // 与 savedProjectJsonById 成对读写成对失效：任一处只改一个就会让 patch 判据失真。
+    let projectMutationSeqById = new Map();
+    let savedProjectSeqById = new Map();
     // 在飞的节点级 patch 数量：与全量保存共用 saveQueue，串行执行
     let inFlightPatches = 0;
     let saveConflict = false;
@@ -221,6 +226,10 @@ let knowledgePoints = [];
     let assessmentFileSummary = '';
     let trashItems = [];
     let dirtyProjectIds = new Set();
+    // 当前这轮渲染出来的节点行：nodeId -> { node, li, row, textSpan }。
+    // 事件委托靠它从 event.target 反查到节点对象（每次 renderDetail 重建）。
+    let renderedNodeEntries = new Map();
+    let treeDelegationReady = false;
     let projectStatsCache = new Map();
     let nodeStatsCache = new Map();
     let memoState = { memos: [], selectedId: null, query: '', saveTimer: null, pendingMemoId: null,
@@ -387,10 +396,18 @@ let knowledgePoints = [];
         return projects.find(p => p.id === currentProjectId) || null;
     }
 
+    function projectMutationSeq(project) {
+        if (!project || project.id == null) return 0;
+        return projectMutationSeqById.get(String(project.id)) || 0;
+    }
+
+    // 所有修改项目内容的路径都从这里经过（改完调 markProjectDirty），
+    // 所以"计数没变"就等价于"内存和上次保存时一模一样"。
     function markProjectDirty(project) {
         if (!project || project.id == null) return;
         const key = String(project.id);
         dirtyProjectIds.add(key);
+        projectMutationSeqById.set(key, (projectMutationSeqById.get(key) || 0) + 1);
         projectStatsCache.delete(key);
         nodeStatsCache.delete(key);
     }
@@ -859,14 +876,29 @@ let knowledgePoints = [];
         return JSON.stringify(project, skipViewState);
     }
 
+    // 记下"服务端此刻就是这份内容"：JSON 基准与改动计数必须同时写，否则 patch 判据会失真。
+    function rememberSavedProjectState(project, fingerprint, seq = null) {
+        const key = String(project.id);
+        savedProjectJsonById.set(key, fingerprint);
+        savedProjectSeqById.set(key, seq === null ? projectMutationSeq(project) : seq);
+    }
+
     function rememberProjectBaseline(project) {
         if (!project) return;
-        const key = String(project.id);
-        savedProjectJsonById.set(key, projectStateJson(serializeProject(project)));
+        rememberSavedProjectState(project, projectStateJson(serializeProject(project)));
     }
 
     function forgetProjectBaseline(projectId) {
-        savedProjectJsonById.delete(String(projectId));
+        const key = String(projectId);
+        savedProjectJsonById.delete(key);
+        savedProjectSeqById.delete(key);
+        projectMutationSeqById.delete(key);
+    }
+
+    function forgetAllProjectBaselines() {
+        savedProjectJsonById.clear();
+        savedProjectSeqById.clear();
+        projectMutationSeqById.clear();
     }
 
     function writeStoredProject(project, expectedRevision) {
@@ -1202,16 +1234,38 @@ let knowledgePoints = [];
             }
             // 不再把整棵项目树 cloneData 一份快照：判据用规范化指纹（只读、同步），
             // 写库时现场构造请求体，省掉每个项目一次 4 MB 级别的 JSON 往返（第六批 item 1）。
-            const candidates = projects.filter(project => Array.isArray(project.tree));
-            const currentProjectJsonById = new Map(
-                candidates.map(project => [String(project.id), projectStateJson(serializeProject(project))])
-            );
-            // 只要“被标记为脏”或“与上次保存的指纹不一致”就写入；
-            // 即便个别改动路径漏标 dirty，也仍会被差集兜住，不会丢保存。
+            const loaded = projects.filter(project => Array.isArray(project.tree));
+            // 正常路径只扫"被标脏"的项目：以前对每个已加载项目都算一次整树指纹
+            // （10k + 1k + 200 三个项目实测 28 ms），而其中绝大多数根本没动过。
+            let candidates = loaded.filter(project => dirtyProjectIds.has(String(project.id)));
+            if (candidates.length === 0) {
+                // 没有任何项目标脏却被要求保存 —— 只可能是某条改动路径漏了 markProjectDirty。
+                // 这里保留原来的"全量差集"兜底（宁可多算一次也不丢数据），并把它喊出来。
+                candidates = loaded;
+                console.warn('保存被触发但没有任何项目被标脏：可能有改动路径漏了 markProjectDirty');
+            }
+            const currentSnapshotById = new Map(candidates.map(project => {
+                const key = String(project.id);
+                return [key, {
+                    json: projectStateJson(serializeProject(project)),
+                    // 顺手记下算指纹那一刻的改动计数：写库要 await，期间用户再改就不该算"已保存"。
+                    seq: projectMutationSeq(project),
+                }];
+            }));
+            // 脏项目也要和基线比一次指纹：撤销回原样 / 来回改动的情形不该白写一次整棵树。
             const changedProjects = candidates.filter(project =>
-                dirtyProjectIds.has(String(project.id))
-                || savedProjectJsonById.get(String(project.id)) !== currentProjectJsonById.get(String(project.id))
+                savedProjectJsonById.get(String(project.id)) !== currentSnapshotById.get(String(project.id)).json
             );
+            const changedIds = new Set(changedProjects.map(project => String(project.id)));
+            // 内容回到基线的脏项目：不写库，但要把改动计数同步掉，
+            // 否则它之后每次都会退化成全量保存（patch 判据永远为假）。
+            for (const project of candidates) {
+                const key = String(project.id);
+                if (changedIds.has(key)) continue;
+                const snapshot = currentSnapshotById.get(key);
+                rememberSavedProjectState(project, snapshot.json, snapshot.seq);
+                dirtyProjectIds.delete(key);
+            }
             if (changedProjects.length === 0) return;
             inFlightSaves += 1;
             armLeaveGuard();
@@ -1231,7 +1285,8 @@ let knowledgePoints = [];
                         await beginProjectConflict(project, current);
                         continue;
                     }
-                    savedProjectJsonById.set(projectId, currentProjectJsonById.get(projectId));
+                    const snapshot = currentSnapshotById.get(projectId);
+                    rememberSavedProjectState(project, snapshot.json, snapshot.seq);
                     dirtyProjectIds.delete(projectId);
                     if (current) {
                         current._revision = Number(payload.revision) || expectedRevision + 1;
@@ -3108,9 +3163,20 @@ let knowledgePoints = [];
         return textMatches && nodeMatchesStatus(node, nodeFilters.status);
     }
 
-    function nodeHasVisibleMatch(node) {
-        if (nodeMatchesOwnFilter(node)) return true;
-        return (node.children || []).some(child => nodeHasVisibleMatch(child));
+    // 一次遍历把"自己命中或后代命中"的节点 id 收进 matchedIds，返回这层有没有命中。
+    // 渲染时只做 matchedIds.has(id) 的 O(1) 判断：以前的写法是顶层 filter 走一遍整棵树，
+    // 每个容器渲染时又对自己的 children 各走一遍子树（整体 O(节点数 × 深度)），
+    // 每敲一个字（180ms 防抖后）都要重算一遍。
+    function collectVisibleNodeIds(nodes, matchedIds) {
+        let any = false;
+        for (const node of nodes || []) {
+            const childMatched = collectVisibleNodeIds(node.children, matchedIds);
+            if (childMatched || nodeMatchesOwnFilter(node)) {
+                matchedIds.add(String(node.id));
+                any = true;
+            }
+        }
+        return any;
     }
 
     function isNodeFiltering() {
@@ -3403,7 +3469,7 @@ let knowledgePoints = [];
                     throw new Error(result.error || '导入失败，请重试');
                 }
                 projects = result.projects.map(normalizeProjectSummary);
-                savedProjectJsonById.clear();
+                forgetAllProjectBaselines();
                 saveConflict = false;
                 currentProjectId = null;
                 renderProjects();
@@ -4261,9 +4327,7 @@ let knowledgePoints = [];
             if (projectCounts && (projectCounts.today > 0 || projectCounts.overdue > 0)) {
                 const reviewBadge = document.createElement('span');
                 reviewBadge.className = 'review-card-badge' + (projectCounts.overdue > 0 ? ' overdue' : '');
-                reviewBadge.textContent = projectCounts.overdue > 0
-                    ? '待复习 ' + projectCounts.today + ' · 逾期 ' + projectCounts.overdue
-                    : '待复习 ' + projectCounts.today;
+                reviewBadge.textContent = reviewBadgeText(projectCounts);
                 metaDiv.appendChild(reviewBadge);
             }
             info.appendChild(metaDiv);
@@ -4611,20 +4675,25 @@ let knowledgePoints = [];
     // 只有当这个项目"和服务端数据一致"时才走 patch：否则本地还有别的改动没落库，
     // 用 patch 会和待写的整棵树打架，不如老老实实全量保存。
     //
-    // 判据是"内存数据指纹 == 已保存基线"，而不是 dirtyProjectIds ——
+    // 判据是"内存内容 == 已保存基线"，而不是 dirtyProjectIds ——
     // 因为改一个节点本身就会把项目标脏，用 dirty 判断会导致永远走不到 patch。
-    // 指纹会忽略 expanded 之类纯视图态字段（见 projectStateJson）。
-    // 因此**必须在改动节点之前**调用（调用点都注意了这一点）。
+    //
+    // 以前这里靠 projectStateJson(serializeProject(project)) 现算一次整树指纹来比较：
+    // 10k 任务实测 20–22 ms，而且每次勾选都要付一次。现在改成比较"改动计数"：
+    // 计数由 markProjectDirty 唯一自增，没变就说明从上次保存到现在没人动过这棵树
+    // （expanded 之类的纯视图态改动本来就不经过 markProjectDirty，语义不变）。
+    //
+    // 这个判据依赖一条不变式：**任何改到项目内容的路径都必须调 markProjectDirty**。
+    // 漏掉的话，patch 成功后会把"服务端其实没有的改动"一起当成新基线（改动静默丢失）。
+    // 兜底有两层：flushProjectsSave 在"没人标脏却被要求保存"时会退回全量差集并打警告；
+    // tests/frontend/verify-save-paths.js 把这条不变式和两条兜底路径都钉住了。
+    // 仍然**必须在改动节点之前**调用（调用点都注意了这一点）。
     function canUseNodePatch(project) {
         if (!project || !Array.isArray(project.tree)) return false;
         if (saveTimer || inFlightSaves > 0 || inFlightPatches > 0 || saveConflict) return false;
-        const baseline = savedProjectJsonById.get(String(project.id));
-        if (typeof baseline !== 'string') return false;
-        try {
-            return baseline === projectStateJson(serializeProject(project));
-        } catch (error) {
-            return false;
-        }
+        const key = String(project.id);
+        if (!savedProjectJsonById.has(key)) return false;
+        return projectMutationSeq(project) === (savedProjectSeqById.get(key) || 0);
     }
 
     async function applyNodePatch(project, ops) {
@@ -5183,38 +5252,138 @@ let knowledgePoints = [];
         return null;
     }
 
-    function attachDragHandlers(li, row, node) {
-        row.draggable = true;
-        row.addEventListener('dragstart', (event) => {
-            const project = getCurrentProject();
-            if (!project) return;
-            dragState = { nodeId: node.id, projectId: project.id };
-            event.dataTransfer.effectAllowed = 'move';
-            try { event.dataTransfer.setData('text/plain', String(node.id)); } catch (error) { /* 老浏览器忽略 */ }
-            li.classList.add('dragging');
-        });
-        row.addEventListener('dragend', () => {
-            dragState = null;
-            li.classList.remove('dragging');
-            clearDropHints();
-        });
-        row.addEventListener('dragover', (event) => {
-            if (!dragState || String(dragState.nodeId) === String(node.id)) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = 'move';
-            clearDropHints();
-            const target = dropTargetFor(row, event, node);
-            row.classList.add(target.mode === 'inside' ? 'drop-inside'
-                : target.mode === 'before' ? 'drop-before' : 'drop-after');
-        });
-        row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after', 'drop-inside'));
-        row.addEventListener('drop', async (event) => {
-            event.preventDefault();
+    // ---------- 树行的事件委托（P5）：整棵树上只挂这一组监听器 ----------
+    // 以前每个节点行要挂 8~16 个闭包（8 个按钮 + 行点击 + 复选框 click/keydown + 双击
+    // + dragstart/dragend/dragover/dragleave/drop），万级节点展开后就是十万级监听器
+    // 与闭包常驻内存，而且每次重绘都要现场创建一遍。
+    // 现在 renderNode 只产 DOM，事件统一在 treeRoot 上按 closest + 渲染注册表分发。
+    function treeEntryFor(event) {
+        const target = event && event.target;
+        if (!target || typeof target.closest !== 'function') return null;
+        const li = target.closest('.tree-node');
+        if (!li || !li.dataset) return null;
+        const entry = renderedNodeEntries.get(String(li.dataset.id));
+        return entry && entry.li === li ? entry : null;
+    }
+
+    // 按钮选中器 → 处理函数；顺序与原来每行一个闭包时的行为一一对应。
+    const TREE_ACTION_HANDLERS = [
+        ['.add-btn', entry => startAddChild(entry.node, entry.li)],
+        ['.assess-btn', entry => openAssessment(entry.node)],
+        ['.review-node-btn', entry => openScheduleReview(entry.node)],
+        ['.meta-btn', entry => openNodeMeta(entry.node)],
+        ['.edit-btn', entry => startEditNode(entry.node, entry.textSpan, entry.row)],
+        ['.delete-btn', entry => deleteNode(entry.node, entry.row)],
+        ['.copy-btn', entry => duplicateNodeWithOptions(entry.node)],
+        ['.move-btn', entry => openMoveNodeDialog(entry.node)],
+    ];
+
+    function handleTreeClick(event) {
+        const entry = treeEntryFor(event);
+        if (!entry) return;
+        const target = event.target;
+        if (target.closest('.node-actions')) {
+            for (const [selector, run] of TREE_ACTION_HANDLERS) {
+                if (!target.closest(selector)) continue;
+                event.stopPropagation();
+                run(entry);
+                return;
+            }
+            return;   // 点在按钮条的空白处：和以前一样什么都不做
+        }
+        if (target.closest('.node-meta')) {          // 元数据徽标（原来挂在徽标容器上）
             event.stopPropagation();
-            const target = dropTargetFor(row, event, node);
-            clearDropHints();
-            await applyDrop(target);
-        });
+            openNodeMeta(entry.node);
+            return;
+        }
+        if (target.closest('.checkbox')) {
+            event.stopPropagation();
+            if (batchState.active) { toggleBatchSelection(entry.node, entry.li); return; }
+            toggleNodeCompletedSafely(entry.node);
+            return;
+        }
+        if (entry.node.type !== 'item') { updateBranch(entry.node, entry.li); return; }
+        if (batchState.active) { event.stopPropagation(); toggleBatchSelection(entry.node, entry.li); return; }
+        toggleNodeCompletedSafely(entry.node);
+    }
+
+    function handleTreeKeydown(event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const target = event.target;
+        if (!target || typeof target.closest !== 'function' || !target.closest('.checkbox')) return;
+        const entry = treeEntryFor(event);
+        if (!entry) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (batchState.active) { toggleBatchSelection(entry.node, entry.li); return; }
+        toggleNodeCompletedSafely(entry.node);
+    }
+
+    function handleTreeDblClick(event) {
+        const target = event.target;
+        if (!target || typeof target.closest !== 'function' || !target.closest('.node-text')) return;
+        const entry = treeEntryFor(event);
+        if (!entry) return;
+        event.stopPropagation();
+        startEditNode(entry.node, entry.textSpan, entry.row);
+    }
+
+    function handleTreeDragStart(event) {
+        const entry = treeEntryFor(event);
+        const project = getCurrentProject();
+        if (!entry || !project) return;
+        dragState = { nodeId: entry.node.id, projectId: project.id };
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            try { event.dataTransfer.setData('text/plain', String(entry.node.id)); } catch (error) { /* 老浏览器忽略 */ }
+        }
+        entry.li.classList.add('dragging');
+    }
+
+    function handleTreeDragEnd(event) {
+        const entry = treeEntryFor(event);
+        if (entry) entry.li.classList.remove('dragging');
+        dragState = null;
+        clearDropHints();
+    }
+
+    function handleTreeDragOver(event) {
+        const entry = treeEntryFor(event);
+        if (!entry || !dragState || String(dragState.nodeId) === String(entry.node.id)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        clearDropHints();
+        const target = dropTargetFor(entry.row, event, entry.node);
+        entry.row.classList.add(target.mode === 'inside' ? 'drop-inside'
+            : target.mode === 'before' ? 'drop-before' : 'drop-after');
+    }
+
+    function handleTreeDragLeave(event) {
+        const entry = treeEntryFor(event);
+        if (entry) entry.row.classList.remove('drop-before', 'drop-after', 'drop-inside');
+    }
+
+    async function handleTreeDrop(event) {
+        const entry = treeEntryFor(event);
+        if (!entry) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const target = dropTargetFor(entry.row, event, entry.node);
+        clearDropHints();
+        await applyDrop(target);
+    }
+
+    function ensureTreeDelegation() {
+        if (treeDelegationReady) return;
+        treeDelegationReady = true;
+        treeRoot.addEventListener('click', handleTreeClick);
+        treeRoot.addEventListener('keydown', handleTreeKeydown);
+        treeRoot.addEventListener('dblclick', handleTreeDblClick);
+        treeRoot.addEventListener('dragstart', handleTreeDragStart);
+        treeRoot.addEventListener('dragend', handleTreeDragEnd);
+        treeRoot.addEventListener('dragover', handleTreeDragOver);
+        treeRoot.addEventListener('dragleave', handleTreeDragLeave);
+        treeRoot.addEventListener('drop', handleTreeDrop);
     }
 
     async function applyDrop(target) {
@@ -5432,13 +5601,22 @@ let knowledgePoints = [];
         const optional = getProjectOptionalStats(project);
         countDisplay.textContent = `主线剩余 ${remaining} 项 · 选做 ${optional.completed}/${optional.total}`;
         treeRoot.replaceChildren();
+        renderedNodeEntries = new Map();      // 上一轮的行引用一律作废
         if (!project.tree || project.tree.length === 0) {
             emptyTreeTip.textContent = '还没有内容，添加第一周开始吧';
             emptyTreeTip.classList.remove('hidden');
             return;
         }
         const filtering = isNodeFiltering();
-        const visibleTree = filtering ? project.tree.filter(nodeHasVisibleMatch) : project.tree;
+        // 只遍历一遍：算出"自己命中或后代命中"的节点集合，渲染时 O(1) 查表。
+        let visibleIds = null;
+        if (filtering) {
+            visibleIds = new Set();
+            collectVisibleNodeIds(project.tree, visibleIds);
+        }
+        const visibleTree = filtering
+            ? project.tree.filter(week => visibleIds.has(String(week.id)))
+            : project.tree;
         if (visibleTree.length === 0) {
             emptyTreeTip.textContent = '没有符合筛选条件的内容';
             emptyTreeTip.classList.remove('hidden');
@@ -5449,7 +5627,7 @@ let knowledgePoints = [];
         const projectCreatedAt = project.createdAt || '';
         const treeFragment = document.createDocumentFragment();
         visibleTree.forEach(week => {
-            treeFragment.appendChild(renderNode(week, projectCreatedAt, filtering));
+            treeFragment.appendChild(renderNode(week, projectCreatedAt, visibleIds));
         });
         treeRoot.replaceChildren(treeFragment);
         const allExpanded = (project.tree || []).every(w => w.expanded);
@@ -5464,7 +5642,9 @@ let knowledgePoints = [];
         renderBatchToolbar();
     }
 
-    function renderNode(node, projectCreatedAt, filtering = false) {
+    // visibleIds：筛选时传"可见节点 id 集合"（renderDetail 一次遍历算好），否则 null。
+    function renderNode(node, projectCreatedAt, visibleIds = null) {
+        const filtering = Boolean(visibleIds);
         const li = document.createElement('li');
         li.className = 'tree-node';
         li.dataset.id = node.id;
@@ -5529,10 +5709,6 @@ let knowledgePoints = [];
             addBtn.textContent = '+';
             addBtn.title = node.type === 'week' ? '添加学习单元' : '添加任务';
             addBtn.setAttribute('aria-label', '添加子项');
-            addBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                startAddChild(node, li);
-            });
             actions.appendChild(addBtn);
         }
         if (node.type === 'item' && node.assessmentRequired) {
@@ -5541,10 +5717,6 @@ let knowledgePoints = [];
             assessBtn.textContent = 'AI';
             assessBtn.title = node.completed ? '查看或重新验收' : '提交 AI 验收';
             assessBtn.setAttribute('aria-label', assessBtn.title);
-            assessBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openAssessment(node);
-            });
             actions.appendChild(assessBtn);
         }
         if (node.type === 'item') {
@@ -5553,10 +5725,6 @@ let knowledgePoints = [];
             reviewBtn.textContent = '○';
             reviewBtn.title = '安排复习';
             reviewBtn.setAttribute('aria-label', '安排复习');
-            reviewBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openScheduleReview(node);
-            });
             actions.appendChild(reviewBtn);
         }
         if (node.type === 'item') {
@@ -5565,10 +5733,6 @@ let knowledgePoints = [];
             metaBtn.textContent = '⋯';
             metaBtn.title = '优先级 / 截止 / 标签 / 耗时 / 备注 / 链接';
             metaBtn.setAttribute('aria-label', metaBtn.title);
-            metaBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openNodeMeta(node);
-            });
             actions.appendChild(metaBtn);
         }
         const editBtn = document.createElement('button');
@@ -5576,40 +5740,24 @@ let knowledgePoints = [];
         editBtn.textContent = '✎';
         editBtn.title = '编辑';
         editBtn.setAttribute('aria-label', '编辑');
-        editBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            startEditNode(node, textSpan, row);
-        });
         actions.appendChild(editBtn);
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'delete-btn';
         deleteBtn.textContent = '✕';
         deleteBtn.title = '删除';
         deleteBtn.setAttribute('aria-label', '删除');
-        deleteBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            deleteNode(node, row);
-        });
         actions.appendChild(deleteBtn);
         const copyBtn = document.createElement('button');
         copyBtn.className = 'copy-btn';
         copyBtn.textContent = '⧉';
         copyBtn.title = '复制这个节点（可选是否带走子任务 / 完成状态 / AI 历史 / 复习）';
         copyBtn.setAttribute('aria-label', copyBtn.title);
-        copyBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            duplicateNodeWithOptions(node);
-        });
         actions.appendChild(copyBtn);
         const moveBtn = document.createElement('button');
         moveBtn.className = 'move-btn';
         moveBtn.textContent = '⇄';
         moveBtn.title = '移动到其他周 / 学习单元 / 项目（也可以直接拖拽）';
         moveBtn.setAttribute('aria-label', moveBtn.title);
-        moveBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            openMoveNodeDialog(node);
-        });
         actions.appendChild(moveBtn);
         row.appendChild(arrow);
         row.appendChild(checkbox);
@@ -5642,52 +5790,20 @@ let knowledgePoints = [];
             childrenUl.className = 'children';
             if (node.expanded || filtering) childrenUl.classList.add('expanded');
             const visibleChildren = filtering
-                ? (node.children || []).filter(nodeHasVisibleMatch)
+                ? (node.children || []).filter(child => visibleIds.has(String(child.id)))
                 : (node.children || []);
             if ((node.expanded || filtering) && visibleChildren.length > 0) {
                 const childFragment = document.createDocumentFragment();
                 visibleChildren.forEach(child => {
-                    childFragment.appendChild(renderNode(child, projectCreatedAt, filtering));
+                    childFragment.appendChild(renderNode(child, projectCreatedAt, visibleIds));
                 });
                 childrenUl.appendChild(childFragment);
             }
             li.appendChild(childrenUl);
-            row.addEventListener('click', (e) => {
-                if (e.target.closest('.node-actions') || e.target.closest('.checkbox')) return;
-                updateBranch(node, li);
-            });
-        } else {
-            row.addEventListener('click', (e) => {
-                if (e.target.closest('.node-actions')) return;
-                if (batchState.active) {
-                    e.stopPropagation();
-                    toggleBatchSelection(node, li);
-                    return;
-                }
-                if (e.target.closest('.checkbox')) return;
-                toggleNodeCompletedSafely(node);
-            });
         }
-        checkbox.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (batchState.active) {
-                toggleBatchSelection(node, li);
-                return;
-            }
-            toggleNodeCompletedSafely(node);
-        });
-        checkbox.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                e.stopPropagation();
-                toggleNodeCompletedSafely(node);
-            }
-        });
-        textSpan.addEventListener('dblclick', (e) => {
-            e.stopPropagation();
-            startEditNode(node, textSpan, row);
-        });
-        attachDragHandlers(li, row, node);
+        // 拖拽仍然每个行都开启，但事件统一由 treeRoot 委托（见 ensureTreeDelegation）。
+        row.draggable = true;
+        renderedNodeEntries.set(String(node.id), { node, li, row, textSpan });
         return li;
     }
 
@@ -5739,10 +5855,6 @@ let knowledgePoints = [];
             span.textContent = badge.text;
             if (badge.title) span.title = badge.title;
             wrap.appendChild(span);
-        });
-        wrap.addEventListener('click', (event) => {
-            event.stopPropagation();
-            openNodeMeta(node);
         });
         return wrap;
     }
@@ -7562,7 +7674,7 @@ let knowledgePoints = [];
             } catch (error) {
                 console.error('刷新项目列表失败', error);
             }
-            savedProjectJsonById.clear();
+            forgetAllProjectBaselines();
             if (moved > 0 && failures.length === 0) {
                 renderProjects();
                 await showProjectsView();
@@ -8338,7 +8450,7 @@ let knowledgePoints = [];
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(payload.error || '归类失败，请重试');
                 if (Array.isArray(payload.projects)) projects = payload.projects.map(normalizeProjectSummary);
-                savedProjectJsonById.clear();
+                forgetAllProjectBaselines();
                 closeUtilityModal();
                 showToast('已归类');
                 renderProjects();
@@ -8989,16 +9101,62 @@ let knowledgePoints = [];
         loadReviewCounts();
     }
 
+    // 徽标文案只有这一处定义：整卡渲染（renderProjects）与原地刷新（updateReviewBadges）共用。
+    function reviewBadgeText(bucket) {
+        return bucket.overdue > 0
+            ? '待复习 ' + bucket.today + ' · 逾期 ' + bucket.overdue
+            : '待复习 ' + bucket.today;
+    }
+
+    // 计数变了只动徽标：以前这里调 renderProjects() 把整面项目卡片重画一遍
+    // （每张卡十几个元素 + 闭包），连续快速勾选时会反复重绘。现在卡片元素原地复用，
+    // 徽标按需新增 / 更新 / 移除。
+    function updateReviewBadges() {
+        const reviewTotal = reviewCounts.today + reviewCounts.overdue;
+        if (reviewQueueCount) {
+            reviewQueueCount.textContent = String(reviewTotal);
+            reviewQueueBtn.classList.toggle('empty', reviewTotal === 0);
+        }
+        const cards = projectGrid ? projectGrid.querySelectorAll('.project-card') : [];
+        for (const card of cards) {
+            const meta = card.querySelector('.card-meta');
+            if (!meta) continue;
+            const bucket = reviewCounts.byProject.get(String(card.dataset.id));
+            const wanted = bucket && (bucket.today > 0 || bucket.overdue > 0) ? reviewBadgeText(bucket) : '';
+            let badge = meta.querySelector('.review-card-badge');
+            if (!wanted) {
+                if (badge) badge.remove();
+                continue;
+            }
+            if (!badge) {
+                badge = document.createElement('span');
+                meta.appendChild(badge);
+            }
+            badge.className = 'review-card-badge' + (bucket.overdue > 0 ? ' overdue' : '');
+            badge.textContent = wanted;
+        }
+    }
+
+    function readReviewCounts() {
+        // 只回计数：以前这里为了两个数字把全部项目摘要（summary_json）反序列化一遍再传过来。
+        return apiFetch(`/api/review/counts?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' })
+            .then(response => {
+                if (!response.ok) throw new Error('SQLite 服务不可用');
+                return response.json();
+            })
+            .then(payload => payload || null);
+    }
+
     async function loadReviewCounts() {
         try {
-            const stored = await readStoredState();
-            const totals = (stored && stored.reviewTotals) || { today: 0, overdue: 0 };
+            const stored = await readReviewCounts();
+            const totals = (stored && stored.totals) || { today: 0, overdue: 0 };
             const byProject = new Map();
-            const list = (stored && Array.isArray(stored.projects)) ? stored.projects : [];
-            for (const summary of list) {
-                byProject.set(String(summary.id), {
-                    today: Number(summary.reviewToday) || 0,
-                    overdue: Number(summary.reviewOverdue) || 0
+            const rawByProject = (stored && stored.byProject) || {};
+            for (const [projectId, bucket] of Object.entries(rawByProject)) {
+                byProject.set(String(projectId), {
+                    today: Number(bucket && bucket.today) || 0,
+                    overdue: Number(bucket && bucket.overdue) || 0
                 });
             }
             reviewCounts = {
@@ -9013,7 +9171,7 @@ let knowledgePoints = [];
         } catch (error) {
             console.warn('刷新复习计数失败', error);
         }
-        if (projectsView.classList.contains('active')) renderProjects();
+        updateReviewBadges();
     }
 
 
@@ -9197,7 +9355,7 @@ let knowledgePoints = [];
         trashItems = payload.items || trashItems;
         if (Array.isArray(payload.projects)) {
             projects = payload.projects.map(normalizeProjectSummary);
-            savedProjectJsonById.clear();
+            forgetAllProjectBaselines();
             dirtyProjectIds.clear();
             saveConflict = false;
             renderProjects();
@@ -9702,6 +9860,7 @@ let knowledgePoints = [];
     const debouncedRenderDetail = debounce(renderDetail, SEARCH_DEBOUNCE_MS);
 
     function initEvents() {
+        ensureTreeDelegation();
         assessmentForm.addEventListener('submit', submitAssessment);
         assessmentAnswer.addEventListener('keydown', handleAssessmentEditorTab);
         assessmentAnswer.addEventListener('input', saveAssessmentDraft);

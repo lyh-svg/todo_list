@@ -148,6 +148,63 @@ CASES: list[tuple[str, str, str, str, list[str]]] = [
          "test_deleted_and_recreated_file_is_bootstrapped_again"],
     ),
     (
+        "复习计数必须走轻量接口（不能又去拉全部项目摘要）",
+        "js/app.js",
+        crlf("        return apiFetch(`/api/review/counts?today=${encodeURIComponent(todayStr())}`, { cache: 'no-store' })\n"),
+        crlf("        return readStoredState();\n"),
+        ["node", "tests/frontend/verify-review-counts.js"],
+    ),
+    (
+        "计数刷新只能改徽标（不能整卡重绘）",
+        "js/app.js",
+        crlf("        updateReviewBadges();\n    }\n"),
+        crlf("        renderProjects();\n    }\n"),
+        ["node", "tests/frontend/verify-review-counts.js"],
+    ),
+    (
+        "复习计数口径不能被改（GROUP BY 的两个 SUM）",
+        "storage.py",
+        crlf('            "SUM(CASE WHEN review_due < ? THEN 1 ELSE 0 END) AS overdue, "\n'),
+        crlf('            "SUM(CASE WHEN review_due < ? THEN 0 ELSE 0 END) AS overdue, "\n'),
+        [sys.executable, "-m", "unittest", "tests.test_review_counts.ReviewCountsTests."
+         "test_matches_reference_implementation"],
+    ),
+    (
+        "树行事件必须挂在 treeRoot 上（不能退回每行挂闭包）",
+        "js/app.js",
+        crlf("        treeRoot.addEventListener('click', handleTreeClick);\n"),
+        "",
+        ["node", "tests/frontend/verify-render-delegation.js"],
+    ),
+    (
+        "筛选后必须用预计算的 matchedIds 过滤顶层（不能整棵树照渲染）",
+        "js/app.js",
+        crlf("            ? project.tree.filter(week => visibleIds.has(String(week.id)))\n"),
+        crlf("            ? project.tree\n"),
+        ["node", "tests/frontend/verify-render-delegation.js"],
+    ),
+    (
+        "子节点筛选必须 O(1) 查表（不能又回头走子树）",
+        "js/app.js",
+        crlf("                ? (node.children || []).filter(child => visibleIds.has(String(child.id)))\n"),
+        crlf("                ? (node.children || [])\n"),
+        ["node", "tests/frontend/verify-render-delegation.js"],
+    ),
+    (
+        "勾选判据必须靠改动计数（不能又退回整树序列化）",
+        "js/app.js",
+        crlf("        return projectMutationSeq(project) === (savedProjectSeqById.get(key) || 0);\n"),
+        crlf("        return projectMutationSeq(project) >= 0;\n"),
+        ["node", "tests/frontend/verify-save-paths.js"],
+    ),
+    (
+        "flushProjectsSave 只能扫被标脏的项目",
+        "js/app.js",
+        crlf("            let candidates = loaded.filter(project => dirtyProjectIds.has(String(project.id)));\n"),
+        crlf("            let candidates = loaded;\n"),
+        ["node", "tests/frontend/verify-save-paths.js"],
+    ),
+    (
         "只为结果集算路径时，path/ancestorIds 口径不能变",
         "storage.py",
         crlf("            if parent_entry[1]:\n"
