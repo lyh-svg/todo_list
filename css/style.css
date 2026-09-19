@@ -229,7 +229,7 @@ body {
     padding: 0 11px;
     border: none;
     border-radius: var(--radius-sm);
-    background: linear-gradient(135deg, #5c7cfa, #6d8bfa);
+    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
     color: #fff;
     font-size: 12px;
     font-weight: 600;
@@ -291,7 +291,7 @@ body {
     font-size: 14px;
     font-weight: 600;
     color: #fff;
-    background: linear-gradient(135deg, #5c7cfa, #6d8bfa);
+    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
     border: none;
     border-radius: var(--radius-sm);
     cursor: pointer;
@@ -563,7 +563,7 @@ body {
     width: 34px;
     height: 34px;
     border: none;
-    background: linear-gradient(135deg, #5c7cfa, #6d8bfa);
+    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
     border-radius: 50%;
     cursor: pointer;
     font-size: 16px;
@@ -680,7 +680,7 @@ body {
     font-size: 13px;
     font-weight: 600;
     color: #fff;
-    background: linear-gradient(135deg, #5c7cfa, #6d8bfa);
+    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
     border: none;
     border-radius: var(--radius-sm);
     cursor: pointer;
@@ -1304,7 +1304,7 @@ body {
 .assessment-submit {
     border: 1px solid transparent;
     color: #fff;
-    background: linear-gradient(135deg, #5c7cfa, #6d8bfa);
+    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
     box-shadow: 0 6px 14px rgba(92, 124, 250, 0.22);
 }
 .assessment-submit:hover {
@@ -1343,7 +1343,7 @@ body.assessment-open {
 .detail-footer button {
     min-height: 30px;
     border: none;
-    background: linear-gradient(135deg, #5c7cfa, #6d8bfa);
+    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
     color: #fff;
     font-size: 12px;
     cursor: pointer;
@@ -2042,7 +2042,7 @@ body.modal-open { overflow: hidden; }
 .memo-list-item:hover { background: #fff; border-color: var(--border); }
 .memo-list-item.selected { background: #fff; border-color: #aac0e4; box-shadow: 0 1px 3px rgba(30, 45, 65, 0.06); }
 .memo-list-item strong { overflow: hidden; font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
-.memo-list-item small { overflow: hidden; color: #738096; font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.memo-list-item small { overflow: hidden; color: #616B77; font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .memo-list-item span { color: #616B77; font-size: 9px; }
 .memo-editor { display: flex; flex-direction: column; min-width: 0; padding: 12px; background: #fff; }
 .memo-title-input { width: 100%; min-height: 34px; padding: 0 2px; border: 0; border-bottom: 1px solid var(--border); outline: none; color: var(--text); font-size: 14px; font-weight: 700; }
