@@ -298,8 +298,13 @@ def _recent_grades(connection, code: str, limit: int = 3) -> list[int]:
 
 def apply_grade(code: str, question_type: str, grade: int, *, today: str,
                 answer: str = "", duration_ms: int = 0, session_id: str = "",
-                task_id: str = "", project_id: str = "", ai_verdict: str = "") -> dict[str, Any]:
-    """记录一次作答并按五档更新调度；返回下次复习安排。"""
+                task_id: str = "", project_id: str = "", ai_verdict: str = "",
+                question_ref: str = "") -> dict[str, Any]:
+    """记录一次作答并按五档更新调度；返回下次复习安排。
+
+    `question_ref` 为空表示固定题；非空时是收藏的 AI 题 id（不校验存在性：
+    题可能已被删，历史作答仍要留）。
+    """
     code = str(code or "").strip()
     if not code:
         raise ValueError("缺少知识点 code")
@@ -320,10 +325,10 @@ def apply_grade(code: str, question_type: str, grade: int, *, today: str,
                                  streak=int(row["streak"]), lapses=int(row["lapses"]),
                                  today=today, answered_today=answered_today)
         connection.execute(
-            "INSERT INTO review_attempts(id,code,task_id,project_id,question_type,grade,answer,"
-            "ai_verdict,reviewed_on,duration_ms,session_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO review_attempts(id,code,task_id,project_id,question_type,question_ref,grade,answer,"
+            "ai_verdict,reviewed_on,duration_ms,session_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), code, str(task_id or ""), str(project_id or ""), question_type,
-             int(grade), str(answer or ""), str(ai_verdict or ""), today,
+             str(question_ref or ""), int(grade), str(answer or ""), str(ai_verdict or ""), today,
              max(0, int(duration_ms or 0)), str(session_id or ""), _now()))
         grades = _recent_grades(connection, code, 3)
         weak = schedule["weak"]
@@ -343,38 +348,65 @@ def apply_grade(code: str, question_type: str, grade: int, *, today: str,
     return schedule
 
 
-def _question_types_by_code(connection, codes: list[str]) -> dict[str, str]:
-    """批量题型轮换：一次查出这些知识点各自的"最近最少用过"题型。
+def pick_questions(connection, codes: list[str], forced_type: str = "") -> dict[str, dict[str, str]]:
+    """批量挑题：两段式。
 
-    以前每个知识点一次查询、而且各自 `with _connection()` 开一次库：
-    limit=50 时实测 50 次开库 + 50 条题型查询，只为拼出 50 个字符串。
+    ① 选题型：仍是"这个知识点最近最少用过的题型"（从未用过优先，并列按声明顺序）——
+       没有收藏 AI 题时结果与旧版逐字节一致；
+    ② 选题：在该题型的候选（固定题 `''` + 该题型下已收藏的 AI 题）里挑最近最少用过的一道；
+       都没用过时固定题优先，其次 question_id 升序 → 结果确定、可复现。
     """
     wanted = [str(code) for code in codes]
     if not wanted:
         return {}
-    last_used: dict[str, dict[str, str]] = {}
+    variants: dict[tuple[str, str], list[str]] = {}
     for start in range(0, len(wanted), storage.SQL_PARAM_CHUNK):
         chunk = wanted[start:start + storage.SQL_PARAM_CHUNK]
         placeholders = ",".join("?" for _ in chunk)
         for row in connection.execute(
-            f"SELECT code,question_type,MAX(created_at) AS last_at FROM review_attempts "
-            f"WHERE code IN ({placeholders}) GROUP BY code,question_type", chunk):
-            last_used.setdefault(str(row["code"]), {})[str(row["question_type"])] = str(row["last_at"])
+                "SELECT question_id,code,question_type FROM review_ai_questions "
+                f"WHERE code IN ({placeholders}) ORDER BY created_at,question_id", chunk):
+            variants.setdefault((str(row["code"]), str(row["question_type"])), []).append(
+                str(row["question_id"]))
+    last_used: dict[tuple[str, str, str], str] = {}
+    type_last: dict[tuple[str, str], str] = {}
+    # 指定题型且一道 AI 候选都没有时，题型内只剩固定题，"最近用没用过"影响不了结果：
+    # 这条轮换查询可以直接跳过（与旧行为一致：指定题型不查 review_attempts）。
+    if variants or not forced_type:
+        for start in range(0, len(wanted), storage.SQL_PARAM_CHUNK):
+            chunk = wanted[start:start + storage.SQL_PARAM_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in connection.execute(
+                    "SELECT code,question_type,question_ref,MAX(created_at) AS last_at FROM review_attempts "
+                    f"WHERE code IN ({placeholders}) GROUP BY code,question_type,question_ref", chunk):
+                code = str(row["code"])
+                kind = str(row["question_type"])
+                ref = str(row["question_ref"] or "")
+                last_at = str(row["last_at"])
+                last_used[(code, kind, ref)] = last_at
+                if last_at > type_last.get((code, kind), ""):
+                    type_last[(code, kind)] = last_at
     kinds = review_content.QUESTION_TYPES
-    return {
-        code: min(kinds, key=lambda kind: (last_used.get(code, {}).get(kind, ""), kinds.index(kind)))
-        for code in wanted
-    }
+    picked: dict[str, dict[str, str]] = {}
+    for code in wanted:
+        kind = forced_type or min(
+            kinds, key=lambda candidate: (type_last.get((code, candidate), ""), kinds.index(candidate)))
+        candidates = [""] + variants.get((code, kind), [])
+        question_ref = min(
+            candidates,
+            key=lambda ref: (last_used.get((code, kind, ref), ""), 0 if ref == "" else 1, ref))
+        picked[code] = {"questionType": kind, "questionRef": question_ref}
+    return picked
 
 
 def pick_question_type(code: str, today: str) -> str:
     """题型轮换：优先选这个知识点最近最少用过的题型（都没用过就按 QUESTION_TYPES 声明顺序）。
 
-    单点入口（测试/外部调用）保留；队列构建走 `_question_types_by_code()` 的批量版。
+    单点入口（测试/外部调用）保留；队列构建走 `pick_questions()` 的批量版。
     """
     with _connection() as connection:
-        return _question_types_by_code(connection, [str(code)]).get(
-            str(code), review_content.QUESTION_TYPES[0])
+        picked = pick_questions(connection, [str(code)]).get(str(code), {})
+    return picked.get("questionType", review_content.QUESTION_TYPES[0])
 
 def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = "", level: str = "",
                 project_id: str = "", task_id: str = "", question_type: str = "",
@@ -445,8 +477,7 @@ def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = ""
         # 题型与题面一次查完：以前每个条目 3 次查询（题型轮换还各自开一次库），
         # limit=50 时实测 51 次开库 / 406 条 SQL / 26.8 ms。
         chosen_codes = [str(item["code"]) for item in chosen]
-        types_by_code = ({} if question_type
-                         else _question_types_by_code(connection, chosen_codes))
+        picked = pick_questions(connection, chosen_codes, forced_type=question_type)
         content_by_code: dict[str, Any] = {}
         for start in range(0, len(chosen_codes), storage.SQL_PARAM_CHUNK):
             chunk = chosen_codes[start:start + storage.SQL_PARAM_CHUNK]
@@ -454,13 +485,27 @@ def build_queue(today: str, limit: int = 10, *, code: str = "", module: str = ""
             for row in connection.execute(
                     f"SELECT code,content_json FROM review_points WHERE code IN ({placeholders})", chunk):
                 content_by_code[str(row["code"])] = json.loads(row["content_json"])
+        ai_content: dict[str, Any] = {}
+        ai_refs = sorted({plan["questionRef"] for plan in picked.values() if plan["questionRef"]})
+        for start in range(0, len(ai_refs), storage.SQL_PARAM_CHUNK):
+            chunk = ai_refs[start:start + storage.SQL_PARAM_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in connection.execute(
+                    f"SELECT question_id,content_json FROM review_ai_questions "
+                    f"WHERE question_id IN ({placeholders})", chunk):
+                ai_content[str(row["question_id"])] = json.loads(row["content_json"])
         for item in chosen:
-            kind = question_type or types_by_code.get(
-                item["code"], review_content.QUESTION_TYPES[0])
+            plan = picked.get(str(item["code"]), {})
+            kind = plan.get("questionType", review_content.QUESTION_TYPES[0])
+            question_ref = plan.get("questionRef", "")
             item["questionType"] = kind
+            item["questionRef"] = question_ref
             # prompt 与 body（predict/debug 要预测或排查的代码片段）都是**题面**的一部分：
             # 用户必须看到才能作答；expected/explain/rootCause/fix 等参考答案只在 reveal() 里给。
-            block = (content_by_code.get(str(item["code"])) or {}).get(kind) or {}
+            if question_ref:
+                block = ai_content.get(question_ref) or {}
+            else:
+                block = (content_by_code.get(str(item["code"])) or {}).get(kind) or {}
             item["prompt"] = str(block.get("prompt") or "")
             item["body"] = str(block.get("code") or "")
     return {"items": chosen, "total": len(chosen), "truncated": truncated, "limit": limit}
