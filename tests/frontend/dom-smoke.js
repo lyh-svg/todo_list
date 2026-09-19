@@ -464,7 +464,10 @@ async function fetchStub(url, options = {}) {
             prompt: '找出下面代码的问题', code: 'def total(items=[]):\n    items.append(1)\n    return items',
             rootCause: '可变默认参数被复用', fix: 'items=None 再兜底成 []',
             pitfalls: ['可变默认参数'], history: [], state: null };
-        return reply(200, revealRequest.type === 'debug' ? debugReveal : predictReveal);
+        const base = revealRequest.type === 'debug' ? debugReveal : predictReveal;
+        // 请求的是"已被删掉的 AI 题"时带上回退标记，覆盖前端提示分支。
+        return reply(200, revealRequest.questionRef === 'ai-q-1'
+            ? Object.assign({}, base, { questionRefFallback: true }) : base);
     }
     if (path === '/api/review/answer') {
         if (options.body) {
@@ -1525,6 +1528,9 @@ function step(name, fn) {
         el => el.dataset.grade === '3')[0];
     if (gradeBtn) step('提交自评不抛异常', () => gradeBtn.dispatch('click'));
     await sleep(120);
+    check('已删 AI 题回退到内置题时会提示一次',
+        textOf(elementsById.get('toastMessage')).includes('已回退到内置题'),
+        textOf(elementsById.get('toastMessage')));
     check('自评提交也带上 questionRef',
         reviewAnswerBodies.slice(-1)[0]?.questionRef === 'ai-q-1',
         JSON.stringify(reviewAnswerBodies.slice(-1)[0]));

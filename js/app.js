@@ -6661,6 +6661,10 @@ let knowledgePoints = [];
             return;
         }
         reviewSessionState.revealed = true;
+        if (data.questionRefFallback) {
+            // 这道收藏的 AI 题已被删掉：服务端已回退到内置题，这里提示一次，别让答案静默换人。
+            showToast('这道 AI 题已被删除，已回退到内置题');
+        }
         const parts = [];
         // 题面代码再渲染一次（只在这里，且标题明确写"题面代码"）：
         // 揭示后的答案面板要能对照着看，但绝不能和"参考答案"混在一起。
